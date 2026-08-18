@@ -1,5 +1,9 @@
 # samplerdisc
 
+[![CI](https://github.com/bmxcode/samplerdisc/actions/workflows/ci.yml/badge.svg)](https://github.com/bmxcode/samplerdisc/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
+![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
+
 Convert vintage sampler CD-ROM images into uncompressed `.wav` files you can use anywhere. No proprietary disk-mounting software, no dead commercial tools, no dependencies beyond the Python standard library.
 
 The point is to get these sounds **out of the hardware they were trapped in** — not into a different sampler's format. You get plain WAV: drag it into any DAW, load it in whatever sampler you already own, keep it for the next twenty years.
@@ -8,8 +12,16 @@ Thousands of 1990s sample libraries survive only as disc images built for hardwa
 
 ## Install
 
+Python 3.11 or newer. No other dependencies — the whole tool is standard library.
+
 ```bash
-uv tool install samplerdisc
+uv tool install git+https://github.com/bmxcode/samplerdisc
+```
+
+Or with pip:
+
+```bash
+pip install git+https://github.com/bmxcode/samplerdisc
 ```
 
 ## Use
@@ -19,6 +31,20 @@ samplerdisc list  "Black II Black.bin"          # volumes and samples, without e
 samplerdisc extract "Sound Library 1.mdx" ./out  # every sample to WAV
 samplerdisc batch  ./discs ./out --manifest out/manifest.json
 samplerdisc export-iso "Sound Library 1.mdx" ./library1.iso
+```
+
+You get one directory per disc, one per volume inside it:
+
+```
+out/AKAI.S3000.Sound.Library.1/
+  3001 G.PF 2/
+    PF BD 2F 0-L.wav            mono, exactly as stored
+    PF BD 2F 0-R.wav
+    stereo/
+      PF BD 2F 0.wav            the -L/-R pair, rejoined
+    original/                   only with --keep-originals
+      B-GRAND PF.s3p            the program file, untouched
+      PF BD 2F 0-L.s3s
 ```
 
 Extraction writes one WAV per sample, grouped by volume. Where a disc stores stereo as split mono files — the AKAI `-L` / `-R` convention — you also get a joined stereo WAV, and the mono originals are kept alongside it rather than replaced.
@@ -37,9 +63,42 @@ The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM a
 
 **Audio CDs** — some of these discs are plain Red Book audio, not CD-ROMs. `samplerdisc` recognises them from the cue sheet and writes each track out as a stereo WAV, keeping the track titles (which usually carry the tempo). No filesystem is involved; the sectors already are the audio.
 
-**Filesystems** — AKAI S1000/S3000 family, and plain ISO 9660 for discs whose payload is already WAV or AIFF. E-mu, Roland, Ensoniq and Kurzweil are the planned next backends; each is a self-contained module, so adding one touches nothing else.
+**Filesystems** — AKAI S1000/S3000 family, and plain ISO 9660 for discs whose payload is already WAV or AIFF.
 
-Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md).
+Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md), along with [`.nrg`](docs/formats/nrg.md), [raw CD sectors](docs/formats/rawcd.md), the [AKAI filesystem](docs/formats/akai-fs.md) and [audio CDs](docs/formats/audio-cd.md).
+
+## Tested against
+
+19 disc images from the [retro-sample-cds](https://archive.org/details/retro-sample-cds) collection — seven compressed `.mdx`, four `.iso`, two `.nrg`, a raw `.bin`, and one audio CD:
+
+| | |
+|---|---|
+| Discs converted | 18 of 19 |
+| Samples | 5 698 |
+| Stereo pairs rejoined | 928 |
+| Audio CD tracks | 96 |
+| Entries skipped (damage) | 20 (0.3%) |
+| Time | 13.5 s |
+
+Every extracted WAV was checked against the bytes on the disc it came from: all 5 698 are byte-identical with matching sample rates, none silent, none unreadable.
+
+## What doesn't work yet
+
+- **Roland, E-mu, Ensoniq and Kurzweil filesystems.** `AMG - Now CD-ROM (Roland).iso` from that collection is an S-770 disc and does not read. The container layer opens it, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
+- **`.mds`/`.mdf` is unverified.** No reference pair was available, so the geometry is sniffed from the `.mdf` rather than read from the descriptor.
+- **`CUES` chunks in NRG** are not parsed; only `CUEX`. No disc using the older form was to hand to check the layout against.
+- **AIFF payloads on ISO 9660 discs are copied, not converted** — they come out as `.aiff`.
+- **AKAI S900, floppy images and the DD partition.** Use [akaiutil](https://sourceforge.net/projects/akaiutil/).
+
+## If a disc doesn't work
+
+Run `samplerdisc info` on it and open an issue with the output:
+
+```bash
+samplerdisc info "Some Disc.mdx"
+```
+
+`no recognised filesystem` means the container was understood and the filesystem inside it was not — usually a manufacturer with no backend yet, which is the useful case to hear about. Please don't attach the disc image; the `info` output plus the library name is enough to start.
 
 ## A note on ISOs
 
@@ -56,6 +115,16 @@ Some sample-CD collections mix genuine AKAI discs with libraries that were conve
 `samplerdisc` exists for the layer underneath both: compressed `.mdx`, `.nrg` and raw `.bin` are containers neither tool opens, and that is where people get stuck.
 
 Unrelated despite the name: `mdxtools` handles X68000 MDX *chiptune music* files, not disc images.
+
+## Contributing
+
+`docs/README.md` is the reading order for the codebase. The format documentation in `docs/formats/` is the expensive part of this project — layouts established from hex dumps, with constants verified against named discs — and it is worth reading before changing a parser.
+
+```bash
+uv run ruff check . && uv run ruff format --check . && uv run pytest -q
+```
+
+Test fixtures are synthetic and built in code. Disc images are never committed ([ADR-0008](docs/adr/0008-no-media-in-the-repo.md)); tests that need a real disc read `SAMPLERDISC_TEST_DISCS` and skip when it is unset.
 
 ## Legal
 
