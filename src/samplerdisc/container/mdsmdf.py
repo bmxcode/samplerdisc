@@ -1,10 +1,13 @@
 """MDS descriptor beside MDF data -- the split form of what MDX merges.
 
-Unverified against a reference disc. No .mds/.mdf pair was available while this
-was written, so rather than commit struct offsets nobody has checked, geometry
-is sniffed from the .mdf the same way a bare .bin is: sync pattern means raw
-2352-byte sectors, otherwise cooked 2048. That is correct for single-track data
-discs, which is what sampler CD-ROMs are.
+UNTESTED. No .mds/.mdf pair has ever been run through this -- searches of the
+archive.org and nnty.fun sample-CD collections (~300 files) found none, so the
+split form may simply be rare for sampler discs. Rather than commit struct
+offsets nobody has checked, geometry is sniffed from the .mdf the same way a
+bare .bin is: sync pattern means raw 2352-byte sectors, otherwise cooked 2048.
+That is correct for a single-track data disc, which is what these are.
+
+If you have a pair, run it and replace this notice with what you found.
 
 What this does not do is read the MDS at all -- so a multi-track or offset image
 will be read from byte 0. If you have such a disc, teach this module the MDS
