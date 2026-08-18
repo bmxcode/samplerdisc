@@ -104,6 +104,14 @@ Sample data is **signed 16-bit little-endian mono PCM**. That is already exactly
 
 S3000 discs may use a 192-byte header variant. Branch on the id and valid bytes rather than assuming 150.
 
+## Where a directory ends
+
+Two bounds, both learned from discs that broke without them.
+
+**A volume's file directory is exactly one 8192-byte block** — 341 entries of 24 bytes. Reading further walks into the next block, which is file data, and produces "files" assembled from audio.
+
+**An entry ends the directory when its type byte is not a valid letter.** The set seen on real discs is `p s d x m q t` (`q` and `t` appear once each and are unidentified). This matters because an unallocated volume can point at a block of `0x01` filler, and every 24 bytes of that decodes to a plausible name — `101010101010` — so without the type check one bogus volume yields hundreds of files. A cleared type byte, `0x00`, is a **deleted** file: the name survives, the type does not, and the blocks return to the free list as `0xFF`. Deleted entries are skipped rather than ending the walk, since a deletion mid-directory must not truncate what follows.
+
 ## Loops and tuning
 
 Eight 12-byte loop records follow the play markers at offset **38**. Only the first `payload[16]` of them are active.

@@ -184,3 +184,60 @@ def test_a_lone_volume_pointing_at_an_empty_directory_is_rejected(tmp_path):
     # Wipe the volume's file directory.
     data[BLOCK_SIZE : 2 * BLOCK_SIZE] = b"\x00" * BLOCK_SIZE
     assert not BACKEND.probe(image_of(tmp_path, bytes(data), "empty.iso"), 0)
+
+
+def test_directory_stops_at_one_block(tmp_path):
+    """A volume's file directory is one 8192-byte block.
+
+    Reading further walks into the next block -- which is file data -- and
+    yields "files" assembled from audio.
+    """
+    from samplerdisc.fs.akai import _MAX_FILES, BLOCK_SIZE, FILE_ENTRY_LEN
+
+    assert _MAX_FILES == BLOCK_SIZE // FILE_ENTRY_LEN == 341
+
+
+def test_a_volume_pointing_at_filler_yields_nothing(tmp_path):
+    """An unallocated volume can point at a block of 0x01 filler.
+
+    Every 24 bytes of it decodes to a plausible AKAI name, so without a type
+    check the whole block reads as hundreds of files.
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE
+
+    payload = fixtures.akai_sample("KICK")
+    data = bytearray(
+        fixtures.akai_partition(
+            [
+                ("VOL 1", [("KICK", 0x73, len(payload), payload)]),
+                ("VOLUME 016", [("X", 0x73, 32, b"\x00" * 32)]),
+            ]
+        )
+    )
+    # Point the second volume's directory at a block of filler.
+    bogus = 40
+    data[bogus * BLOCK_SIZE : (bogus + 1) * BLOCK_SIZE] = b"\x01" * BLOCK_SIZE
+    import struct
+
+    from samplerdisc.fs.akai import VOLUME_DIR_OFFSET, VOLUME_ENTRY_LEN
+
+    struct.pack_into("<H", data, VOLUME_DIR_OFFSET + VOLUME_ENTRY_LEN + 14, bogus)
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "f.iso"), 0)}
+    assert [f.name for f in volumes["VOL 1"].files] == ["KICK"]
+    assert volumes["VOLUME 016"].files == []
+
+
+def test_deleted_entries_are_skipped_not_emitted(tmp_path):
+    """A deleted file keeps its name but loses its type; its blocks are freed."""
+    from samplerdisc.fs.akai import BLOCK_SIZE, FILE_ENTRY_LEN
+
+    good = fixtures.akai_sample("KEEPER")
+    data = bytearray(
+        fixtures.akai_partition(
+            [("VOL 1", [("GONE", 0x73, 100, b"\xff" * 100), ("KEEPER", 0x73, len(good), good)])]
+        )
+    )
+    data[BLOCK_SIZE + 16] = 0x00  # clear the first entry's type byte
+    volumes = list(BACKEND.volumes(image_of(tmp_path, bytes(data), "d.iso"), 0))
+    assert [f.name for f in volumes[0].files] == ["KEEPER"]
+    assert FILE_ENTRY_LEN == 24

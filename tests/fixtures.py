@@ -276,3 +276,19 @@ def tiny_wav(tmp_path, frames: int = 32, rate: int = 44100) -> bytes:
     path = tmp_path / "t.wav"
     write_wav(path, pcm, rate)
     return path.read_bytes()
+
+
+def subchannel_block(seed: int = 0, sectors: int = 15) -> tuple[bytes, bytes]:
+    """One MDX block of 2144-byte sectors: 2048 of data plus 96 of subchannel.
+
+    Returns (block as stored, the cooked 2048-byte data it should yield).
+    """
+    from samplerdisc.container.mdx import SUBCHANNEL_LEN
+
+    stored = bytearray()
+    cooked = bytearray()
+    for index in range(sectors):
+        data = bytes(((seed + index + i // 256) & 0xFF) for i in range(2048))
+        stored += data + b"\x40\x00" * (SUBCHANNEL_LEN // 2)
+        cooked += data
+    return bytes(stored), bytes(cooked)
