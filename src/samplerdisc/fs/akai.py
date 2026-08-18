@@ -94,22 +94,23 @@ class AkaiBackend:
             base = VOLUME_DIR_OFFSET + index * VOLUME_ENTRY_LEN
             entry = header[base : base + VOLUME_ENTRY_LEN]
             if is_empty_slot(entry):
-                # A free slot. Real partitions fill slot 0, so an empty one
-                # there means this is not a partition header.
-                if index == 0:
-                    return False
                 continue
             raw_name = entry[:NAME_LEN]
             if not is_plausible_name(raw_name):
                 return False
             _type, start = struct.unpack("<HH", entry[NAME_LEN:VOLUME_ENTRY_LEN])
+            if start == 0:
+                # Unallocated. AKAI pre-formats every slot with a default name
+                # like "VOLUME 008", so an unused one is a named entry pointing
+                # at block 0 -- not an empty slot, and not a reason to reject.
+                continue
             # Start blocks are ordered and in range; that ordering is what
             # separates a real header from bytes that merely decode cleanly.
-            if start == 0 or start > max_block or start <= previous:
+            if start > max_block or start <= previous:
                 return False
             previous = start
             found += 1
-        return found >= 1
+        return found >= 2
 
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
         header = image.read(offset, VOLUME_DIR_OFFSET + _MAX_VOLUMES * VOLUME_ENTRY_LEN)

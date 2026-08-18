@@ -139,3 +139,28 @@ def test_origin_probe_finds_a_partition_offset_into_the_image(tmp_path):
 def test_origin_probe_returns_none_when_nothing_matches(tmp_path):
     image = image_of(tmp_path, fixtures.incompressible_block(9) * 4, "junk.iso")
     assert find_origin(image) is None
+
+
+def test_probe_tolerates_preformatted_unallocated_slots(tmp_path):
+    """AKAI writes a default name into every slot; unused ones point at block 0.
+
+    A rule that treats a named entry with start 0 as corruption rejects a
+    perfectly good disc -- which is exactly what happened to the loopsoup
+    reference image.
+    """
+    from samplerdisc.fs.akai import NAME_LEN, VOLUME_DIR_OFFSET, VOLUME_ENTRY_LEN
+
+    data = bytearray(simple_partition())
+    slot = VOLUME_DIR_OFFSET + 2 * VOLUME_ENTRY_LEN
+    entry = bytearray(VOLUME_ENTRY_LEN)
+    entry[:NAME_LEN] = fixtures.akai_name("VOLUME 008")
+    # type 0, start 0: formatted but never allocated.
+    data[slot : slot + VOLUME_ENTRY_LEN] = entry
+    image = image_of(tmp_path, bytes(data), "unalloc.iso")
+    assert BACKEND.probe(image, 0)
+    assert [v.name for v in BACKEND.volumes(image, 0)] == ["SOUP 101-103", "SOUP 104-105"]
+
+
+def test_probe_still_rejects_an_all_zero_header(tmp_path):
+    """The unallocated rule must not weaken the zeros case (ADR-0005)."""
+    assert not BACKEND.probe(image_of(tmp_path, b"\x00" * (64 * 2048), "z2.iso"), 0)
