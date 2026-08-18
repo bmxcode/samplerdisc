@@ -46,6 +46,6 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D4 | Stereo joiner | #4 |
 | D5 | `batch` + JSON manifest | #5 |
 | D6 | ISO 9660 backend | #6 |
-| D7 | Programs and keygroups → SFZ ([ADR-0010](adr/0010-build-the-instrument-layer-ourselves.md)) | #7 |
+| D7 | Loop points, root key and tuning in the WAV `smpl` chunk ([ADR-0011](adr/0011-the-deliverable-is-daw-ready-wav.md)) | #7 |
 
 D1 is the go/no-go: it is the novel work, and every later deliverable assumes a flat sector stream.
