@@ -32,10 +32,17 @@ VOLUME_ENTRY_LEN = 16
 #: File entries within a volume, 24 bytes each.
 FILE_ENTRY_LEN = 24
 
-#: Type nibble: 'p' program, 's' sample. The high nibble varies between S1000
-#: and S3000 discs, so mask it rather than comparing the whole byte.
-TYPE_PROGRAM = 0x0
-TYPE_SAMPLE = 0x3
+#: The type byte is ASCII. S3000 discs set the high bit -- 0xF3 for 's', 0xF0
+#: for 'p' -- so mask with 0x7F, never with 0x0F: the low nibble alone cannot
+#: tell 'd' (0x64, drum settings) from 't' (0x74).
+TYPE_MASK = 0x7F
+TYPE_KINDS = {
+    "p": "program",
+    "s": "sample",
+    "d": "drum-settings",
+    "x": "effects",
+    "m": "multi",
+}
 
 #: Sample payload header (docs/formats/akai-fs.md).
 SAMPLE_HEADER_LEN = 150
@@ -90,6 +97,7 @@ class AkaiBackend:
         max_block = max((image.size - offset) // BLOCK_SIZE, 1)
         previous = -1
         found = 0
+        first_start = 0
         for index in range(_PROBE_SLOTS):
             base = VOLUME_DIR_OFFSET + index * VOLUME_ENTRY_LEN
             entry = header[base : base + VOLUME_ENTRY_LEN]
@@ -110,7 +118,33 @@ class AkaiBackend:
                 return False
             previous = start
             found += 1
-        return found >= 2
+            first_start = first_start if first_start else start
+        if found >= 2:
+            return True
+        if found == 1:
+            # A single-volume disc is unusual but real. Requiring two would let
+            # one silently report "no filesystem", which is precisely the
+            # failure ADR-0005 exists to prevent -- so confirm this one by
+            # looking at the volume's own file directory instead.
+            return self._directory_looks_real(image, offset, first_start)
+        return False
+
+    def _directory_looks_real(self, image: SectorImage, offset: int, start_block: int) -> bool:
+        """Does a volume's file directory hold at least one plausible entry?"""
+        directory = image.read(offset + start_block * BLOCK_SIZE, 4 * FILE_ENTRY_LEN)
+        if len(directory) < FILE_ENTRY_LEN:
+            return False
+        for index in range(len(directory) // FILE_ENTRY_LEN):
+            entry = directory[index * FILE_ENTRY_LEN : (index + 1) * FILE_ENTRY_LEN]
+            if is_empty_slot(entry):
+                continue
+            if not is_plausible_name(entry[:NAME_LEN]) or not decode_name(entry[:NAME_LEN]):
+                return False
+            size = entry[17] | entry[18] << 8 | entry[19] << 16
+            (file_start,) = struct.unpack("<H", entry[20:22])
+            if size > 0 and file_start > 0:
+                return True
+        return False
 
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
         header = image.read(offset, VOLUME_DIR_OFFSET + _MAX_VOLUMES * VOLUME_ENTRY_LEN)
@@ -154,13 +188,8 @@ class AkaiBackend:
             # abandoning the disc.
             if file_start == 0 or file_start > max_block or size <= 0:
                 continue
-            nibble = type_byte & 0x0F
-            if nibble == TYPE_SAMPLE:
-                kind = "sample"
-            elif nibble == TYPE_PROGRAM:
-                kind = "program"
-            else:
-                kind = f"type-{type_byte:#04x}"
+            letter = chr(type_byte & TYPE_MASK)
+            kind = TYPE_KINDS.get(letter, f"type-{letter}")
             yield File(name=name, kind=kind, size=size, start_block=file_start)
 
     def read_file(self, image: SectorImage, origin: int, entry: File) -> bytes:

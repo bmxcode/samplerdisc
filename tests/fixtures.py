@@ -182,3 +182,76 @@ def akai_sample(name: str, rate: int = 44100, words: int = 64, pitch: int = 60) 
     struct.pack_into("<H", header, 138, rate)
     pcm = b"".join(struct.pack("<h", (i * 137) % 20000 - 10000) for i in range(words))
     return bytes(header) + pcm
+
+
+def make_iso9660(files: dict[str, bytes], label: str = "SAMPLE CD") -> bytes:
+    """A minimal single-level ISO 9660 image.
+
+    Enough of the standard to exercise the backend: a 16-sector system area, a
+    primary volume descriptor, a terminator, a root directory and the file
+    extents. No Joliet, no Rock Ridge, no subdirectories.
+    """
+    sector = 2048
+
+    def both32(value: int) -> bytes:
+        return struct.pack("<I", value) + struct.pack(">I", value)
+
+    def both16(value: int) -> bytes:
+        return struct.pack("<H", value) + struct.pack(">H", value)
+
+    def record(name: bytes, extent: int, length: int, flags: int) -> bytes:
+        base = 33 + len(name)
+        padded = base + (base % 2)
+        rec = bytearray(padded)
+        rec[0] = padded
+        rec[2:10] = both32(extent)
+        rec[10:18] = both32(length)
+        rec[25] = flags
+        rec[28:32] = both16(1)
+        rec[32] = len(name)
+        rec[33 : 33 + len(name)] = name
+        return bytes(rec)
+
+    root_extent = 19
+    entries = bytearray()
+    entries += record(b"\x00", root_extent, sector, 0x02)
+    entries += record(b"\x01", root_extent, sector, 0x02)
+
+    data_extent = root_extent + 1
+    payloads = bytearray()
+    for name, blob in files.items():
+        encoded = name.upper().encode("ascii") + b";1"
+        entries += record(encoded, data_extent, len(blob), 0)
+        blocks = (len(blob) + sector - 1) // sector
+        payloads += blob + b"\x00" * (blocks * sector - len(blob))
+        data_extent += blocks
+
+    root_dir = bytes(entries).ljust(sector, b"\x00")
+
+    pvd = bytearray(sector)
+    pvd[0] = 1
+    pvd[1:6] = b"CD001"
+    pvd[6] = 1
+    pvd[40:72] = label.ljust(32).encode("ascii")[:32]
+    pvd[80:88] = both32(data_extent)
+    pvd[128:132] = both16(sector)
+    pvd[156:190] = record(b"\x00", root_extent, sector, 0x02)[:34]
+
+    terminator = bytearray(sector)
+    terminator[0] = 255
+    terminator[1:6] = b"CD001"
+    terminator[6] = 1
+
+    system_area = b"\x00" * (16 * sector)
+    spare = b"\x00" * sector
+    return system_area + bytes(pvd) + bytes(terminator) + spare + root_dir + bytes(payloads)
+
+
+def tiny_wav(tmp_path, frames: int = 32, rate: int = 44100) -> bytes:
+    """A real WAV, built by our own writer, for use as ISO 9660 payload."""
+    from samplerdisc.wav import write_wav
+
+    pcm = b"".join(struct.pack("<h", (i * 211) % 8000 - 4000) for i in range(frames))
+    path = tmp_path / "t.wav"
+    write_wav(path, pcm, rate)
+    return path.read_bytes()
