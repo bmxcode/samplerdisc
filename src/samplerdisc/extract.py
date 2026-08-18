@@ -20,9 +20,12 @@ if TYPE_CHECKING:
     from collections.abc import Iterator
 
     from samplerdisc.container.base import SectorImage
-    from samplerdisc.fs.base import Backend, Volume
+    from samplerdisc.fs.base import Backend, File, Volume
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9 ._+#-]")
+
+#: Kinds that are already audio files and need copying, not decoding.
+_AUDIO_FILE_KINDS = frozenset({"wav", "aiff"})
 
 
 def safe_name(name: str) -> str:
@@ -87,6 +90,15 @@ def extract_volume(
     made = False
     parsed: dict[str, AkaiSample] = {}
     for entry in volume.files:
+        if entry.kind in _AUDIO_FILE_KINDS:
+            # Already an audio file -- an ISO 9660 disc whose payload is plain
+            # WAV or AIFF. Copy it out untouched; there is nothing to decode.
+            if not made:
+                os.makedirs(out_dir, exist_ok=True)
+                made = True
+            result = _copy_audio(image, backend, origin, volume, entry, out_dir)
+            yield result
+            continue
         if entry.kind != "sample":
             continue
         try:
@@ -166,6 +178,31 @@ def _join_pairs(
             name=pair.base,
         )
         yield Joined(volume=volume_name, name=pair.base, path=path, rate=left.rate, frames=frames)
+
+
+def _copy_audio(
+    image: SectorImage,
+    backend: Backend,
+    origin: int,
+    volume: Volume,
+    entry: File,
+    out_dir: str,
+) -> Extracted | Skipped:
+    payload = backend.read_file(image, origin, entry)
+    if not payload:
+        return Skipped(volume.name, entry.name, "no data on disc")
+    stem, suffix = os.path.splitext(os.path.basename(entry.name))
+    path = unique_path(out_dir, safe_name(stem), suffix.lower() or ".wav")
+    with open(path, "wb") as out:
+        out.write(payload)
+    return Extracted(
+        volume=volume.name,
+        name=entry.name,
+        path=path,
+        rate=0,
+        frames=0,
+        pitch=0,
+    )
 
 
 def extract_disc(

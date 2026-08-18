@@ -69,7 +69,16 @@ At the volume's start block, entries of 24 bytes:
 | 20 | 2 | u16 LE start block |
 | 22 | 2 | tag |
 
-Type is `0x70` or `0xF0` for a program and `0x73` or `0xF3` for a sample — ASCII `p` and `s` with the high nibble varying between S1000 and S3000 discs. **Mask the high nibble**; do not compare the whole byte.
+**The type byte is ASCII**, with S3000 discs setting the high bit: `0x73` and `0xF3` are both `'s'`. **Mask with `0x7F`, never `0x0F`** — the low nibble cannot distinguish `'d'` (`0x64`) from `'t'` (`0x74`), so a nibble mask silently merges two file types.
+
+| Letter | Byte | Meaning | Evidence |
+|---|---|---|---|
+| `p` | `0x70` / `0xF0` | Program | payload id byte is `1` |
+| `s` | `0x73` / `0xF3` | Sample | payload id byte is `3`, valid flag `0x80` |
+| `d` | `0x64` | Drum settings | named `DRUM INPUTS`, 162 bytes, on two discs |
+| `x` | `0x78` | Effects | named `EFFECTS FILE`, 7312 bytes |
+
+Only `p` and `s` are confirmed from payload contents; `d` and `x` are inferred from consistent filenames and sizes across discs. Types beyond these are reported as `type-<letter>` rather than guessed at.
 
 Programs hold key ranges and envelopes, not audio. They are listed and skipped.
 

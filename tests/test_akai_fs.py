@@ -164,3 +164,23 @@ def test_probe_tolerates_preformatted_unallocated_slots(tmp_path):
 def test_probe_still_rejects_an_all_zero_header(tmp_path):
     """The unallocated rule must not weaken the zeros case (ADR-0005)."""
     assert not BACKEND.probe(image_of(tmp_path, b"\x00" * (64 * 2048), "z2.iso"), 0)
+
+
+def test_probe_accepts_a_single_volume_disc(tmp_path):
+    """Unusual but real. Requiring two volumes would report "no filesystem"
+    for a perfectly good disc -- a silent failure, which is what ADR-0005 is
+    about. A lone volume is confirmed via its own file directory instead.
+    """
+    payload = fixtures.akai_sample("KICK")
+    data = fixtures.akai_partition([("VOL 1", [("KICK", 0x73, len(payload), payload)])])
+    assert BACKEND.probe(image_of(tmp_path, data, "one.iso"), 0)
+
+
+def test_a_lone_volume_pointing_at_an_empty_directory_is_rejected(tmp_path):
+    """The single-volume path must not become a way in for false positives."""
+    from samplerdisc.fs.akai import BLOCK_SIZE
+
+    data = bytearray(fixtures.akai_partition([("VOL 1", [("KICK", 0x73, 200, b"\x00" * 200)])]))
+    # Wipe the volume's file directory.
+    data[BLOCK_SIZE : 2 * BLOCK_SIZE] = b"\x00" * BLOCK_SIZE
+    assert not BACKEND.probe(image_of(tmp_path, bytes(data), "empty.iso"), 0)

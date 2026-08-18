@@ -5,6 +5,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+from collections import Counter
 
 import samplerdisc.fs  # noqa: F401  (importing registers the backends)
 from samplerdisc import __version__
@@ -31,19 +32,18 @@ def cmd_list(args: argparse.Namespace) -> int:
             print("no recognised filesystem -- try `samplerdisc export-iso`", file=sys.stderr)
             return 1
         volumes = 0
-        samples = 0
-        programs = 0
+        kinds: Counter[str] = Counter()
         for volume in origin.backend.volumes(image, origin.offset):
             volumes += 1
             print(f"{volume.name}  (block {volume.start_block}, {len(volume.files)} files)")
             for entry in volume.files:
-                if entry.kind == "sample":
-                    samples += 1
-                elif entry.kind == "program":
-                    programs += 1
+                kinds[entry.kind] += 1
                 if not args.volumes_only:
                     print(f"    {entry.name:<14} {entry.kind:<8} {entry.size:>9} bytes")
-        print(f"\n{volumes} volumes, {samples} samples, {programs} programs")
+        # Kinds are the backend's vocabulary, not ours: AKAI says sample and
+        # program, ISO 9660 says wav and aiff.
+        breakdown = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
+        print(f"\n{volumes} volumes" + (f", {breakdown}" if breakdown else ""))
     return 0
 
 
