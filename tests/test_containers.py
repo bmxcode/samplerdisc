@@ -9,7 +9,7 @@ import pytest
 from samplerdisc.container.base import SECTOR_SIZE
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.container.flat import FlatImage
-from samplerdisc.container.mdx import BLOCK_SIZE, MdxImage, _decode_block
+from samplerdisc.container.mdx import DEFAULT_BLOCK_SIZE, MdxImage, _decode_block
 from samplerdisc.container.nrg import NrgImage, parse_chunks
 from samplerdisc.container.rawcd import RawCdImage, parse_cue_sector_size
 from samplerdisc.export import export_iso
@@ -55,7 +55,7 @@ def test_mdx_truncated_payload_degrades_rather_than_crashing(tmp_path):
     struct.pack_into("<Q", corrupt, 0x30, len(raw) - 640 - 5)
     image = MdxImage(write(tmp_path, "short.mdx", bytes(corrupt)))
     assert image.stored_blocks == 1
-    assert image.read(0, BLOCK_SIZE) == blocks[0]
+    assert image.read(0, DEFAULT_BLOCK_SIZE) == blocks[0]
 
 
 def test_mdx_rejects_an_implausible_descriptor_offset(tmp_path):
@@ -103,8 +103,8 @@ def test_decode_block_rejects_stream_that_consumed_too_much():
     payload = fixtures.incompressible_block(3)
     compressor = zlib.compressobj(0, zlib.DEFLATED, -15)  # level 0: stored, so larger
     stream = compressor.compress(payload) + compressor.flush()
-    assert len(stream) >= BLOCK_SIZE
-    assert _decode_block(stream) is None
+    assert len(stream) >= DEFAULT_BLOCK_SIZE
+    assert _decode_block(stream, DEFAULT_BLOCK_SIZE) is None
 
 
 def test_decode_block_accepts_a_real_compressed_block():
@@ -113,7 +113,7 @@ def test_decode_block_accepts_a_real_compressed_block():
     payload = fixtures.compressible_block(2)
     compressor = zlib.compressobj(9, zlib.DEFLATED, -15)
     stream = compressor.compress(payload) + compressor.flush()
-    decoded = _decode_block(stream + b"trailing")
+    decoded = _decode_block(stream + b"trailing", DEFAULT_BLOCK_SIZE)
     assert decoded is not None
     data, consumed = decoded
     assert data == payload
@@ -262,3 +262,30 @@ def test_reads_past_the_end_return_what_is_available(tmp_path):
     image = FlatImage(write(tmp_path, "a.iso", cooked))
     assert image.read(image.size - 10, 500) == cooked[-10:]
     assert image.read(image.size + 1000, 10) == b""
+
+
+def test_block_size_is_read_off_the_image_not_assumed(tmp_path):
+    """A real AKAI disc uses 32160-byte blocks, not the usual 32768.
+
+    Assuming the common value made every block fail to inflate and fall
+    through to the stored path, which surfaces as an unrecognisable
+    filesystem rather than as an error.
+    """
+    odd = 32160
+    blocks = [fixtures.compressible_block(i, size=odd) for i in range(3)]
+    raw, expected = fixtures.make_mdx(blocks)
+    image = MdxImage(write(tmp_path, "odd.mdx", raw))
+    assert image.block_size == odd
+    assert image.stored_blocks == 0
+    # 32160 is not a whole number of sectors, so the image trims to the last
+    # complete one -- the blocks still decode, the tail is just not addressable.
+    assert image.size % SECTOR_SIZE == 0
+    assert image.read(0, image.size) == expected[: image.size]
+
+
+def test_usual_block_size_still_works(tmp_path):
+    blocks = [fixtures.compressible_block(i) for i in range(3)]
+    raw, expected = fixtures.make_mdx(blocks)
+    image = MdxImage(write(tmp_path, "usual.mdx", raw))
+    assert image.block_size == DEFAULT_BLOCK_SIZE
+    assert image.read(0, len(expected)) == expected

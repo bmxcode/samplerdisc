@@ -9,23 +9,23 @@ from __future__ import annotations
 import struct
 import zlib
 
-from samplerdisc.container.mdx import BLOCK_SIZE, MAGIC, PAYLOAD_OFFSET
+from samplerdisc.container.mdx import DEFAULT_BLOCK_SIZE, MAGIC, PAYLOAD_OFFSET
 from samplerdisc.container.rawcd import RAW_SECTOR_SIZE, SYNC, USER_DATA_OFFSET
 
 
-def compressible_block(seed: int = 0) -> bytes:
-    """32 KB that deflates well below its own size."""
-    return bytes([(seed + i // 512) & 0xFF for i in range(BLOCK_SIZE)])
+def compressible_block(seed: int = 0, size: int = DEFAULT_BLOCK_SIZE) -> bytes:
+    """A block that deflates well below its own size."""
+    return bytes([(seed + i // 512) & 0xFF for i in range(size)])
 
 
-def incompressible_block(seed: int = 1) -> bytes:
-    """32 KB of high-entropy data, so a real encoder would store it literally."""
+def incompressible_block(seed: int = 1, size: int = DEFAULT_BLOCK_SIZE) -> bytes:
+    """High-entropy data, so a real encoder would store it literally."""
     out = bytearray()
     state = seed | 1
-    while len(out) < BLOCK_SIZE:
+    while len(out) < size:
         state = (state * 1103515245 + 12345) & 0xFFFFFFFF
         out += struct.pack("<I", state)
-    return bytes(out[:BLOCK_SIZE])
+    return bytes(out[:size])
 
 
 def make_mdx(blocks: list[bytes], stored: set[int] | None = None) -> tuple[bytes, bytes]:

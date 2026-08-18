@@ -16,8 +16,9 @@ from samplerdisc.container.base import SECTOR_SIZE, _FileBacked
 
 MAGIC = b"MEDIA DESCRIPTOR"
 
-#: Every block expands to exactly this much.
-BLOCK_SIZE = 32768
+#: The block size most images use. It is NOT universal -- see _derive_block_size
+#: -- so this is only the fallback when the first block cannot be decoded.
+DEFAULT_BLOCK_SIZE = 32768
 
 #: The payload starts here -- NOT at the value in the field at 0x38, which
 #: looks exactly like a data offset and is not one. See docs/formats/mdx.md.
@@ -46,25 +47,33 @@ def looks_mdx(head: bytes) -> bool:
     return head.startswith(MAGIC)
 
 
-def _decode_block(raw: bytes) -> tuple[bytes, int] | None:
-    """Try to read one compressed block. Returns (data, consumed) or None.
-
-    A block counts as compressed only when the stream terminates, emits exactly
-    BLOCK_SIZE bytes, *and* consumed fewer than BLOCK_SIZE. That third check is
-    what makes this safe: a stored block exists precisely because compressing it
-    saved nothing, so a genuine compressed block always consumes less than it
-    emits. Without it, PCM that happens to parse as valid DEFLATE is silently
-    misread, and the corruption shows up only as noise in an extracted WAV.
-    """
+def _inflate(raw: bytes) -> tuple[bytes, int] | None:
+    """Inflate one self-terminating raw-DEFLATE stream. (data, consumed) or None."""
     decompressor = zlib.decompressobj(-15)
     try:
         out = decompressor.decompress(raw)
     except zlib.error:
         return None
-    if not decompressor.eof or len(out) != BLOCK_SIZE:
+    if not decompressor.eof:
         return None
-    consumed = len(raw) - len(decompressor.unused_data)
-    if consumed >= BLOCK_SIZE:
+    return out, len(raw) - len(decompressor.unused_data)
+
+
+def _decode_block(raw: bytes, block_size: int) -> tuple[bytes, int] | None:
+    """Try to read one compressed block. Returns (data, consumed) or None.
+
+    A block counts as compressed only when the stream terminates, emits exactly
+    ``block_size`` bytes, *and* consumed fewer than that. The third check is
+    what makes this safe: a stored block exists precisely because compressing it
+    saved nothing, so a genuine compressed block always consumes less than it
+    emits. Without it, PCM that happens to parse as valid DEFLATE is silently
+    misread, and the corruption shows up only as noise in an extracted WAV.
+    """
+    decoded = _inflate(raw)
+    if decoded is None:
+        return None
+    out, consumed = decoded
+    if len(out) != block_size or consumed >= block_size:
         return None
     return out, consumed
 
@@ -89,6 +98,7 @@ class MdxImage(_FileBacked):
         if not 0 < descriptor_offset <= self._end:
             raise ValueError(f"{self.path}: implausible descriptor offset {descriptor_offset}")
         self._payload_end = descriptor_offset
+        self.block_size = self._derive_block_size()
         self.blocks: list[Block] = self._build_index()
         self._cache: OrderedDict[int, bytes] = OrderedDict()
 
@@ -99,19 +109,40 @@ class MdxImage(_FileBacked):
         self._size = (total // SECTOR_SIZE) * SECTOR_SIZE
         self.trimmed = total - self._size
 
+    def _derive_block_size(self) -> int:
+        """Read the block size off the image rather than assuming it.
+
+        Most images use 32768, but not all: one AKAI disc in the wild uses
+        32160 throughout, and hard-coding the common value made every block
+        fail to inflate and fall through to the stored path -- which reads as
+        an unrecognisable filesystem rather than as an error.
+
+        The first block is decoded with no size expectation and its length
+        becomes the size for the rest.
+        """
+        decoded = _inflate(self._raw(PAYLOAD_OFFSET, _MAX_BLOCK_READ))
+        if decoded is None:
+            # A leading stored block leaves nothing to measure. Fall back, and
+            # let the stored/compressed ratio surface the problem if it is one.
+            return DEFAULT_BLOCK_SIZE
+        out, consumed = decoded
+        if not out or consumed >= len(out):
+            return DEFAULT_BLOCK_SIZE
+        return len(out)
+
     def _build_index(self) -> list[Block]:
         blocks: list[Block] = []
         offset = PAYLOAD_OFFSET
         while offset < self._payload_end:
             remaining = self._payload_end - offset
             raw = self._raw(offset, min(_MAX_BLOCK_READ, remaining))
-            decoded = _decode_block(raw)
+            decoded = _decode_block(raw, self.block_size)
             if decoded is not None:
                 _data, consumed = decoded
-                blocks.append(Block(offset, consumed, False, BLOCK_SIZE))
+                blocks.append(Block(offset, consumed, False, self.block_size))
                 offset += consumed
             else:
-                clen = min(BLOCK_SIZE, remaining)
+                clen = min(self.block_size, remaining)
                 blocks.append(Block(offset, clen, True, clen))
                 offset += clen
         # The walk lands on _payload_end by construction: a stored block absorbs
@@ -154,7 +185,7 @@ class MdxImage(_FileBacked):
             return b""
         length = min(length, self._size - offset)
         out = bytearray()
-        index, skip = divmod(offset, BLOCK_SIZE)
+        index, skip = divmod(offset, self.block_size)
         while len(out) < length and index < len(self.blocks):
             chunk = self.block_data(index)[skip:]
             out += chunk[: length - len(out)]
@@ -168,7 +199,7 @@ class MdxImage(_FileBacked):
         buffer = bytearray()
         for index in range(len(self.blocks)):
             buffer += self.block_data(index)
-            if len(buffer) >= chunk_blocks * BLOCK_SIZE:
+            if len(buffer) >= chunk_blocks * self.block_size:
                 take = min(len(buffer), self._size - emitted)
                 yield bytes(buffer[:take])
                 emitted += take

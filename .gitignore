@@ -17,6 +17,16 @@
 *.aiff
 out/
 discs/
+retro-sample-cds/
+
+# Archives holding disc images are the same rule: a .zip of a sample library
+# is still a sample library.
+*.zip
+*.7z
+*.rar
+*.tar
+*.tar.gz
+*.tgz
 
 # Python
 __pycache__/

@@ -20,7 +20,13 @@ The payload runs from `0x40` up to the descriptor offset from `0x30`. The descri
 
 ## Block chain
 
-The payload is a chain of blocks. Each expands to exactly **32768 bytes**. They sit back to back with no index, no length prefix and no per-block header — the chain is walked by decoding, not by lookup.
+The payload is a chain of blocks, each expanding to the same fixed size. They sit back to back with no index, no length prefix and no per-block header — the chain is walked by decoding, not by lookup.
+
+**The block size is not universal and must be read off the image.** Most discs use 32768, but `AMG - Vince Clarke Lucky Bastard AKAI.mdx` uses **32160** for all 17 624 of its blocks. Nothing in the header announces it. Hard-coding 32768 makes every block fail the size check, fall through to the stored path, and the image then decodes to garbage that presents as *an unrecognisable filesystem* rather than as an error — the same silent class of failure as the NRG pregap.
+
+So: decode the first block with no size expectation, and take its length as the size for the rest. A leading stored block leaves nothing to measure, in which case 32768 is the fallback and the stored/compressed ratio is what shows the problem.
+
+32160 is not a whole number of 2048-byte sectors, so block boundaries and sector boundaries do not line up on such an image. That is fine — the blocks are simply concatenated and the result trimmed to the last complete sector.
 
 A block is one of two things:
 
@@ -41,6 +47,7 @@ Walking `s3000-lib1` from `0x40`:
 
 | Quantity | Value |
 |---|---|
+| Block size | 32 768 |
 | Blocks | 16 526 |
 | Compressed | 16 522 |
 | Stored | 4 |
@@ -55,6 +62,8 @@ The walk landing *exactly* on the descriptor offset was the decisive evidence wh
 
 What does show a misparse is the **ratio of stored to compressed blocks**. A wrong payload offset makes nearly every block fail to inflate, so the counts inverted from the 4-in-16 526 below are the signal to watch. `samplerdisc info` prints both.
 
+For comparison, `AMG - Vince Clarke Lucky Bastard AKAI.mdx`: block size 32 160, 17 624 blocks, 17 622 compressed, 2 stored.
+
 Output is **2048-byte cooked sectors** — no sync pattern, no header, no ECC. Scanning the decoded stream for the CD sync pattern `00 FF×10 00` finds nothing.
 
 ## The tail
@@ -67,5 +76,6 @@ This is a known, accepted loose end. Those trailing bytes fall outside any block
 
 - The payload offset is `0x40`, not the `192` at `0x38`.
 - Raw DEFLATE (`-15`), not zlib-wrapped — `zlib.decompress` on its own will not do it.
+- The block size varies between images. Measure it; do not assume 32768.
 - No block index exists. Do not go looking for one; the 640-byte descriptor is too small to hold ~16 500 entries and does not decode.
 - The consumed-length guard is load-bearing. Dropping it is undetectable until a disc silently extracts noise.
