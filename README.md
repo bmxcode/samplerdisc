@@ -35,6 +35,8 @@ The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM a
 
 **Containers** — `.mdx` (DAEMON Tools, *including compressed*), `.nrg` (Nero v1 and v2), `.bin` + `.cue` (raw 2352-byte CD sectors), `.iso` / `.img`, `.mds` + `.mdf`. Detection is by content signature, not by file extension, because these archives are named inconsistently.
 
+**Audio CDs** — some of these discs are plain Red Book audio, not CD-ROMs. `samplerdisc` recognises them from the cue sheet and writes each track out as a stereo WAV, keeping the track titles (which usually carry the tempo). No filesystem is involved; the sectors already are the audio.
+
 **Filesystems** — AKAI S1000/S3000 family, and plain ISO 9660 for discs whose payload is already WAV or AIFF. E-mu, Roland, Ensoniq and Kurzweil are the planned next backends; each is a self-contained module, so adding one touches nothing else.
 
 Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md).

@@ -9,6 +9,8 @@ from collections import Counter
 
 import samplerdisc.fs  # noqa: F401  (importing registers the backends)
 from samplerdisc import __version__
+from samplerdisc.audiocd import detect as detect_audio_cd
+from samplerdisc.audiocd import extract_tracks
 from samplerdisc.batch import convert_tree, find_images, write_manifest
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.export import export_iso
@@ -48,6 +50,16 @@ def cmd_list(args: argparse.Namespace) -> int:
 
 
 def cmd_extract(args: argparse.Namespace) -> int:
+    sheet = detect_audio_cd(args.image)
+    if sheet is not None:
+        count = 0
+        for track in extract_tracks(args.image, sheet, args.out):
+            count += 1
+            if args.verbose:
+                print(f"  {track.number:3}  {track.seconds:6.1f}s  {track.title}")
+        print(f"wrote {count} audio tracks to {args.out}")
+        return 0
+
     with open_image(args.image) as image:
         origin = find_origin(image)
         if origin is None:
@@ -114,11 +126,18 @@ def cmd_batch(args: argparse.Namespace) -> int:
         else:
             extra = f", {report.stereo_pairs} stereo" if report.stereo_pairs else ""
             extra += f", {report.originals} originals" if report.originals else ""
-            print(f"  ok      {label}  [{report.container}] {report.samples} samples{extra}")
+            if report.audio_tracks:
+                extra = f", {report.audio_tracks} audio tracks"
+            body = f"{report.samples} samples" if report.samples else ""
+            print(f"  ok      {label}  [{report.container}] {body}{extra}".replace("] ,", "]"))
 
     converted = sum(1 for r in reports if r.ok)
     samples = sum(r.samples for r in reports)
-    print(f"\nconverted {converted}/{len(reports)} discs, {samples} samples")
+    tracks = sum(r.audio_tracks for r in reports)
+    summary = f"\nconverted {converted}/{len(reports)} discs, {samples} samples"
+    if tracks:
+        summary += f", {tracks} audio tracks"
+    print(summary)
     if args.manifest:
         write_manifest(args.manifest, reports)
         print(f"manifest written to {args.manifest}")
@@ -126,6 +145,14 @@ def cmd_batch(args: argparse.Namespace) -> int:
 
 
 def cmd_info(args: argparse.Namespace) -> int:
+    sheet = detect_audio_cd(args.image)
+    if sheet is not None:
+        total = sum(1 for _ in sheet.tracks)
+        print("container   audio-cd (Red Book)")
+        print(f"tracks      {total}")
+        print("filesystem  none -- the sectors are the audio")
+        return 0
+
     with open_image(args.image) as image:
         origin = find_origin(image)
         print(f"container   {sniff(args.image)}")
