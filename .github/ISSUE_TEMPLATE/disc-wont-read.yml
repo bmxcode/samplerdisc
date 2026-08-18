@@ -1,0 +1,43 @@
+name: A disc won't read
+description: A disc image fails to list or extract, or yields fewer samples than it should
+labels: ["disc"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for the report. **Do not attach the disc image or any extracted audio** — these are commercial libraries and this repo is public. A description of the failure is what we need, not the library itself.
+  - type: dropdown
+    id: container
+    attributes:
+      label: Container format
+      description: The kind of image file. Detect by signature if you're unsure — the extension is often wrong.
+      options:
+        - .mdx (Alcohol compressed)
+        - .nrg (Nero)
+        - .bin / .iso (raw)
+        - .cue / .bin pair
+        - Other / not sure
+    validations:
+      required: true
+  - type: input
+    id: source
+    attributes:
+      label: Where the image came from
+      description: e.g. archive.org, a personal FTP, a physical rip you made. Don't link to copyrighted material.
+    validations:
+      required: false
+  - type: textarea
+    id: command
+    attributes:
+      label: Command and full output
+      description: The exact command you ran and everything it printed. Paste text, not a screenshot.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: What you expected
+      description: How many volumes or samples you believe are on the disc, and which specific one fails if you know it.
+    validations:
+      required: false
