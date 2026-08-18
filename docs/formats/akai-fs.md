@@ -36,11 +36,23 @@ Volume entry, 16 bytes:
 
 Observed volume names, useful as a smoke test that charset and offsets are both right:
 
-| Disc | Volumes |
-|---|---|
-| `black2black` | `KICKIN B0-F1`, `MOVIN 105 -L`, `MOVIN 105 -R`, `MOVIN2-105-L` |
-| `s3000-lib1` | `3001 G.PF 2`, `3012 E.PF 1`, `3018 STACK P`, `3028 E.PF 2` |
-| `loopsoup` | `SOUP 101-103`, `SOUP 104-105`, `SOUP 106-109`, `SOUP 110-112` |
+| Disc | Volumes | Count |
+|---|---|---|
+| `black2black` | `KICKIN C1-A1`, `KICKIN B1-F2`, `KICKIN G2-C3`, `KICKIN D3-G3` | 9 |
+| `s3000-lib1` | `3001 G.PF 2`, `3012 E.PF 1`, `3018 STACK P`, `3028 E.PF 2` | 14 |
+| `loopsoup` | `SOUP 101-103`, `SOUP 104-105`, `SOUP 106-109`, `SOUP 110-112` | 7 |
+
+### How the charset was confirmed
+
+Two candidate tables fit the byte values, differing in whether index 0 is `'0'` or `' '`. Both decode every name to something that *looks* plausible, which is why this is worth writing down rather than re-deriving.
+
+Three pieces of evidence settle it on the table above:
+
+- **The letters only spell words one way.** `SOUP`, `KICKIN` and `G.PF` come out as `TPVQ`, `LJDLJO` and `H/QG` under the alternative. Since letters run from index 11, immediately after `10 = space` and the ten digits, fixing the letters fixes the digits.
+- **`loopsoup`'s volumes are contiguous**: `101-103`, `104-105`, `106-109`, `110-112`, `113-114`, `115-117` — no gaps across six volumes.
+- **The numbers are round.** `s3000-lib1` starts at `3001`, which is what an S3000 library's catalogue numbering should look like. The alternative reads it as `4112`.
+
+An early hand decode of `black2black` using the other table produced `KICKIN B0-F1` — a full step out on every key range, and entirely believable. If a name looks *almost* right, suspect this table before suspecting the offsets.
 
 A partition caps at 512 MB, so a large disc carries several. Walk the partition table rather than assuming one partition at the origin.
 

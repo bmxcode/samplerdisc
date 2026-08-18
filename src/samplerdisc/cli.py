@@ -5,9 +5,11 @@ from __future__ import annotations
 import argparse
 import sys
 
+import samplerdisc.fs  # noqa: F401  (importing registers the backends)
 from samplerdisc import __version__
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.export import export_iso
+from samplerdisc.fs import base as _fs_registry  # noqa: F401  (registers backends)
 from samplerdisc.fs.probe import find_origin
 
 
@@ -19,12 +21,44 @@ def _human(n: int) -> str:
     return f"{n} B"
 
 
+def cmd_list(args: argparse.Namespace) -> int:
+    with open_image(args.image) as image:
+        origin = find_origin(image)
+        if origin is None:
+            print("no recognised filesystem -- try `samplerdisc export-iso`", file=sys.stderr)
+            return 1
+        volumes = 0
+        samples = 0
+        programs = 0
+        for volume in origin.backend.volumes(image, origin.offset):
+            volumes += 1
+            print(f"{volume.name}  (block {volume.start_block}, {len(volume.files)} files)")
+            for entry in volume.files:
+                if entry.kind == "sample":
+                    samples += 1
+                elif entry.kind == "program":
+                    programs += 1
+                if not args.volumes_only:
+                    print(f"    {entry.name:<14} {entry.kind:<8} {entry.size:>9} bytes")
+        print(f"\n{volumes} volumes, {samples} samples, {programs} programs")
+    return 0
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     with open_image(args.image) as image:
         origin = find_origin(image)
         print(f"container   {sniff(args.image)}")
         print(f"size        {image.size} bytes ({_human(image.size)})")
         print(f"sectors     {image.sectors}")
+        blocks = getattr(image, "blocks", None)
+        if blocks is not None:
+            # A wrong payload offset inverts these. See docs/formats/mdx.md.
+            print(
+                f"mdx blocks  {len(blocks)} "
+                f"({image.compressed_blocks} compressed, {image.stored_blocks} stored)"
+            )
+            if image.trimmed:
+                print(f"trimmed     {image.trimmed} bytes past the last whole sector")
         if origin is None:
             print("filesystem  none recognised -- try `samplerdisc export-iso`")
         else:
@@ -60,6 +94,11 @@ def build_parser() -> argparse.ArgumentParser:
     info = sub.add_parser("info", help="identify the container and locate the filesystem")
     info.add_argument("image")
     info.set_defaults(func=cmd_info)
+
+    listing = sub.add_parser("list", help="list volumes and files without extracting")
+    listing.add_argument("image")
+    listing.add_argument("-v", "--volumes-only", action="store_true", help="volumes, not files")
+    listing.set_defaults(func=cmd_list)
 
     export = sub.add_parser("export-iso", help="unwrap the container to a flat ISO")
     export.add_argument("image")
