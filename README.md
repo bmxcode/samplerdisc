@@ -63,7 +63,7 @@ The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM a
 
 **Audio CDs** — some of these discs are plain Red Book audio, not CD-ROMs. `samplerdisc` recognises them from the cue sheet and writes each track out as a stereo WAV, keeping the track titles (which usually carry the tempo). No filesystem is involved; the sectors already are the audio.
 
-**Filesystems** — AKAI S1000/S3000 family, and plain ISO 9660 for discs whose payload is already WAV or AIFF.
+**Filesystems** — AKAI S1000/S3000 family, E-mu `EMU3` (EIIIX, ESI-32/4000, Emulator IV), and plain ISO 9660 for discs whose payload is already WAV or AIFF.
 
 Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md), along with [`.nrg`](docs/formats/nrg.md), [raw CD sectors](docs/formats/rawcd.md), the [AKAI filesystem](docs/formats/akai-fs.md) and [audio CDs](docs/formats/audio-cd.md).
 
@@ -84,7 +84,8 @@ Every extracted WAV was checked against the bytes on the disc it came from: all 
 
 ## What doesn't work yet
 
-- **Roland, E-mu, Ensoniq and Kurzweil filesystems.** `AMG - Now CD-ROM (Roland).iso` from that collection is an S-770 disc and does not read. The container layer opens it, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
+- **Roland, Ensoniq and Kurzweil filesystems.** `AMG - Now CD-ROM (Roland).iso` from that collection is an S-770 disc and does not read yet. The container layer opens it, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
+- **Emulator IV bank interiors.** E-IV discs list their folders and banks correctly — the directory is shared with EIIIX and ESI — but the inside of a bank is a different layout with only one specimen to hand, so those banks are listed and not extracted ([ADR-0015](docs/adr/0015-locate-banks-by-signature.md)).
 - **`.mds`/`.mdf` is untested.** There is code for it, and it has never seen a real pair — searches of both archive.org and the nnty.fun collection (~300 files) turned up none, so sample CDs in this form may simply be rare. It reads the `.mdf` and sniffs its geometry rather than parsing the descriptor, which should work for a single-track data disc. Treat it as unsupported until someone confirms otherwise, and please open an issue if you have one.
 - **`CUES` chunks in NRG** are not parsed; only `CUEX`. No disc using the older form was to hand to check the layout against.
 - **An audio CD with no cue sheet cannot be split into tracks.** `samplerdisc info` tells you when a disc's content looks like Red Book audio, and `extract --assume-audio-cd` writes the whole stream as one WAV, but the track boundaries live in a cue, not in the bytes.

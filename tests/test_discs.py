@@ -72,10 +72,17 @@ def test_a_claimed_disc_yields_at_least_one_file(path: Path) -> None:
         origin = find_origin(image)
         if origin is None:
             return
-        files = sum(len(volume.files) for volume in origin.backend.volumes(image, origin.offset))
-        assert files > 0, (
+        volumes = list(origin.backend.volumes(image, origin.offset))
+        files = sum(len(volume.files) for volume in volumes)
+        if files:
+            return
+        # No files is allowed only when a backend says why -- a variant it
+        # recognises and deliberately does not extract. Unexplained emptiness
+        # is the ADR-0012 signature.
+        explained = [v for v in volumes if v.note]
+        assert volumes and explained, (
             f"{path.name}: {origin.backend.name} claimed offset {origin.offset} "
-            f"but every volume came back empty"
+            f"but returned {len(volumes)} volumes, no files and no explanation"
         )
 
 

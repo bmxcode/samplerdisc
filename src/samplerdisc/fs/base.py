@@ -34,6 +34,11 @@ class Volume:
     name: str
     start_block: int
     files: list[File] = field(default_factory=list)
+    #: Why this volume has no files, when that is expected rather than wrong.
+    #: A volume with no files and no note is the signature of a probe that
+    #: matched something it should not have (ADR-0012), so the two cases must
+    #: be distinguishable by something other than a human reading the names.
+    note: str = ""
 
     def samples(self) -> Iterator[File]:
         return (f for f in self.files if f.kind == "sample")
@@ -68,6 +73,16 @@ class Backend(Protocol):
 
         Optional; ``DEFAULT_ORIGINAL_SUFFIX`` is used when a backend has no
         opinion.
+        """
+        ...
+
+    def parse_sample(self, entry: File, payload: bytes):
+        """Turn one file's bytes into something with name/rate/frames/pcm.
+
+        Optional. A backend that does not implement it gets the AKAI sample
+        parser, which is what every disc used before a second sample format
+        existed. Keeping this on the backend rather than sniffing the payload
+        is what stops ``sample/`` growing a brand check (ADR-0003).
         """
         ...
 

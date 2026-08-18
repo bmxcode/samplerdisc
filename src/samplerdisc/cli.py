@@ -37,7 +37,8 @@ def cmd_list(args: argparse.Namespace) -> int:
         kinds: Counter[str] = Counter()
         for volume in origin.backend.volumes(image, origin.offset):
             volumes += 1
-            print(f"{volume.name}  (block {volume.start_block}, {len(volume.files)} files)")
+            note = f" -- {volume.note}" if volume.note else ""
+            print(f"{volume.name}  (block {volume.start_block}, {len(volume.files)} files){note}")
             for entry in volume.files:
                 kinds[entry.kind] += 1
                 if not args.volumes_only:
