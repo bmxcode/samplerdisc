@@ -1,0 +1,34 @@
+# Disc images and extracted audio are never committed. See ADR-0008.
+# These are commercial sample libraries; the repo is public and git history
+# is exposed retroactively. This list comes before anything else on purpose.
+*.mdx
+*.nrg
+*.iso
+*.img
+*.bin
+*.cue
+*.mds
+*.mdf
+*.cdr
+*.tao
+*.ccd
+*.wav
+*.aif
+*.aiff
+out/
+discs/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Editor / OS
+.DS_Store
+.idea/
+.claude/

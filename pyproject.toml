@@ -1,0 +1,47 @@
+[project]
+name = "samplerdisc"
+version = "0.1.0"
+description = "Convert vintage sampler CD-ROM images (AKAI and friends) to uncompressed WAV"
+readme = "README.md"
+license = "MIT"
+requires-python = ">=3.11"
+authors = [{ name = "Peter Tos" }]
+keywords = ["akai", "sampler", "s1000", "s3000", "cdrom", "wav", "mdx", "nrg", "preservation"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "Intended Audience :: End Users/Desktop",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Topic :: Multimedia :: Sound/Audio :: Conversion",
+  "Topic :: System :: Archiving",
+]
+dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/bmxcode/samplerdisc"
+Issues = "https://github.com/bmxcode/samplerdisc/issues"
+
+[project.scripts]
+samplerdisc = "samplerdisc.cli:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/samplerdisc"]
+
+[dependency-groups]
+dev = ["pytest>=8", "ruff>=0.6"]
+
+[tool.ruff]
+line-length = 100
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM", "RUF"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-q"
+markers = ["disc: requires real disc images via SAMPLERDISC_TEST_DISCS"]
