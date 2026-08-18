@@ -109,4 +109,14 @@ Stereo is stored as two mono files whose names end `-L` and `-R`. The sampler pa
 | Header length | 150 |
 | Original pitch | 60 (C3) |
 
-All three discs are 44 100 Hz throughout.
+**Sample rate is per sample, not per disc.** An early note here claimed all three references were 44 100 Hz throughout; extracting them proved otherwise. Never assume a disc-wide rate.
+
+| Disc | Samples | Rates |
+|---|---|---|
+| `black2black` | 77 | 44100 |
+| `loopsoup` | 233 (+1 unreadable) | 44100 |
+| `s3000-lib1` | 377 | 44100 ×229, 22050 ×132, 33075 ×9, 29400 ×5, 48000 ×2 |
+
+The odd values are real: `33075` is ¾ of 44 100 and `29400` is ⅔, which is how these samplers traded bandwidth for memory. They are not corruption and must not be rounded to something tidier — the WAV carries whatever the header says.
+
+`loopsoup`'s single unreadable entry is a directory record whose start block lands mid-sample rather than on a header. That is ordinary tail damage, and skipping it is the designed behaviour.
