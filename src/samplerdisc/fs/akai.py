@@ -190,10 +190,30 @@ class AkaiBackend:
                 continue
             letter = chr(type_byte & TYPE_MASK)
             kind = TYPE_KINDS.get(letter, f"type-{letter}")
-            yield File(name=name, kind=kind, size=size, start_block=file_start)
+            yield File(
+                name=name,
+                kind=kind,
+                size=size,
+                start_block=file_start,
+                raw_type=type_byte,
+            )
 
     def read_file(self, image: SectorImage, origin: int, entry: File) -> bytes:
         return image.read(origin + entry.start_block * BLOCK_SIZE, entry.size)
+
+    def original_suffix(self, entry: File) -> str:
+        """Name an original after the machine that wrote it.
+
+        The type byte's high bit distinguishes an S3000-family disc from an
+        S1000 one, so the generation is read off the disc rather than assumed:
+        ``.s3p``/``.s3s`` or ``.s1p``/``.s1s``. This is naming only -- the bytes
+        are whatever the sampler stored, unaltered.
+        """
+        letter = chr(entry.raw_type & TYPE_MASK)
+        if letter not in ("p", "s"):
+            letter = "x"
+        generation = "s3" if entry.raw_type & 0x80 else "s1"
+        return f".{generation}{letter}"
 
 
 register(AkaiBackend())

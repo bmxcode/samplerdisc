@@ -12,6 +12,7 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
+from samplerdisc.fs.base import original_suffix
 from samplerdisc.sample.akai import AkaiSample, NotASample, parse
 from samplerdisc.stereo import find_pairs, interleave
 from samplerdisc.wav import Loop, write_wav
@@ -26,6 +27,15 @@ _UNSAFE = re.compile(r"[^A-Za-z0-9 ._+#-]")
 
 #: Kinds that are already audio files and need copying, not decoding.
 _AUDIO_FILE_KINDS = frozenset({"wav", "aiff"})
+
+#: Kinds --keep-originals writes out verbatim. Programs are here because they
+#: carry the key ranges and envelopes, which the WAVs cannot: dropping them
+#: loses the only copy. Drum settings and effects are not, being unusable
+#: without the hardware.
+_KEEP_KINDS = frozenset({"sample", "program"})
+
+#: Originals live beside the WAVs, not among them.
+ORIGINALS_DIR = "original"
 
 
 def safe_name(name: str) -> str:
@@ -68,6 +78,16 @@ class Skipped:
 
 
 @dataclass
+class Kept:
+    """One file's bytes, exactly as the sampler stored them."""
+
+    volume: str
+    name: str
+    path: str
+    kind: str
+
+
+@dataclass
 class Joined:
     """A stereo file rebuilt from an -L/-R pair. The mono halves are kept."""
 
@@ -85,11 +105,31 @@ def extract_volume(
     volume: Volume,
     out_dir: str,
     join_stereo: bool = True,
-) -> Iterator[Extracted | Skipped | Joined]:
-    """Write every sample in one volume. Programs are listed elsewhere, not written."""
+    keep_originals: bool = False,
+) -> Iterator[Extracted | Skipped | Joined | Kept]:
+    """Write every sample in one volume as WAV.
+
+    With ``keep_originals`` the on-disc bytes of samples *and* programs are
+    written alongside, untouched.
+    """
     made = False
+    originals_made = False
     parsed: dict[str, AkaiSample] = {}
     for entry in volume.files:
+        if keep_originals and entry.kind in _KEEP_KINDS:
+            payload = backend.read_file(image, origin, entry)
+            if payload:
+                if not originals_made:
+                    os.makedirs(os.path.join(out_dir, ORIGINALS_DIR), exist_ok=True)
+                    originals_made = True
+                kept_path = unique_path(
+                    os.path.join(out_dir, ORIGINALS_DIR),
+                    safe_name(entry.name),
+                    original_suffix(backend, entry),
+                )
+                with open(kept_path, "wb") as out:
+                    out.write(payload)
+                yield Kept(volume=volume.name, name=entry.name, path=kept_path, kind=entry.kind)
         if entry.kind in _AUDIO_FILE_KINDS:
             # Already an audio file -- an ISO 9660 disc whose payload is plain
             # WAV or AIFF. Copy it out untouched; there is nothing to decode.
@@ -222,8 +262,11 @@ def extract_disc(
     origin: int,
     out_root: str,
     join_stereo: bool = True,
-) -> Iterator[Extracted | Skipped | Joined]:
+    keep_originals: bool = False,
+) -> Iterator[Extracted | Skipped | Joined | Kept]:
     """Write every sample on the disc, one directory per volume."""
     for volume in backend.volumes(image, origin):
         out_dir = os.path.join(out_root, safe_name(volume.name))
-        yield from extract_volume(image, backend, origin, volume, out_dir, join_stereo)
+        yield from extract_volume(
+            image, backend, origin, volume, out_dir, join_stereo, keep_originals
+        )

@@ -80,7 +80,9 @@ At the volume's start block, entries of 24 bytes:
 
 Only `p` and `s` are confirmed from payload contents; `d` and `x` are inferred from consistent filenames and sizes across discs. Types beyond these are reported as `type-<letter>` rather than guessed at.
 
-Programs hold key ranges and envelopes, not audio. They are listed and skipped.
+Programs hold key ranges and envelopes, not audio. They are listed and skipped by the WAV path, but `--keep-originals` writes them out verbatim, since a WAV cannot carry what they hold and the disc is the only copy.
+
+The generation is readable from the same byte: the high bit is set on S3000-family discs and clear on S1000 ones, which is what names a kept original `.s3p`/`.s3s` rather than `.s1p`/`.s1s`. `s3000-lib1` sets it; `black2black` and `loopsoup` do not.
 
 ## Sample file — 150-byte header, then PCM
 

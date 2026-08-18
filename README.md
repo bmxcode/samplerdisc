@@ -25,6 +25,8 @@ Extraction writes one WAV per sample, grouped by volume. Where a disc stores ste
 
 The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM and so does WAV, so there is no resampling, no bit-depth change and no dithering anywhere in the process. Loop points, root key and tuning from the disc are written into the WAV's standard `smpl` chunk, so a DAW that understands them picks them up and one that doesn't sees an ordinary WAV.
 
+`--keep-originals` additionally writes each sample and program out byte-for-byte as the sampler stored it, into an `original/` folder beside the WAVs. Two reasons to want it: programs hold the key ranges and envelopes, which a WAV cannot carry and which are otherwise left on the disc; and the files are named by the generation that wrote them — `.s3p`/`.s3s` for an S3000 disc, `.s1p`/`.s1s` for an S1000 — which is the shape [ConvertWithMoss](https://github.com/git-moss/ConvertWithMoss) wants for turning programs into a playable instrument.
+
 `batch` walks a directory of images and writes a JSON manifest of the run — what each disc contained, which samples were skipped and why. A disc that fails never stops the run, because a real collection has duds in it.
 
 `export-iso` unwraps any supported container into a flat ISO without touching the filesystem inside. That is the escape hatch for a disc whose filesystem `samplerdisc` cannot yet read: the ISO can be handed to [akaiutil](https://sourceforge.net/projects/akaiutil/) or any other tool.
