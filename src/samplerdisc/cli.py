@@ -135,7 +135,7 @@ def cmd_info(args: argparse.Namespace) -> int:
         if blocks is not None:
             # A wrong payload offset inverts these. See docs/formats/mdx.md.
             print(
-                f"mdx blocks  {len(blocks)} "
+                f"mdx blocks  {len(blocks)} x {image.block_size} "
                 f"({image.compressed_blocks} compressed, {image.stored_blocks} stored)"
             )
             if image.trimmed:
