@@ -31,9 +31,19 @@ Extraction writes one WAV per sample, grouped by volume. Where a disc stores ste
 
 Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md).
 
-## Prior art
+## A note on ISOs
 
-[akaiutil](https://sourceforge.net/projects/akaiutil/) by Klaus Michael Indlekofer is the serious open-source reader for AKAI sampler filesystems, and covers far more variants than this project does today — including the S900 and floppy formats. [vintage-samplerCD-extractor](https://github.com/umikado/vintage-samplerCD-extractor) wraps it for macOS and Linux. `samplerdisc` exists because neither reads compressed `.mdx` or `.nrg`, and because a stdlib-only Python tool is easier to install and to extend to other manufacturers. akaiutil remains the correctness oracle this project tests itself against.
+Converting a `.bin` to a `.iso` does **not** make an AKAI disc mountable. These discs are not ISO 9660 — there is no volume descriptor and your OS will still refuse them. What the conversion does is hand the sectors to a tool that understands the AKAI filesystem. That is what `export-iso` is for, and it works on `.mdx` and `.nrg` too, which `bin2iso` cannot open at all.
+
+Some sample-CD collections mix genuine AKAI discs with libraries that were converted to Kontakt and burned back to `.bin`. Those second ones *are* ISO 9660 and do mount normally. `samplerdisc info` tells you which kind you have.
+
+## Prior art, and what to use instead
+
+**[ConvertWithMoss](https://github.com/git-moss/ConvertWithMoss)** (Jürgen Moßgraber, Java, LGPL-3.0) reads Akai S1000/S3000 ISO images, `.S3P` programs, MPC keygroups, NKI, SFZ and SoundFont 2, and converts them to SFZ, DecentSampler, Bitwig, MPC/Force, EXS and more. If you want a disc turned into a playable instrument for a modern sampler, it is excellent and its destination list is far beyond this project's. It does not open containers — so run `samplerdisc export-iso` first and point it at the result.
+
+**[akaiutil](https://sourceforge.net/projects/akaiutil/)** (Klaus Michael Indlekofer) is the long-standing open-source reader for AKAI sampler filesystems, covering variants this project does not — S900, floppy geometries, the DD partition. [vintage-samplerCD-extractor](https://github.com/umikado/vintage-samplerCD-extractor) wraps it for macOS and Linux. akaiutil is the correctness oracle this project tests itself against.
+
+`samplerdisc` exists for the layer underneath both: compressed `.mdx`, `.nrg` and raw `.bin` are containers neither tool opens, and that is where people get stuck.
 
 Unrelated despite the name: `mdxtools` handles X68000 MDX *chiptune music* files, not disc images.
 

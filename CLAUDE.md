@@ -30,6 +30,10 @@ A disc image is three independent problems stacked, and keeping them independent
 
 **Write each markdown paragraph as a single line.** No hard wrapping at a column. Hard-wrapped prose makes a one-word edit reflow the paragraph, so the diff hides the actual change inside a block of noise.
 
+## Where this sits
+
+[ConvertWithMoss](https://github.com/git-moss/ConvertWithMoss) reads AKAI S1000/S3000 ISOs and converts programs to SFZ, DecentSampler, MPC and more, and it is better at that than we will be. We build it anyway ([ADR-0010](docs/adr/0010-build-the-instrument-layer-ourselves.md)) — but the layer that is genuinely ours is the container: compressed `.mdx`, `.nrg` and raw `.bin` are what neither it nor akaiutil opens. Don't chase ConvertWithMoss's destination-format list; that race is unwinnable and is not the job.
+
 ## Working
 
 One deliverable per branch (`d1-containers`, `d2-akai-fs`), one GitHub issue per deliverable — the issue is the spec. PR body says `Closes #<issue>`. Don't push to `main`.
