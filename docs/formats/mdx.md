@@ -49,7 +49,11 @@ Walking `s3000-lib1` from `0x40`:
 | Decoded output | 541 508 537 bytes |
 | First 8 bytes of output | `00 14 00 00 05 0d 0a 1a` |
 
-That the walk lands *exactly* on the descriptor offset is the strongest available check that the chain was followed correctly, and it is worth asserting on any new image.
+The walk landing *exactly* on the descriptor offset was the decisive evidence while working the format out — a strict walker with no stored-block fallback either errored or terminated on the byte, so hitting `264087807` proved the chain had been followed correctly.
+
+**It is not a runtime check.** Once a decoder has the stored-block fallback, exact termination is a loop invariant: a stored block consumes `min(32768, remaining)`, so the last one always absorbs precisely what is left, whatever went wrong earlier. A decoder that asserts on it is asserting on arithmetic it just performed.
+
+What does show a misparse is the **ratio of stored to compressed blocks**. A wrong payload offset makes nearly every block fail to inflate, so the counts inverted from the 4-in-16 526 below are the signal to watch. `samplerdisc info` prints both.
 
 Output is **2048-byte cooked sectors** — no sync pattern, no header, no ECC. Scanning the decoded stream for the CD sync pattern `00 FF×10 00` finds nothing.
 
