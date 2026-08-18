@@ -29,8 +29,19 @@ OFF_RATE = 138
 
 #: Loop and tuning fields, used to populate the WAV smpl chunk (ADR-0011).
 OFF_LOOPS = 16
-OFF_TUNE_CENTS = 20
-OFF_TUNE_SEMI = 21
+OFF_TUNE_CENTS = 21
+OFF_TUNE_SEMI = 22
+
+#: Eight 12-byte loop records follow the play markers. Each holds the loop
+#: *end* in words, then the loop length as 16.16 fixed point (fraction first),
+#: then a dwell time. Loop start is end - length; there is no start field.
+OFF_LOOP_RECORDS = 38
+LOOP_RECORD_LEN = 12
+MAX_LOOP_RECORDS = 8
+
+#: Dwell 9999 means "hold" -- loop for as long as the note sounds. Anything
+#: else is a timed dwell the WAV smpl chunk cannot express.
+DWELL_HOLD = 9999
 
 #: Rates observed across the reference discs run 22050 to 48000, including the
 #: fractional 33075 (3/4) and 29400 (2/3) these samplers used to trade
@@ -44,6 +55,15 @@ class NotASample(ValueError):
 
 
 @dataclass(frozen=True)
+class SampleLoop:
+    """One loop, in frames. ``end`` is exclusive here; the WAV writer makes it
+    inclusive as the RIFF spec requires."""
+
+    start: int
+    end: int
+
+
+@dataclass(frozen=True)
 class AkaiSample:
     name: str
     rate: int
@@ -51,6 +71,8 @@ class AkaiSample:
     frames: int
     header_len: int
     pcm: bytes
+    loops: tuple[SampleLoop, ...] = ()
+    cents: float = 0.0
 
     @property
     def duration(self) -> float:
@@ -95,4 +117,43 @@ def parse(payload: bytes, fallback_name: str = "") -> AkaiSample:
         frames=frames,
         header_len=header_len,
         pcm=pcm,
+        loops=_loops(payload, frames),
+        cents=_cents(payload),
     )
+
+
+def _cents(payload: bytes) -> float:
+    """Pitch offset in cents, signed."""
+    raw = payload[OFF_TUNE_CENTS]
+    return float(raw - 256 if raw > 127 else raw)
+
+
+def _loops(payload: bytes, frames: int) -> tuple[SampleLoop, ...]:
+    """Read the active loop records.
+
+    Points are clamped to the audio actually present: a declared loop end can
+    sit a few words past a payload that is marginally shorter than its header
+    claims, which is common enough on these rips to be normal rather than an
+    error.
+    """
+    count = min(payload[OFF_LOOPS], MAX_LOOP_RECORDS)
+    found: list[SampleLoop] = []
+    for index in range(count):
+        base = OFF_LOOP_RECORDS + index * LOOP_RECORD_LEN
+        if base + LOOP_RECORD_LEN > len(payload):
+            break
+        (end,) = struct.unpack_from("<I", payload, base)
+        # 16.16 fixed point: the fraction comes first and is below WAV's
+        # resolution, so only the whole part is used.
+        (length,) = struct.unpack_from("<H", payload, base + 6)
+        (dwell,) = struct.unpack_from("<H", payload, base + 10)
+        if length == 0 or dwell != DWELL_HOLD:
+            continue
+        # Derive the start from the *declared* end, then clamp. Clamping first
+        # would drag the start earlier by however far the end overshot, which
+        # silently retunes the loop instead of shortening it.
+        start = end - length
+        end = min(end, frames)
+        if 0 <= start < end:
+            found.append(SampleLoop(start=start, end=end))
+    return tuple(found)

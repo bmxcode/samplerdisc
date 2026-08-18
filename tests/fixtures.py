@@ -168,9 +168,22 @@ def akai_partition(volumes, blocks_total: int = 512) -> bytes:
     return bytes(image)
 
 
-def akai_sample(name: str, rate: int = 44100, words: int = 64, pitch: int = 60) -> bytes:
-    """A 150-byte S1000 sample header followed by signed 16-bit LE PCM."""
+def akai_sample(
+    name: str,
+    rate: int = 44100,
+    words: int = 64,
+    pitch: int = 60,
+    loop: tuple[int, int] | None = None,
+    dwell: int = 9999,
+    cents: int = 0,
+) -> bytes:
+    """A 150-byte S1000 sample header followed by signed 16-bit LE PCM.
+
+    ``loop`` is (start, end) in frames; the header stores the end and the
+    length, not the start.
+    """
     from samplerdisc.fs.akai import NAME_LEN, SAMPLE_HEADER_LEN, SAMPLE_VALID
+    from samplerdisc.sample.akai import OFF_LOOP_RECORDS, OFF_LOOPS, OFF_TUNE_CENTS
 
     header = bytearray(SAMPLE_HEADER_LEN)
     header[0] = 3
@@ -180,6 +193,14 @@ def akai_sample(name: str, rate: int = 44100, words: int = 64, pitch: int = 60) 
     header[15] = SAMPLE_VALID
     struct.pack_into("<I", header, 26, words)
     struct.pack_into("<H", header, 138, rate)
+    header[OFF_TUNE_CENTS] = cents & 0xFF
+    if loop is not None:
+        start, end = loop
+        header[OFF_LOOPS] = 1
+        struct.pack_into("<I", header, OFF_LOOP_RECORDS, end)
+        struct.pack_into("<H", header, OFF_LOOP_RECORDS + 4, 0)  # fraction
+        struct.pack_into("<H", header, OFF_LOOP_RECORDS + 6, end - start)
+        struct.pack_into("<H", header, OFF_LOOP_RECORDS + 10, dwell)
     pcm = b"".join(struct.pack("<h", (i * 137) % 20000 - 10000) for i in range(words))
     return bytes(header) + pcm
 
