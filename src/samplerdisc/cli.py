@@ -3,10 +3,12 @@
 from __future__ import annotations
 
 import argparse
+import os
 import sys
 
 import samplerdisc.fs  # noqa: F401  (importing registers the backends)
 from samplerdisc import __version__
+from samplerdisc.batch import convert_tree, find_images, write_manifest
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.export import export_iso
 from samplerdisc.extract import Extracted, Joined, extract_disc
@@ -80,6 +82,31 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_batch(args: argparse.Namespace) -> int:
+    images = find_images(args.directory)
+    if not images:
+        print(f"no disc images found under {args.directory}", file=sys.stderr)
+        return 1
+    print(f"found {len(images)} images")
+    reports = []
+    for report in convert_tree(args.directory, args.out, join_stereo=not args.no_stereo):
+        reports.append(report)
+        label = os.path.basename(report.source)
+        if report.error:
+            print(f"  FAILED  {label}: {report.error}")
+        else:
+            extra = f", {report.stereo_pairs} stereo" if report.stereo_pairs else ""
+            print(f"  ok      {label}  [{report.container}] {report.samples} samples{extra}")
+
+    converted = sum(1 for r in reports if r.ok)
+    samples = sum(r.samples for r in reports)
+    print(f"\nconverted {converted}/{len(reports)} discs, {samples} samples")
+    if args.manifest:
+        write_manifest(args.manifest, reports)
+        print(f"manifest written to {args.manifest}")
+    return 0 if converted else 1
+
+
 def cmd_info(args: argparse.Namespace) -> int:
     with open_image(args.image) as image:
         origin = find_origin(image)
@@ -144,6 +171,13 @@ def build_parser() -> argparse.ArgumentParser:
         "--no-stereo", action="store_true", help="do not rejoin -L/-R pairs into stereo"
     )
     extract.set_defaults(func=cmd_extract)
+
+    batch = sub.add_parser("batch", help="convert every disc image under a directory")
+    batch.add_argument("directory")
+    batch.add_argument("out")
+    batch.add_argument("--manifest", help="write a JSON report of the run")
+    batch.add_argument("--no-stereo", action="store_true", help="do not rejoin -L/-R pairs")
+    batch.set_defaults(func=cmd_batch)
 
     export = sub.add_parser("export-iso", help="unwrap the container to a flat ISO")
     export.add_argument("image")
