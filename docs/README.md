@@ -37,15 +37,22 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 
 ## The deliverables
 
-| # | What it is | Issue |
+| # | What it is | Status |
 |---|---|---|
-| D0 | Repo, toolchain, CI, documentation system | — |
-| D1 | Container layer + `export-iso` | #1 |
-| D2 | AKAI filesystem backend + `list` | #2 |
-| D3 | AKAI sample → WAV + `extract` | #3 |
-| D4 | Stereo joiner | #4 |
-| D5 | `batch` + JSON manifest | #5 |
-| D6 | ISO 9660 backend | #6 |
-| D7 | Loop points, root key and tuning in the WAV `smpl` chunk ([ADR-0011](adr/0011-the-deliverable-is-daw-ready-wav.md)) | #7 |
+| D0 | Repo, toolchain, CI, documentation system | done |
+| D1 | Container layer + `export-iso` | done |
+| D2 | AKAI filesystem backend + `list` | done |
+| D3 | AKAI sample → WAV + `extract` | done |
+| D4 | Stereo joiner | done |
+| D5 | `batch` + JSON manifest | done |
+| D6 | ISO 9660 backend | done |
+| D7 | Loop points, root key and tuning in the WAV `smpl` chunk ([ADR-0011](adr/0011-the-deliverable-is-daw-ready-wav.md)) | done |
 
-D1 is the go/no-go: it is the novel work, and every later deliverable assumes a flat sector stream.
+Against the three reference discs: 687 samples, 95 stereo pairs, 380 loops, one skipped entry.
+
+## What is not done
+
+- **E-mu, Roland, Ensoniq and Kurzweil backends.** The archives are full of these discs and the containers already open them; each needs a module in `fs/` and nothing else ([ADR-0003](adr/0003-brand-neutral-pluggable-backends.md)).
+- **`.mds`/`.mdf` is unverified.** No reference pair was available, so geometry is sniffed from the `.mdf` rather than read from the descriptor. See [formats/mdx.md](formats/mdx.md) for the merged form, which *is* verified.
+- **CUES chunks in NRG.** Only `CUEX` is parsed; `CUES` encodes position as MSF and no disc using it was available to check the layout against.
+- **AIFF payloads on ISO 9660 discs are copied, not converted.** They come out as `.aiff`.
