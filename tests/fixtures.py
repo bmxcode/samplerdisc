@@ -111,3 +111,74 @@ def cooked_sectors(count: int, fill: int = 0xA5) -> bytes:
             sector[i] = (fill + index + i) & 0xFF
         out += sector
     return bytes(out)
+
+
+def akai_name(text: str) -> bytes:
+    """Encode a name in the AKAI charset, padded to 12 with the space index."""
+    from samplerdisc.fs.akai import CHARSET, NAME_LEN
+
+    text = text.upper()[:NAME_LEN].ljust(NAME_LEN)
+    return bytes(CHARSET.index(c) if c in CHARSET else CHARSET.index(" ") for c in text)
+
+
+def akai_partition(volumes, blocks_total: int = 512) -> bytes:
+    """Build an AKAI partition image.
+
+    ``volumes`` is a list of ``(name, [(file_name, type_byte, size, payload)])``.
+    Returns a byte image whose block 0 is the partition header.
+    """
+    from samplerdisc.fs.akai import (
+        BLOCK_SIZE,
+        FILE_ENTRY_LEN,
+        NAME_LEN,
+        VOLUME_DIR_OFFSET,
+        VOLUME_ENTRY_LEN,
+    )
+
+    image = bytearray(blocks_total * BLOCK_SIZE)
+    next_block = 1
+    header = bytearray(BLOCK_SIZE)
+
+    for index, (volume_name, files) in enumerate(volumes):
+        volume_block = next_block
+        next_block += 1
+        entry = bytearray(VOLUME_ENTRY_LEN)
+        entry[:NAME_LEN] = akai_name(volume_name)
+        struct.pack_into("<HH", entry, NAME_LEN, 1, volume_block)
+        base = VOLUME_DIR_OFFSET + index * VOLUME_ENTRY_LEN
+        header[base : base + VOLUME_ENTRY_LEN] = entry
+
+        directory = bytearray(BLOCK_SIZE)
+        for slot, (file_name, type_byte, size, payload) in enumerate(files):
+            file_block = next_block
+            next_block += (len(payload) + BLOCK_SIZE - 1) // BLOCK_SIZE or 1
+            image[file_block * BLOCK_SIZE : file_block * BLOCK_SIZE + len(payload)] = payload
+            record = bytearray(FILE_ENTRY_LEN)
+            record[:NAME_LEN] = akai_name(file_name)
+            record[NAME_LEN : NAME_LEN + 4] = b"\x20\x20\x20\x20"
+            record[16] = type_byte
+            record[17] = size & 0xFF
+            record[18] = (size >> 8) & 0xFF
+            record[19] = (size >> 16) & 0xFF
+            struct.pack_into("<H", record, 20, file_block)
+            directory[slot * FILE_ENTRY_LEN : (slot + 1) * FILE_ENTRY_LEN] = record
+        image[volume_block * BLOCK_SIZE : (volume_block + 1) * BLOCK_SIZE] = directory
+
+    image[0:BLOCK_SIZE] = header
+    return bytes(image)
+
+
+def akai_sample(name: str, rate: int = 44100, words: int = 64, pitch: int = 60) -> bytes:
+    """A 150-byte S1000 sample header followed by signed 16-bit LE PCM."""
+    from samplerdisc.fs.akai import NAME_LEN, SAMPLE_HEADER_LEN, SAMPLE_VALID
+
+    header = bytearray(SAMPLE_HEADER_LEN)
+    header[0] = 3
+    header[1] = 1
+    header[2] = pitch
+    header[3 : 3 + NAME_LEN] = akai_name(name)
+    header[15] = SAMPLE_VALID
+    struct.pack_into("<I", header, 26, words)
+    struct.pack_into("<H", header, 138, rate)
+    pcm = b"".join(struct.pack("<h", (i * 137) % 20000 - 10000) for i in range(words))
+    return bytes(header) + pcm
