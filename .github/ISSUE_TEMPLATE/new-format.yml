@@ -1,0 +1,33 @@
+name: Support a new format
+description: A container, filesystem, or sample format the tool doesn't handle yet
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        A new manufacturer is usually one new module in `fs/` and/or `sample/`, and nothing else — that separation is deliberate. Tell us which layer this is.
+  - type: dropdown
+    id: layer
+    attributes:
+      label: Which layer
+      options:
+        - Container (a new image wrapper, e.g. sector geometry / compression)
+        - Filesystem (how a sampler laid files onto the disc)
+        - Sample format (the bytes inside one file)
+        - Not sure
+    validations:
+      required: true
+  - type: input
+    id: hardware
+    attributes:
+      label: Sampler / hardware
+      description: e.g. E-mu ESI-32, Roland S-760, Ensoniq ASR-10
+    validations:
+      required: false
+  - type: textarea
+    id: what-we-know
+    attributes:
+      label: What's known about the format
+      description: Magic numbers, sector sizes, existing documentation or tools, sample images available. The more concrete the bytes, the better.
+    validations:
+      required: false
