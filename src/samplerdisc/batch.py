@@ -12,6 +12,8 @@ import os
 from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from samplerdisc.audiocd import detect as detect_audio_cd
+from samplerdisc.audiocd import extract_tracks
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.extract import Extracted, Joined, Kept, Skipped, extract_disc, safe_name
 from samplerdisc.fs.probe import find_origin
@@ -36,12 +38,13 @@ class DiscReport:
     samples: int = 0
     stereo_pairs: int = 0
     originals: int = 0
+    audio_tracks: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
     error: str | None = None
 
     @property
     def ok(self) -> bool:
-        return self.error is None and self.samples > 0
+        return self.error is None and (self.samples > 0 or self.audio_tracks > 0)
 
 
 def find_images(root: str) -> list[str]:
@@ -65,6 +68,16 @@ def convert_disc(
     """Convert one image. Never raises: a failure becomes a report."""
     report = DiscReport(source=path)
     try:
+        # An audio CD has no filesystem to find -- the sectors are the audio.
+        sheet = detect_audio_cd(path)
+        if sheet is not None:
+            report.container = "audio-cd"
+            report.filesystem = "none (Red Book audio)"
+            out_dir = os.path.join(out_root, safe_name(os.path.splitext(os.path.basename(path))[0]))
+            for _track in extract_tracks(path, sheet, out_dir):
+                report.audio_tracks += 1
+            return report
+
         report.container = sniff(path)
         with open_image(path) as image:
             origin = find_origin(image)
@@ -115,6 +128,7 @@ def write_manifest(path: str, reports: list[DiscReport]) -> None:
             "failed": sum(1 for r in reports if not r.ok),
             "samples": sum(r.samples for r in reports),
             "stereo_pairs": sum(r.stereo_pairs for r in reports),
+            "audio_tracks": sum(r.audio_tracks for r in reports),
             "originals": sum(r.originals for r in reports),
             "skipped": sum(len(r.skipped) for r in reports),
         },
