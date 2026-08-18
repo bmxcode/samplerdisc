@@ -24,6 +24,9 @@ class File:
     kind: str  # "sample", "program", or a backend-specific label
     size: int
     start_block: int
+    #: The filesystem's own type byte, kept so a backend can name the original
+    #: faithfully. 0 where the filesystem has no such concept.
+    raw_type: int = 0
 
 
 @dataclass
@@ -59,6 +62,23 @@ class Backend(Protocol):
     def read_file(self, image: SectorImage, offset: int, entry: File) -> bytes:
         """Return the raw bytes of one file."""
         ...
+
+    def original_suffix(self, entry: File) -> str:
+        """Filename suffix for this file's bytes as stored on disc.
+
+        Optional; ``DEFAULT_ORIGINAL_SUFFIX`` is used when a backend has no
+        opinion.
+        """
+        ...
+
+
+#: Used when a backend does not implement ``original_suffix``.
+DEFAULT_ORIGINAL_SUFFIX = ".bin"
+
+
+def original_suffix(backend: Backend, entry: File) -> str:
+    hook = getattr(backend, "original_suffix", None)
+    return hook(entry) if hook is not None else DEFAULT_ORIGINAL_SUFFIX
 
 
 _REGISTRY: list[Backend] = []

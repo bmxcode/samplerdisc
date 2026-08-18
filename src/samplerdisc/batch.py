@@ -13,7 +13,7 @@ from dataclasses import asdict, dataclass, field
 from typing import TYPE_CHECKING, Any
 
 from samplerdisc.container.detect import open_image, sniff
-from samplerdisc.extract import Extracted, Joined, Skipped, extract_disc, safe_name
+from samplerdisc.extract import Extracted, Joined, Kept, Skipped, extract_disc, safe_name
 from samplerdisc.fs.probe import find_origin
 
 if TYPE_CHECKING:
@@ -35,6 +35,7 @@ class DiscReport:
     volumes: list[dict[str, Any]] = field(default_factory=list)
     samples: int = 0
     stereo_pairs: int = 0
+    originals: int = 0
     skipped: list[dict[str, str]] = field(default_factory=list)
     error: str | None = None
 
@@ -58,7 +59,9 @@ def find_images(root: str) -> list[str]:
     return sorted(found)
 
 
-def convert_disc(path: str, out_root: str, join_stereo: bool = True) -> DiscReport:
+def convert_disc(
+    path: str, out_root: str, join_stereo: bool = True, keep_originals: bool = False
+) -> DiscReport:
     """Convert one image. Never raises: a failure becomes a report."""
     report = DiscReport(source=path)
     try:
@@ -73,13 +76,18 @@ def convert_disc(path: str, out_root: str, join_stereo: bool = True) -> DiscRepo
 
             out_dir = os.path.join(out_root, safe_name(os.path.splitext(os.path.basename(path))[0]))
             volumes: dict[str, dict[str, Any]] = {}
-            for result in extract_disc(image, origin.backend, origin.offset, out_dir, join_stereo):
+            results = extract_disc(
+                image, origin.backend, origin.offset, out_dir, join_stereo, keep_originals
+            )
+            for result in results:
                 if isinstance(result, Extracted):
                     report.samples += 1
                     entry = volumes.setdefault(result.volume, {"name": result.volume, "samples": 0})
                     entry["samples"] += 1
                 elif isinstance(result, Joined):
                     report.stereo_pairs += 1
+                elif isinstance(result, Kept):
+                    report.originals += 1
                 elif isinstance(result, Skipped):
                     report.skipped.append(
                         {"volume": result.volume, "name": result.name, "reason": result.reason}
@@ -91,9 +99,11 @@ def convert_disc(path: str, out_root: str, join_stereo: bool = True) -> DiscRepo
     return report
 
 
-def convert_tree(root: str, out_root: str, join_stereo: bool = True) -> Iterator[DiscReport]:
+def convert_tree(
+    root: str, out_root: str, join_stereo: bool = True, keep_originals: bool = False
+) -> Iterator[DiscReport]:
     for path in find_images(root):
-        yield convert_disc(path, out_root, join_stereo)
+        yield convert_disc(path, out_root, join_stereo, keep_originals)
 
 
 def write_manifest(path: str, reports: list[DiscReport]) -> None:
@@ -105,6 +115,7 @@ def write_manifest(path: str, reports: list[DiscReport]) -> None:
             "failed": sum(1 for r in reports if not r.ok),
             "samples": sum(r.samples for r in reports),
             "stereo_pairs": sum(r.stereo_pairs for r in reports),
+            "originals": sum(r.originals for r in reports),
             "skipped": sum(len(r.skipped) for r in reports),
         },
     }

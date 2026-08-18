@@ -90,8 +90,16 @@ def test_manifest_records_totals_and_failures(tmp_path):
         "failed": 1,
         "samples": 2,
         "stereo_pairs": 0,
+        "originals": 0,
         "skipped": 0,
     }
     failed = [d for d in payload["discs"] if d["error"]]
     assert len(failed) == 1
     assert "no recognised filesystem" in failed[0]["error"]
+
+
+def test_batch_can_keep_originals(tmp_path):
+    (tmp_path / "d.iso").write_bytes(sample_disc_bytes())
+    reports = list(convert_tree(str(tmp_path), str(tmp_path / "out"), keep_originals=True))
+    assert reports[0].originals == 2
+    assert (tmp_path / "out" / "d" / "VOL 1" / "original" / "KICK 1.s1s").exists()

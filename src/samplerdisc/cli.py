@@ -12,7 +12,7 @@ from samplerdisc import __version__
 from samplerdisc.batch import convert_tree, find_images, write_manifest
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.export import export_iso
-from samplerdisc.extract import Extracted, Joined, extract_disc
+from samplerdisc.extract import Extracted, Joined, Kept, extract_disc
 from samplerdisc.fs import base as _fs_registry  # noqa: F401  (registers backends)
 from samplerdisc.fs.probe import find_origin
 
@@ -55,9 +55,15 @@ def cmd_extract(args: argparse.Namespace) -> int:
             return 1
         written = 0
         joined = 0
+        kept = 0
         skipped = 0
         results = extract_disc(
-            image, origin.backend, origin.offset, args.out, join_stereo=not args.no_stereo
+            image,
+            origin.backend,
+            origin.offset,
+            args.out,
+            join_stereo=not args.no_stereo,
+            keep_originals=args.keep_originals,
         )
         for result in results:
             if isinstance(result, Extracted):
@@ -69,12 +75,18 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 joined += 1
                 if args.verbose:
                     print(f"  {result.volume}/stereo/{result.name}  joined")
+            elif isinstance(result, Kept):
+                kept += 1
+                if args.verbose:
+                    print(f"  {result.volume}/original/{result.name}  kept ({result.kind})")
             else:
                 skipped += 1
                 print(f"  skipped {result.volume}/{result.name}: {result.reason}", file=sys.stderr)
     print(f"wrote {written} WAV files to {args.out}")
     if joined:
         print(f"joined {joined} stereo pairs (mono originals kept)")
+    if kept:
+        print(f"kept {kept} original AKAI files")
     if skipped:
         # A disc that yields most of its samples is a good outcome; say so
         # plainly rather than burying it.
@@ -89,13 +101,19 @@ def cmd_batch(args: argparse.Namespace) -> int:
         return 1
     print(f"found {len(images)} images")
     reports = []
-    for report in convert_tree(args.directory, args.out, join_stereo=not args.no_stereo):
+    for report in convert_tree(
+        args.directory,
+        args.out,
+        join_stereo=not args.no_stereo,
+        keep_originals=args.keep_originals,
+    ):
         reports.append(report)
         label = os.path.basename(report.source)
         if report.error:
             print(f"  FAILED  {label}: {report.error}")
         else:
             extra = f", {report.stereo_pairs} stereo" if report.stereo_pairs else ""
+            extra += f", {report.originals} originals" if report.originals else ""
             print(f"  ok      {label}  [{report.container}] {report.samples} samples{extra}")
 
     converted = sum(1 for r in reports if r.ok)
@@ -170,6 +188,11 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument(
         "--no-stereo", action="store_true", help="do not rejoin -L/-R pairs into stereo"
     )
+    extract.add_argument(
+        "--keep-originals",
+        action="store_true",
+        help="also write the raw AKAI sample and program files, exactly as stored",
+    )
     extract.set_defaults(func=cmd_extract)
 
     batch = sub.add_parser("batch", help="convert every disc image under a directory")
@@ -177,6 +200,11 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("out")
     batch.add_argument("--manifest", help="write a JSON report of the run")
     batch.add_argument("--no-stereo", action="store_true", help="do not rejoin -L/-R pairs")
+    batch.add_argument(
+        "--keep-originals",
+        action="store_true",
+        help="also write the raw AKAI sample and program files, exactly as stored",
+    )
     batch.set_defaults(func=cmd_batch)
 
     export = sub.add_parser("export-iso", help="unwrap the container to a flat ISO")
