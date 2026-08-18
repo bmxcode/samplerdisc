@@ -1,0 +1,69 @@
+"""The filesystem backend contract, and the registry the origin probe asks.
+
+One module per sampler filesystem, all implementing ``Backend``. Adding a
+manufacturer is a module plus a ``register()`` call and nothing else -- see
+ADR-0003.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING, Protocol, runtime_checkable
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator
+
+    from samplerdisc.container.base import SectorImage
+
+
+@dataclass(frozen=True)
+class File:
+    """One file inside a volume."""
+
+    name: str
+    kind: str  # "sample", "program", or a backend-specific label
+    size: int
+    start_block: int
+
+
+@dataclass
+class Volume:
+    name: str
+    start_block: int
+    files: list[File] = field(default_factory=list)
+
+    def samples(self) -> Iterator[File]:
+        return (f for f in self.files if f.kind == "sample")
+
+
+@runtime_checkable
+class Backend(Protocol):
+    """A sampler filesystem reader."""
+
+    name: str
+
+    def probe(self, image: SectorImage, offset: int) -> bool:
+        """Cheap, specific check for this filesystem at ``offset``.
+
+        Runs at every candidate offset during origin detection, so it must be
+        cheap -- and specific enough not to match a run of zeros or of audio. A
+        loose probe resolves an origin confidently and wrongly, which is the
+        silent failure ADR-0005 exists to prevent.
+        """
+        ...
+
+    def volumes(self, image: SectorImage, offset: int) -> Iterable[Volume]:
+        """Walk the filesystem rooted at ``offset``."""
+        ...
+
+
+_REGISTRY: list[Backend] = []
+
+
+def register(backend: Backend) -> Backend:
+    _REGISTRY.append(backend)
+    return backend
+
+
+def backends() -> list[Backend]:
+    return list(_REGISTRY)

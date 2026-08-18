@@ -8,7 +8,7 @@ A compressed `.mdx` payload is a chain of blocks, each expanding to exactly 3276
 
 Nothing in the file says which is which. There is no index, no length prefix, no per-block header. The 640-byte trailing descriptor is far too small to hold ~16 500 entries and does not decode at any alignment tried.
 
-The chain was established empirically: blocks sit exactly back to back, and walking `s3000-lib1` from `0x40` terminates precisely on the descriptor offset — 264 087 807, to the byte.
+The chain was established empirically: blocks sit exactly back to back, and a strict walker — one with no stored-block fallback, which therefore either errored or terminated on the byte — walked `s3000-lib1` from `0x40` and stopped precisely on the descriptor offset, 264 087 807.
 
 ## Decision
 
@@ -22,8 +22,12 @@ Classify by attempting the decode. Accept a block as compressed only when the de
 
 ## Consequences
 
-**Good.** No dependency on an index that may not exist. The exact-termination check on the descriptor offset gives a strong end-to-end verification that the whole chain was walked correctly, and it is cheap to assert for any new image.
+**Good.** No dependency on an index that may not exist. Decoding is a single forward pass, and the index it builds is small enough to keep while the decoded image is not.
+
+**Note what this costs.** Adding the stored fallback destroyed the verification that established the format in the first place. Exact termination became a loop invariant — a stored block absorbs whatever remains, so the walk always lands on the descriptor offset no matter what went wrong earlier. The fallback that makes the decoder work is the same change that makes it unable to tell you it is working.
 
 **Bad.** Decoding is attempt-then-maybe-discard, so a stored block costs a failed inflate. Irrelevant at 4 blocks in 16 526.
 
-**Watch for.** Anyone simplifying the three-part acceptance test. Each part is load-bearing, and dropping the consumed-length check is undetectable until a disc silently extracts noise.
+**Bad.** There is no cheap runtime integrity check. The closest available signal is the ratio of stored to compressed blocks: a wrong payload offset makes nearly every block fail to inflate, inverting the 4-in-16 526 seen on a good disc. `samplerdisc info` prints both counts for that reason.
+
+**Watch for.** Anyone simplifying the three-part acceptance test. Each part is load-bearing, and dropping the consumed-length check is undetectable until a disc silently extracts noise. Equally, anyone re-adding an assertion that the chain ends on the descriptor offset and believing it verifies something.
