@@ -70,6 +70,11 @@ _MAX_FILES = BLOCK_SIZE // FILE_ENTRY_LEN
 #: run at every candidate sector during origin detection.
 _PROBE_SLOTS = 8
 
+#: File entries probe() reads from the first allocated volume before accepting
+#: an origin. Deep enough to see past a run of deleted entries, shallow enough
+#: to stay one short read.
+_PROBE_FILE_ENTRIES = 8
+
 
 def decode_name(raw: bytes) -> str:
     """Decode a fixed-width AKAI name. Trailing padding is stripped."""
@@ -98,9 +103,14 @@ class AkaiBackend:
 
         Deliberately strict: this runs at every candidate offset during origin
         detection, and a loose probe resolves an origin confidently and wrongly
-        (ADR-0005). Requires several consecutive volume entries whose names
-        decode cleanly, whose start blocks are ordered and in range, and at
-        least one of which is non-empty.
+        (ADR-0005). Two things must hold. The volume entries must have names
+        that decode cleanly and start blocks that are ordered and in range --
+        and then the first allocated volume must actually yield a file.
+
+        The second half is not belt-and-braces. The first half alone matched
+        arbitrary data on two non-AKAI discs (ADR-0012), and the structural
+        checks cannot tell that on their own: a directory that merely looks
+        plausible produces volumes with no files in them, not an error.
         """
         want = VOLUME_DIR_OFFSET + _PROBE_SLOTS * VOLUME_ENTRY_LEN
         header = image.read(offset, want)
@@ -132,19 +142,29 @@ class AkaiBackend:
             previous = start
             found += 1
             first_start = first_start if first_start else start
-        if found >= 2:
-            return True
-        if found == 1:
-            # A single-volume disc is unusual but real. Requiring two would let
-            # one silently report "no filesystem", which is precisely the
-            # failure ADR-0005 exists to prevent -- so confirm this one by
-            # looking at the volume's own file directory instead.
-            return self._directory_looks_real(image, offset, first_start)
-        return False
+        if found == 0:
+            return False
+        # Ordering and clean names are not enough on their own. Arbitrary data
+        # mid-disc satisfies both often enough to matter: an E-mu EMU3 disc and
+        # a SampleCell disc each resolved confidently to a wrong offset here,
+        # yielding volumes with names like "010000000000" and zero files in
+        # every one. So the probe finishes by asking the question the walk will
+        # ask -- does a volume actually hold a file? -- rather than trusting
+        # that a plausible-looking directory is one. See ADR-0012.
+        return self._directory_looks_real(image, offset, first_start)
 
     def _directory_looks_real(self, image: SectorImage, offset: int, start_block: int) -> bool:
-        """Does a volume's file directory hold at least one plausible entry?"""
-        directory = image.read(offset + start_block * BLOCK_SIZE, 4 * FILE_ENTRY_LEN)
+        """Does a volume's file directory yield a file the walk would accept?
+
+        The tests below are deliberately the ones ``_files`` applies, type byte
+        included. When a probe accepts an entry the walk then rejects, the disc
+        comes back as volumes containing nothing -- which reads as an empty
+        disc rather than as a wrong answer, and is exactly how the false
+        positives in ADR-0012 presented.
+        """
+        directory = image.read(
+            offset + start_block * BLOCK_SIZE, _PROBE_FILE_ENTRIES * FILE_ENTRY_LEN
+        )
         if len(directory) < FILE_ENTRY_LEN:
             return False
         for index in range(len(directory) // FILE_ENTRY_LEN):
@@ -152,6 +172,13 @@ class AkaiBackend:
             if is_empty_slot(entry):
                 continue
             if not is_plausible_name(entry[:NAME_LEN]) or not decode_name(entry[:NAME_LEN]):
+                return False
+            type_byte = entry[16]
+            if type_byte == TYPE_DELETED:
+                # A deletion does not end the directory, and must not end this
+                # check either -- the live entries can sit behind it.
+                continue
+            if chr(type_byte & TYPE_MASK) not in VALID_TYPE_LETTERS:
                 return False
             size = entry[17] | entry[18] << 8 | entry[19] << 16
             (file_start,) = struct.unpack("<H", entry[20:22])

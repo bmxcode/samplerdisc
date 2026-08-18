@@ -186,6 +186,46 @@ def test_a_lone_volume_pointing_at_an_empty_directory_is_rejected(tmp_path):
     assert not BACKEND.probe(image_of(tmp_path, bytes(data), "empty.iso"), 0)
 
 
+def test_probe_rejects_a_multi_volume_header_whose_volumes_hold_no_files(tmp_path):
+    """Ordering and clean names are not evidence of a filesystem (ADR-0012).
+
+    Two non-AKAI discs got this far on arbitrary mid-disc data -- an E-mu EMU3
+    disc and a Digidesign SampleCell one -- and were reported as AKAI at a
+    confident, wrong offset. Each yielded volumes with names like
+    "010000000000" and zero files in every one, because a directory that merely
+    looks plausible is one the walk then rejects entry by entry.
+
+    Before the fix this returned True on sight of two ordered volumes, without
+    ever opening one.
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE
+
+    data = bytearray(simple_partition())
+    # Volume directories live at blocks 1 and 3; leave the header intact so the
+    # ordering test still passes, and empty the directories it points at.
+    for block in (1, 3):
+        data[block * BLOCK_SIZE : (block + 1) * BLOCK_SIZE] = b"\x00" * BLOCK_SIZE
+    assert not BACKEND.probe(image_of(tmp_path, bytes(data), "hollow.iso"), 0)
+
+
+def test_probe_rejects_entries_whose_type_byte_is_not_a_file_type(tmp_path):
+    """The probe applies the same type test the walk does.
+
+    An unallocated volume can point at a block of 0x01 filler, and every 24
+    bytes of that decodes to a plausible name with a non-zero size and start
+    block. Only the type byte gives it away -- 0x01 is not one of "psdxmqt" --
+    which is why the probe and ``_files`` must agree on what a valid entry is.
+    When they disagree the disc comes back as volumes containing nothing, which
+    reads as empty rather than as wrong.
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE
+
+    payload = fixtures.akai_sample("KICK")
+    data = bytearray(fixtures.akai_partition([("VOL 1", [("KICK", 0x73, len(payload), payload)])]))
+    data[BLOCK_SIZE : 2 * BLOCK_SIZE] = b"\x01" * BLOCK_SIZE
+    assert not BACKEND.probe(image_of(tmp_path, bytes(data), "filler.iso"), 0)
+
+
 def test_directory_stops_at_one_block(tmp_path):
     """A volume's file directory is one 8192-byte block.
 

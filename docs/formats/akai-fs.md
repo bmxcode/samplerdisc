@@ -56,6 +56,16 @@ An early hand decode of `black2black` using the other table produced `KICKIN B0-
 
 A partition caps at 512 MB, so a large disc carries several. Walk the partition table rather than assuming one partition at the origin.
 
+## What a probe must confirm
+
+The volume directory above is not sufficient evidence that a disc is AKAI. Arbitrary data satisfies its structural tests more often than it looks: twelve bytes in the charset range, a type word, and a start block that happens to be larger than the last one. Two non-AKAI discs matched on that alone — `E-MU - EIIIX Sound Library Vol. 2`, which carries `EMU3` at byte 0, and `OMI Universe of Sounds Sonic Images Vol. 1 (SampleCell)`, which carries `ER` — and were reported as AKAI at offsets 3 465 216 and 5 496 832 respectively.
+
+Neither reported an error. Each produced volumes with names like `010000000000` and `0D0 07070D0D`, and **zero files in every one**, because a directory that merely decodes plausibly is one the file walk then rejects entry by entry.
+
+So recognising the filesystem takes two steps, and the second is load-bearing: the volume entries must decode and be ordered, **and then the first allocated volume must yield a file that passes the same tests `_files` applies** — name, type byte, non-zero size, non-zero start block. The type byte is what does most of the work, because it is the field arbitrary data is least likely to land on: an unallocated volume pointing at `0x01` filler gives a plausible name, a size of `0x010101` and a start block of `0x0101`, and only `chr(0x01)` not being one of `p s d x m q t` gives it away.
+
+Where the probe and the walk disagree about what a valid entry is, the symptom is a volume containing nothing — which reads as an empty disc, not as a wrong answer. That is why they share the test rather than each having their own. See [ADR-0012](../adr/0012-a-probe-must-confirm-a-file.md).
+
 ## Volume directory — 24-byte file entries
 
 At the volume's start block, entries of 24 bytes:
