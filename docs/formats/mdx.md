@@ -26,7 +26,22 @@ The payload is a chain of blocks, each expanding to the same fixed size. They si
 
 So: decode the first block with no size expectation, and take its length as the size for the rest. A leading stored block leaves nothing to measure, in which case 32768 is the fallback and the stored/compressed ratio is what shows the problem.
 
-32160 is not a whole number of 2048-byte sectors, so block boundaries and sector boundaries do not line up on such an image. That is fine — the blocks are simply concatenated and the result trimmed to the last complete sector.
+## Sector stride: subchannel data
+
+32160 is not a whole number of 2048-byte sectors, and that is the clue. **It is 15 × 2144** — 2048 bytes of user data followed by **96 bytes of subchannel**.
+
+So an MDX payload holds one of two strides, and nothing in the header says which:
+
+| Block size | Stride | Layout |
+|---|---|---|
+| 32768 | 2048 | 16 plain sectors |
+| 32160 | 2144 | 15 sectors, each 2048 + 96 subchannel |
+
+Divisibility settles it, because the block size is always a whole number of whichever stride is in use. Try 2048 first; 32160 is not divisible by it, and 32768 is not divisible by 2144.
+
+Getting the block size right but the stride wrong is its own silent failure: every sector lands 96 bytes further out than the last, so the filesystem walks off its 8192-byte block boundaries and the disc reads as empty. The confirmation that 2144 is correct is that AKAI sample headers then land exactly on multiples of 8192 — they do not otherwise.
+
+The 96 bytes are a constant `00 40 00 00 ...` pattern on a data track, which is what subchannel P/Q looks like when there is nothing to encode. They are discarded.
 
 A block is one of two things:
 

@@ -36,6 +36,16 @@ FILE_ENTRY_LEN = 24
 #: for 'p' -- so mask with 0x7F, never with 0x0F: the low nibble alone cannot
 #: tell 'd' (0x64, drum settings) from 't' (0x74).
 TYPE_MASK = 0x7F
+
+#: A cleared type byte marks a deleted entry, not a file.
+TYPE_DELETED = 0x00
+
+#: Type letters seen on real discs. 'q' and 't' appear once each and have not
+#: been identified, but they are letters an AKAI wrote, so they end an entry
+#: rather than a directory. Anything outside this set means the walk has left
+#: the directory -- an unallocated volume can point at a block of filler, and
+#: without this every byte of it reads as a file.
+VALID_TYPE_LETTERS = frozenset("psdxmqt")
 TYPE_KINDS = {
     "p": "program",
     "s": "sample",
@@ -51,7 +61,10 @@ PROGRAM_ID = 1
 SAMPLE_VALID = 0x80
 
 _MAX_VOLUMES = 100
-_MAX_FILES = 512
+
+#: A volume's file directory is one block. Reading further walks into the next
+#: block, which is file data, and yields entries assembled from audio.
+_MAX_FILES = BLOCK_SIZE // FILE_ENTRY_LEN
 
 #: Volume slots examined by probe(). Enough to see ordering, cheap enough to
 #: run at every candidate sector during origin detection.
@@ -177,10 +190,10 @@ class AkaiBackend:
                 return
             raw_name = entry[:NAME_LEN]
             if not is_plausible_name(raw_name):
-                continue
+                return
             name = decode_name(raw_name)
             if not name:
-                continue
+                return
             type_byte = entry[16]
             size = entry[17] | entry[18] << 8 | entry[19] << 16
             (file_start,) = struct.unpack("<H", entry[20:22])
@@ -188,7 +201,15 @@ class AkaiBackend:
             # abandoning the disc.
             if file_start == 0 or file_start > max_block or size <= 0:
                 continue
+            if type_byte == TYPE_DELETED:
+                # A deleted file keeps its name but loses its type, and its
+                # blocks go back to the free list (0xFF-filled). Skipping the
+                # entry rather than stopping: a deletion mid-directory must not
+                # truncate everything after it.
+                continue
             letter = chr(type_byte & TYPE_MASK)
+            if letter not in VALID_TYPE_LETTERS:
+                return
             kind = TYPE_KINDS.get(letter, f"type-{letter}")
             yield File(
                 name=name,

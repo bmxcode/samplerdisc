@@ -264,22 +264,33 @@ def test_reads_past_the_end_return_what_is_available(tmp_path):
     assert image.read(image.size + 1000, 10) == b""
 
 
-def test_block_size_is_read_off_the_image_not_assumed(tmp_path):
-    """A real AKAI disc uses 32160-byte blocks, not the usual 32768.
+def test_block_size_and_stride_are_read_off_the_image(tmp_path):
+    """A real AKAI disc uses 32160-byte blocks of 2144-byte sectors.
 
-    Assuming the common value made every block fail to inflate and fall
-    through to the stored path, which surfaces as an unrecognisable
-    filesystem rather than as an error.
+    32160 is 15 x 2144: 2048 of data plus 96 of subchannel. Assuming the usual
+    32768 made every block fail to inflate and fall through to the stored path;
+    getting the block size right but not the stride put every sector 96 bytes
+    further out than the last. Both surface as an unreadable filesystem rather
+    than as an error.
     """
-    odd = 32160
-    blocks = [fixtures.compressible_block(i, size=odd) for i in range(3)]
-    raw, expected = fixtures.make_mdx(blocks)
-    image = MdxImage(write(tmp_path, "odd.mdx", raw))
-    assert image.block_size == odd
+    pairs = [fixtures.subchannel_block(i) for i in range(3)]
+    stored = [block for block, _ in pairs]
+    cooked = [data for _, data in pairs]
+    raw, _ = fixtures.make_mdx(stored)
+    image = MdxImage(write(tmp_path, "subch.mdx", raw))
+    assert image.block_size == 32160
+    assert image.stride == 2144
     assert image.stored_blocks == 0
-    # 32160 is not a whole number of sectors, so the image trims to the last
-    # complete one -- the blocks still decode, the tail is just not addressable.
-    assert image.size % SECTOR_SIZE == 0
+    expected = b"".join(cooked)
+    assert image.size == len(expected)
+    assert image.read(0, image.size) == expected
+
+
+def test_plain_images_have_no_subchannel_stride(tmp_path):
+    blocks = [fixtures.compressible_block(i) for i in range(2)]
+    raw, expected = fixtures.make_mdx(blocks)
+    image = MdxImage(write(tmp_path, "plain.mdx", raw))
+    assert image.stride == SECTOR_SIZE
     assert image.read(0, image.size) == expected[: image.size]
 
 

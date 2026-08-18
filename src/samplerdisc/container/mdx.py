@@ -33,6 +33,12 @@ _MAX_BLOCK_READ = 1 << 18
 #: Blocks kept decoded. Reads are usually sequential, so a few is plenty.
 _CACHE_BLOCKS = 8
 
+#: An MDX may store plain 2048-byte sectors, or 2048 followed by 96 bytes of
+#: subchannel data. Nothing in the header says which; the block size does,
+#: because it is a whole number of whichever stride is in use.
+SUBCHANNEL_LEN = 96
+STRIDES = (SECTOR_SIZE, SECTOR_SIZE + SUBCHANNEL_LEN)
+
 
 class Block(NamedTuple):
     """One entry of the block chain."""
@@ -99,15 +105,17 @@ class MdxImage(_FileBacked):
             raise ValueError(f"{self.path}: implausible descriptor offset {descriptor_offset}")
         self._payload_end = descriptor_offset
         self.block_size = self._derive_block_size()
+        self.stride = self._derive_stride()
         self.blocks: list[Block] = self._build_index()
         self._cache: OrderedDict[int, bytes] = OrderedDict()
 
-        total = sum(block.out_len for block in self.blocks)
+        raw_total = sum(block.out_len for block in self.blocks)
+        total = (raw_total // self.stride) * SECTOR_SIZE
         # The final chunk is often a short stored remainder that leaves the total
         # off a sector boundary. Those bytes fall outside any in-use filesystem
         # block, so trim rather than refuse the disc. See docs/formats/mdx.md.
         self._size = (total // SECTOR_SIZE) * SECTOR_SIZE
-        self.trimmed = total - self._size
+        self.trimmed = raw_total - (self._size // SECTOR_SIZE) * self.stride
 
     def _derive_block_size(self) -> int:
         """Read the block size off the image rather than assuming it.
@@ -129,6 +137,19 @@ class MdxImage(_FileBacked):
         if not out or consumed >= len(out):
             return DEFAULT_BLOCK_SIZE
         return len(out)
+
+    def _derive_stride(self) -> int:
+        """Bytes per sector inside the payload: 2048, or 2144 with subchannel.
+
+        The block size is a whole number of sectors, so divisibility settles
+        it: 32768 is 16 x 2048, while 32160 is 15 x 2144. Miss this and every
+        sector is 96 bytes further out than the last, which walks the
+        filesystem off its block boundaries and reads as an empty disc.
+        """
+        for stride in STRIDES:
+            if self.block_size % stride == 0:
+                return stride
+        return SECTOR_SIZE
 
     def _build_index(self) -> list[Block]:
         blocks: list[Block] = []
@@ -180,10 +201,8 @@ class MdxImage(_FileBacked):
             self._cache.popitem(last=False)
         return data
 
-    def read(self, offset: int, length: int) -> bytes:
-        if length <= 0 or offset >= self._size:
-            return b""
-        length = min(length, self._size - offset)
+    def _read_payload(self, offset: int, length: int) -> bytes:
+        """Read from the decoded payload, subchannel included."""
         out = bytearray()
         index, skip = divmod(offset, self.block_size)
         while len(out) < length and index < len(self.blocks):
@@ -193,18 +212,28 @@ class MdxImage(_FileBacked):
             skip = 0
         return bytes(out)
 
-    def iter_sectors(self, chunk_blocks: int = 32):
+    def read(self, offset: int, length: int) -> bytes:
+        if length <= 0 or offset >= self._size:
+            return b""
+        length = min(length, self._size - offset)
+        if self.stride == SECTOR_SIZE:
+            return self._read_payload(offset, length)
+
+        first = offset // SECTOR_SIZE
+        last = (offset + length - 1) // SECTOR_SIZE
+        count = last - first + 1
+        raw = self._read_payload(first * self.stride, count * self.stride)
+        out = b"".join(raw[i * self.stride : i * self.stride + SECTOR_SIZE] for i in range(count))
+        skip = offset - first * SECTOR_SIZE
+        return out[skip : skip + length]
+
+    def iter_sectors(self, chunk_sectors: int = 512):
         """Yield the cooked stream in order, for streaming to an ISO."""
         emitted = 0
-        buffer = bytearray()
-        for index in range(len(self.blocks)):
-            buffer += self.block_data(index)
-            if len(buffer) >= chunk_blocks * self.block_size:
-                take = min(len(buffer), self._size - emitted)
-                yield bytes(buffer[:take])
-                emitted += take
-                buffer = buffer[take:]
-                if emitted >= self._size:
-                    return
-        if buffer and emitted < self._size:
-            yield bytes(buffer[: self._size - emitted])
+        step = chunk_sectors * SECTOR_SIZE
+        while emitted < self._size:
+            chunk = self.read(emitted, min(step, self._size - emitted))
+            if not chunk:
+                return
+            emitted += len(chunk)
+            yield chunk
