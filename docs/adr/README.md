@@ -15,3 +15,4 @@ If you find yourself writing an ADR with no rejected alternative, you are writin
 | [0007](0007-emit-mono-and-stereo.md) | Emit mono originals *and* joined stereo | Stereo-only; mono-only |
 | [0008](0008-no-media-in-the-repo.md) | No disc images or audio in the repo, ever | A small committed fixture slice; private-until-clean |
 | [0009](0009-export-iso-escape-hatch.md) | `export-iso` as an escape hatch | Failing on unrecognised filesystems; auto-running akaiutil |
+| [0010](0010-build-the-instrument-layer-ourselves.md) | Build the instrument layer ourselves | Handing off to ConvertWithMoss; containers-only scope |
