@@ -30,4 +30,6 @@ Classify by attempting the decode. Accept a block as compressed only when the de
 
 **Bad.** There is no cheap runtime integrity check. The closest available signal is the ratio of stored to compressed blocks: a wrong payload offset makes nearly every block fail to inflate, inverting the 4-in-16 526 seen on a good disc. `samplerdisc info` prints both counts for that reason.
 
+> **Correction, 2026-08-19.** That last sentence overstates the signal. An all-stored image is *not* evidence of a misparse: an MDX of a Red Book audio CD is legitimately 100% stored, because PCM does not deflate. The ratio only says something about a payload expected to compress, and the discriminator is a second view of the disc rather than a statistic inside the container. See [formats/mdx.md](../formats/mdx.md) — *Verified constants* and *The all-stored case*. The decision this record makes is unaffected, so it is corrected by pointer rather than superseded.
+
 **Watch for.** Anyone simplifying the three-part acceptance test. Each part is load-bearing, and dropping the consumed-length check is undetectable until a disc silently extracts noise. Equally, anyone re-adding an assertion that the chain ends on the descriptor offset and believing it verifies something.

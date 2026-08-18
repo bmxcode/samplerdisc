@@ -11,6 +11,10 @@ from __future__ import annotations
 import os
 import struct
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable
 
 WAVE_FORMAT_PCM = 1
 
@@ -78,6 +82,41 @@ def _info_chunk(name: str) -> bytes:
     if len(encoded) % 2:
         encoded += b"\x00"
     return _chunk(b"LIST", b"INFO" + _chunk(b"INAM", encoded))
+
+
+def write_wav_streaming(
+    path: str | os.PathLike[str],
+    chunks: Iterable[bytes],
+    total_bytes: int,
+    rate: int,
+    channels: int = 1,
+    sample_width: int = 2,
+) -> int:
+    """Write a WAV whose data chunk is streamed rather than held in memory.
+
+    ``total_bytes`` must be exact -- RIFF puts both lengths in the header, so
+    they are written before any audio arrives. A whole-disc audio rip is
+    hundreds of megabytes, and buffering it twice (once to read, once to build
+    the body) is the difference between working and not on a modest machine.
+
+    The bytes are copied verbatim, exactly as ``write_wav`` copies them.
+    """
+    header = b"WAVE" + _fmt_chunk(channels, rate, sample_width)
+    padding = 1 if total_bytes % 2 else 0
+    riff_size = len(header) + 8 + total_bytes + padding
+
+    written = 0
+    with open(path, "wb") as out:
+        out.write(b"RIFF" + struct.pack("<I", riff_size) + header)
+        out.write(b"data" + struct.pack("<I", total_bytes))
+        for chunk in chunks:
+            out.write(chunk)
+            written += len(chunk)
+        if padding:
+            out.write(b"\x00")
+    if written != total_bytes:
+        raise ValueError(f"{path}: declared {total_bytes} audio bytes, wrote {written}")
+    return 8 + riff_size
 
 
 def write_wav(

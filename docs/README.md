@@ -49,6 +49,8 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D7 | Loop points, root key and tuning in the WAV `smpl` chunk ([ADR-0011](adr/0011-the-deliverable-is-daw-ready-wav.md)) | done |
 | D8 | `--keep-originals` for samples and programs | done |
 | D9 | Red Book audio CD tracks → WAV | done |
+| D10 | A probe must confirm a file ([ADR-0012](adr/0012-a-probe-must-confirm-a-file.md)) | done |
+| D11 | MDX generations, the all-stored case, cue-less audio ([ADR-0013](adr/0013-cueless-audio-is-reported-not-guessed.md)) | done |
 
 Against the three reference discs: 687 samples, 95 stereo pairs, 380 loops, one skipped entry.
 

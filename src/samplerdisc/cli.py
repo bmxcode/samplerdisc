@@ -10,7 +10,7 @@ from collections import Counter
 import samplerdisc.fs  # noqa: F401  (importing registers the backends)
 from samplerdisc import __version__
 from samplerdisc.audiocd import detect as detect_audio_cd
-from samplerdisc.audiocd import extract_tracks
+from samplerdisc.audiocd import extract_tracks, looks_like_cd_audio, write_whole_disc
 from samplerdisc.batch import convert_tree, find_images, write_manifest
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.export import export_iso
@@ -62,6 +62,21 @@ def cmd_extract(args: argparse.Namespace) -> int:
 
     with open_image(args.image) as image:
         origin = find_origin(image)
+        if origin is None and getattr(args, "assume_audio_cd", False):
+            # The user has asserted this is audio; confirm rather than obey, so
+            # a mistyped filename does not produce half a gigabyte of noise.
+            if not looks_like_cd_audio(image):
+                print(
+                    "--assume-audio-cd: this stream does not look like 16-bit stereo PCM",
+                    file=sys.stderr,
+                )
+                return 1
+            os.makedirs(args.out, exist_ok=True)
+            stem = os.path.splitext(os.path.basename(args.image))[0]
+            out_path = os.path.join(args.out, f"{stem}.wav")
+            frames = write_whole_disc(image, out_path)
+            print(f"wrote {out_path} ({frames / 44100:.1f}s, no track boundaries without a cue)")
+            return 0
         if origin is None:
             print("no recognised filesystem -- try `samplerdisc export-iso`", file=sys.stderr)
             return 1
@@ -165,12 +180,30 @@ def cmd_info(args: argparse.Namespace) -> int:
                 f"mdx blocks  {len(blocks)} x {image.block_size} "
                 f"({image.compressed_blocks} compressed, {image.stored_blocks} stored)"
             )
+            if image.stored_only:
+                # Not a defect on its own: PCM does not deflate, so an image of
+                # an audio CD is legitimately all stored. Say which reading
+                # applies rather than leaving a bare zero to be misread.
+                measured = "measured" if image.block_size_measured else "assumed"
+                print(f"            fully stored (uncompressed image, block size {measured})")
             if image.trimmed:
                 print(f"trimmed     {image.trimmed} bytes past the last whole sector")
-        if origin is None:
-            print("filesystem  none recognised -- try `samplerdisc export-iso`")
-        else:
+        if origin is not None:
             print(f"filesystem  {origin.backend.name} at offset {origin.offset}")
+            return 0
+
+        print("filesystem  none recognised -- try `samplerdisc export-iso`")
+        if looks_like_cd_audio(image):
+            print("content     consistent with Red Book audio (16-bit 44.1 kHz stereo)")
+            print("            no cue sheet means no track boundaries; extract the whole")
+            print("            stream with `samplerdisc extract --assume-audio-cd`")
+        elif blocks is not None and image.stored_only and not image.block_size_measured:
+            # The one case the container cannot resolve alone: every block fell
+            # through to stored AND the size was never read off the image. Say
+            # so plainly instead of presenting a decode we cannot vouch for.
+            print("            every block was stored and the block size could not be")
+            print("            measured -- if another container of this disc reads, the")
+            print("            two should agree byte for byte. See docs/formats/mdx.md")
     return 0
 
 
@@ -219,6 +252,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-originals",
         action="store_true",
         help="also write the raw AKAI sample and program files, exactly as stored",
+    )
+    extract.add_argument(
+        "--assume-audio-cd",
+        action="store_true",
+        help="disc has no filesystem and holds CD audio: write the whole stream as one WAV",
     )
     extract.set_defaults(func=cmd_extract)
 

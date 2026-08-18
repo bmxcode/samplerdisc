@@ -18,3 +18,4 @@ If you find yourself writing an ADR with no rejected alternative, you are writin
 | [0010](0010-build-the-instrument-layer-ourselves.md) | ~~Build the instrument layer ourselves~~ *superseded by 0011* | Handing off to ConvertWithMoss; containers-only scope |
 | [0011](0011-the-deliverable-is-daw-ready-wav.md) | The deliverable is DAW-ready WAV, not a sampler format | Building SFZ/MPC export; plain WAV with no metadata |
 | [0012](0012-a-probe-must-confirm-a-file.md) | A probe must confirm a file, not a plausible directory | A stricter header heuristic; scoring candidate offsets |
+| [0013](0013-cueless-audio-is-reported-not-guessed.md) | Cue-less audio is reported; extracted only on request | Silent refusal; automatic whole-disc WAV; splitting on silence |

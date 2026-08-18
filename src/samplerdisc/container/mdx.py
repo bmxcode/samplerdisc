@@ -104,6 +104,9 @@ class MdxImage(_FileBacked):
         if not 0 < descriptor_offset <= self._end:
             raise ValueError(f"{self.path}: implausible descriptor offset {descriptor_offset}")
         self._payload_end = descriptor_offset
+        #: False when the first block was stored, so the size could not be read
+        #: off the image and DEFAULT_BLOCK_SIZE was assumed. See stored_only.
+        self.block_size_measured = True
         self.block_size = self._derive_block_size()
         self.stride = self._derive_stride()
         self.blocks: list[Block] = self._build_index()
@@ -126,16 +129,20 @@ class MdxImage(_FileBacked):
         an unrecognisable filesystem rather than as an error.
 
         The first block is decoded with no size expectation and its length
-        becomes the size for the rest.
+        becomes the size for the rest. When that block is stored there is
+        nothing to measure, and ``block_size_measured`` records the fact --
+        see the note on ``stored_only`` for why that is reported rather than
+        searched around.
         """
         decoded = _inflate(self._raw(PAYLOAD_OFFSET, _MAX_BLOCK_READ))
         if decoded is None:
-            # A leading stored block leaves nothing to measure. Fall back, and
-            # let the stored/compressed ratio surface the problem if it is one.
+            self.block_size_measured = False
             return DEFAULT_BLOCK_SIZE
         out, consumed = decoded
         if not out or consumed >= len(out):
+            self.block_size_measured = False
             return DEFAULT_BLOCK_SIZE
+        self.block_size_measured = True
         return len(out)
 
     def _derive_stride(self) -> int:
@@ -181,6 +188,34 @@ class MdxImage(_FileBacked):
     @property
     def compressed_blocks(self) -> int:
         return sum(1 for block in self.blocks if not block.stored)
+
+    @property
+    def stored_only(self) -> bool:
+        """Did every block fall through to the stored path?
+
+        This is the one state the container cannot interpret on its own, and it
+        has exactly two causes:
+
+        * the payload genuinely does not compress -- an image of a Red Book
+          audio CD is entirely stored, because PCM does not deflate;
+        * the block size is wrong, so every compressed block failed the size
+          check and was taken literally.
+
+        The second cause cannot arise while ``block_size_measured`` is true: a
+        size read off a block that inflated is a size that works. It can arise
+        when the first block is stored, because then there is nothing to
+        measure and DEFAULT_BLOCK_SIZE is assumed.
+
+        Searching the payload for the first real DEFLATE stream looks like the
+        fix and is not one. Scanning a 2 MB window of ordinary CD audio at
+        byte alignment turns up 167 byte runs that inflate cleanly, so a
+        forward scan would pick a plausible wrong size on a disc that decodes
+        perfectly today -- trading a silent failure we have never seen for one
+        we would cause. Reporting the state and letting a second view of the
+        disc settle it is both cheaper and honest; ``samplerdisc info`` says so
+        in as many words. See docs/formats/mdx.md.
+        """
+        return bool(self.blocks) and self.compressed_blocks == 0
 
     @property
     def stored_blocks(self) -> int:
