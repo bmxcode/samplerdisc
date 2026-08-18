@@ -59,7 +59,7 @@ The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM a
 
 ## Supported
 
-**Containers** — `.mdx` (DAEMON Tools, *including compressed*), `.nrg` (Nero v1 and v2), `.bin` + `.cue` (raw 2352-byte CD sectors), `.iso` / `.img`, `.mds` + `.mdf`. Detection is by content signature, not by file extension, because these archives are named inconsistently.
+**Containers** — `.mdx` (DAEMON Tools, *including compressed*), `.nrg` (Nero v1 and v2), `.bin` + `.cue` (raw 2352-byte CD sectors), `.iso` / `.img`, `.cdr`, `.tao`. Detection is by content signature, not by file extension, because these archives are named inconsistently.
 
 **Audio CDs** — some of these discs are plain Red Book audio, not CD-ROMs. `samplerdisc` recognises them from the cue sheet and writes each track out as a stereo WAV, keeping the track titles (which usually carry the tempo). No filesystem is involved; the sectors already are the audio.
 
@@ -85,7 +85,7 @@ Every extracted WAV was checked against the bytes on the disc it came from: all 
 ## What doesn't work yet
 
 - **Roland, E-mu, Ensoniq and Kurzweil filesystems.** `AMG - Now CD-ROM (Roland).iso` from that collection is an S-770 disc and does not read. The container layer opens it, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
-- **`.mds`/`.mdf` is unverified.** No reference pair was available, so the geometry is sniffed from the `.mdf` rather than read from the descriptor.
+- **`.mds`/`.mdf` is untested.** There is code for it, and it has never seen a real pair — searches of both archive.org and the nnty.fun collection (~300 files) turned up none, so sample CDs in this form may simply be rare. It reads the `.mdf` and sniffs its geometry rather than parsing the descriptor, which should work for a single-track data disc. Treat it as unsupported until someone confirms otherwise, and please open an issue if you have one.
 - **`CUES` chunks in NRG** are not parsed; only `CUEX`. No disc using the older form was to hand to check the layout against.
 - **AIFF payloads on ISO 9660 discs are copied, not converted** — they come out as `.aiff`.
 - **AKAI S900, floppy images and the DD partition.** Use [akaiutil](https://sourceforge.net/projects/akaiutil/).
