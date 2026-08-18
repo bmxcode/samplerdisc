@@ -9,7 +9,7 @@ import samplerdisc.fs  # noqa: F401  (importing registers the backends)
 from samplerdisc import __version__
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.export import export_iso
-from samplerdisc.extract import Extracted, extract_disc
+from samplerdisc.extract import Extracted, Joined, extract_disc
 from samplerdisc.fs import base as _fs_registry  # noqa: F401  (registers backends)
 from samplerdisc.fs.probe import find_origin
 
@@ -52,17 +52,27 @@ def cmd_extract(args: argparse.Namespace) -> int:
             print("no recognised filesystem -- try `samplerdisc export-iso`", file=sys.stderr)
             return 1
         written = 0
+        joined = 0
         skipped = 0
-        for result in extract_disc(image, origin.backend, origin.offset, args.out):
+        results = extract_disc(
+            image, origin.backend, origin.offset, args.out, join_stereo=not args.no_stereo
+        )
+        for result in results:
             if isinstance(result, Extracted):
                 written += 1
                 if args.verbose:
                     seconds = result.frames / result.rate if result.rate else 0
                     print(f"  {result.volume}/{result.name}  {seconds:.2f}s @ {result.rate} Hz")
+            elif isinstance(result, Joined):
+                joined += 1
+                if args.verbose:
+                    print(f"  {result.volume}/stereo/{result.name}  joined")
             else:
                 skipped += 1
                 print(f"  skipped {result.volume}/{result.name}: {result.reason}", file=sys.stderr)
     print(f"wrote {written} WAV files to {args.out}")
+    if joined:
+        print(f"joined {joined} stereo pairs (mono originals kept)")
     if skipped:
         # A disc that yields most of its samples is a good outcome; say so
         # plainly rather than burying it.
@@ -130,6 +140,9 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("image")
     extract.add_argument("out")
     extract.add_argument("-v", "--verbose", action="store_true", help="name each file written")
+    extract.add_argument(
+        "--no-stereo", action="store_true", help="do not rejoin -L/-R pairs into stereo"
+    )
     extract.set_defaults(func=cmd_extract)
 
     export = sub.add_parser("export-iso", help="unwrap the container to a flat ISO")

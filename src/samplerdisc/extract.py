@@ -12,7 +12,8 @@ import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
-from samplerdisc.sample.akai import NotASample, parse
+from samplerdisc.sample.akai import AkaiSample, NotASample, parse
+from samplerdisc.stereo import find_pairs, interleave
 from samplerdisc.wav import write_wav
 
 if TYPE_CHECKING:
@@ -63,15 +64,28 @@ class Skipped:
     reason: str
 
 
+@dataclass
+class Joined:
+    """A stereo file rebuilt from an -L/-R pair. The mono halves are kept."""
+
+    volume: str
+    name: str
+    path: str
+    rate: int
+    frames: int
+
+
 def extract_volume(
     image: SectorImage,
     backend: Backend,
     origin: int,
     volume: Volume,
     out_dir: str,
-) -> Iterator[Extracted | Skipped]:
+    join_stereo: bool = True,
+) -> Iterator[Extracted | Skipped | Joined]:
     """Write every sample in one volume. Programs are listed elsewhere, not written."""
     made = False
+    parsed: dict[str, AkaiSample] = {}
     for entry in volume.files:
         if entry.kind != "sample":
             continue
@@ -103,6 +117,7 @@ def extract_volume(
             midi_note=sample.pitch,
             name=sample.name,
         )
+        parsed[entry.name] = sample
         yield Extracted(
             volume=volume.name,
             name=entry.name,
@@ -112,14 +127,55 @@ def extract_volume(
             pitch=sample.pitch,
         )
 
+    if join_stereo:
+        yield from _join_pairs(volume.name, parsed, out_dir)
+
+
+def _join_pairs(
+    volume_name: str, parsed: dict[str, AkaiSample], out_dir: str
+) -> Iterator[Skipped | Joined]:
+    pairs = find_pairs(list(parsed))
+    if not pairs:
+        return
+    stereo_dir = os.path.join(out_dir, "stereo")
+    made = False
+    for pair in pairs:
+        left = parsed[pair.left]
+        right = parsed[pair.right]
+        if left.rate != right.rate:
+            # Different rates means these are not two halves of one sound,
+            # whatever the names say.
+            yield Skipped(
+                volume_name,
+                pair.base,
+                f"rate mismatch between halves ({left.rate} vs {right.rate})",
+            )
+            continue
+        if not made:
+            os.makedirs(stereo_dir, exist_ok=True)
+            made = True
+        path = unique_path(stereo_dir, safe_name(pair.base))
+        pcm = interleave(left.pcm, right.pcm)
+        frames = len(pcm) // 4
+        write_wav(
+            path,
+            pcm,
+            rate=left.rate,
+            channels=2,
+            midi_note=left.pitch,
+            name=pair.base,
+        )
+        yield Joined(volume=volume_name, name=pair.base, path=path, rate=left.rate, frames=frames)
+
 
 def extract_disc(
     image: SectorImage,
     backend: Backend,
     origin: int,
     out_root: str,
-) -> Iterator[Extracted | Skipped]:
+    join_stereo: bool = True,
+) -> Iterator[Extracted | Skipped | Joined]:
     """Write every sample on the disc, one directory per volume."""
     for volume in backend.volumes(image, origin):
         out_dir = os.path.join(out_root, safe_name(volume.name))
-        yield from extract_volume(image, backend, origin, volume, out_dir)
+        yield from extract_volume(image, backend, origin, volume, out_dir, join_stereo)
