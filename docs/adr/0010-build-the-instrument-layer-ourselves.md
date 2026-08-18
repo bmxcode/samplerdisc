@@ -1,6 +1,6 @@
 # ADR-0010 · Build the instrument layer ourselves rather than handing off
 
-**Status:** accepted · 2026-08-18
+**Status:** superseded by [ADR-0011](0011-the-deliverable-is-daw-ready-wav.md) · 2026-08-18
 
 ## Context
 
