@@ -56,6 +56,10 @@ class Backend(Protocol):
         """Walk the filesystem rooted at ``offset``."""
         ...
 
+    def read_file(self, image: SectorImage, offset: int, entry: File) -> bytes:
+        """Return the raw bytes of one file."""
+        ...
+
 
 _REGISTRY: list[Backend] = []
 
