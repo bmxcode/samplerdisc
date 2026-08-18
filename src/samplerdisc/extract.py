@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from samplerdisc.sample.akai import AkaiSample, NotASample, parse
 from samplerdisc.stereo import find_pairs, interleave
-from samplerdisc.wav import write_wav
+from samplerdisc.wav import Loop, write_wav
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -127,6 +127,8 @@ def extract_volume(
             sample.pcm,
             rate=sample.rate,
             midi_note=sample.pitch,
+            cents=sample.cents,
+            loops=_wav_loops(sample),
             name=sample.name,
         )
         parsed[entry.name] = sample
@@ -175,9 +177,18 @@ def _join_pairs(
             rate=left.rate,
             channels=2,
             midi_note=left.pitch,
+            cents=left.cents,
+            # Loop points are frame offsets, so they carry over unchanged from
+            # the left half to the interleaved file.
+            loops=_wav_loops(left),
             name=pair.base,
         )
         yield Joined(volume=volume_name, name=pair.base, path=path, rate=left.rate, frames=frames)
+
+
+def _wav_loops(sample: AkaiSample) -> list[Loop]:
+    """AKAI loop ends are exclusive; the RIFF smpl chunk wants them inclusive."""
+    return [Loop(start=loop.start, end=loop.end - 1) for loop in sample.loops]
 
 
 def _copy_audio(

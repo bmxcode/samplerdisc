@@ -102,6 +102,25 @@ Sample data is **signed 16-bit little-endian mono PCM**. That is already exactly
 
 S3000 discs may use a 192-byte header variant. Branch on the id and valid bytes rather than assuming 150.
 
+## Loops and tuning
+
+Eight 12-byte loop records follow the play markers at offset **38**. Only the first `payload[16]` of them are active.
+
+| Offset in record | Size | Meaning |
+|---|---|---|
+| 0 | 4 | u32 loop **end**, in words |
+| 4 | 2 | loop length, fractional part (16.16 fixed point) |
+| 6 | 2 | loop length, whole part, in words |
+| 10 | 2 | dwell time |
+
+**There is no loop start field.** Start is `end - length`, which is the trap: derive it from the *declared* end before clamping the end to the audio actually present. Clamping first drags the start earlier by however far the end overshot, silently retuning the loop rather than shortening it. On the reference discs 28 of 380 loops declare an end a few words past a payload that is marginally shorter than its header claims, so this path is exercised in practice, not hypothetically.
+
+Dwell `9999` means *hold* — loop for as long as the note sounds. Any other value is a timed dwell, which a WAV `smpl` loop cannot express, so those are not written.
+
+Pitch offset in cents is a signed byte at offset **21**.
+
+Loop coverage on the references: 380 of 687 samples loop, essentially all of them in the piano library and none in the drum-loop discs — which is what you would expect.
+
 ## Stereo
 
 Stereo is stored as two mono files whose names end `-L` and `-R`. The sampler paired them at load time; nothing in the filesystem records the relationship. Pairing is therefore a name heuristic, which is why the joined stereo file is written *in addition to* the mono originals rather than replacing them ([ADR-0007](../adr/0007-emit-mono-and-stereo.md)).
