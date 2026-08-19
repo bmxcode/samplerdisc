@@ -12,7 +12,7 @@ body:
       label: Container format
       description: The kind of image file. Detect by signature if you're unsure — the extension is often wrong.
       options:
-        - .mdx (Alcohol compressed)
+        - .mdx (DAEMON Tools, often compressed)
         - .nrg (Nero)
         - .bin / .iso (raw)
         - .cue / .bin pair
