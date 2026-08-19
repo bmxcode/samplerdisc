@@ -27,6 +27,25 @@ class File:
     #: The filesystem's own type byte, kept so a backend can name the original
     #: faithfully. 0 where the filesystem has no such concept.
     raw_type: int = 0
+    #: Whatever else the directory knew about this file, as ``(key, value)``
+    #: pairs -- a tuple rather than a dict so ``File`` stays frozen and
+    #: hashable.
+    #:
+    #: Some filesystems keep a sample's musical parameters beside the directory
+    #: rather than in the payload, so by the time ``parse_sample`` sees the
+    #: bytes the root key and loop points are already gone. Roland S-7xx is
+    #: one: its 48-byte parameter record lives in a different region of the
+    #: disc entirely. ``raw_type`` is a single int and already stretched to
+    #: carry a rate for E-mu; stretching it to four values would be the wrong
+    #: shape.
+    meta: tuple[tuple[str, int], ...] = ()
+
+    def get(self, key: str, default: int = 0) -> int:
+        """One ``meta`` value, or ``default`` where the backend set none."""
+        for name, value in self.meta:
+            if name == key:
+                return value
+        return default
 
 
 @dataclass

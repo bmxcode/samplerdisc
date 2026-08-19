@@ -104,7 +104,13 @@ At sector 257, u16 LE, one entry per cluster, indexed by cluster number. `entry[
 
 Cluster 2 is the first *addressable* cluster, not necessarily the first *allocated* one. The four local discs happen to put sample 0 there; all four L-CDX discs start it at **cluster 116**. Read the start cluster from the directory and never assume where the data begins.
 
-**Any value `>= 0xFFF0` terminates a chain.** `0xFFF8` and `0xFFFA` occur on the local discs; `0xFFFE` was seen on a remote disc during the D12 survey. Testing for `0xFFF8` alone would run a chain off the end of its file and into the next one.
+**Any value `>= 0xFFF6` terminates a chain**, and that figure is load-bearing in both directions.
+
+Too high and a marker reads as a cluster. `0xFFF8` and `0xFFFA` occur on the local discs and `0xFFFE` was seen remotely, so testing for `0xFFF8` alone runs a chain off the end of its own file and into the next one.
+
+Too low and a cluster reads as a marker. The largest partition observed declares 1 184 980 blocks, which is `(1184980 - 5548) / 18` = 65 524 clusters numbered **2 to 65 525** — that is `0xFFF5`. A floor of `0xFFF0` is inside that range, and it is not hypothetical: `l-cdx-01`'s last sample starts at cluster 63 737 and runs 1 789 clusters to the very top of the partition. A `0xFFF0` floor drops that sample silently, and would truncate any chain routed through those five clusters.
+
+`0xFFF6` is above every cluster number the arithmetic can produce and below every marker ever seen. Better still, **bound the walk by the partition's own arithmetic** — `(fs_blocks - 5548) / 18` — which tightens automatically on a small disc instead of trusting one constant everywhere.
 
 **Cluster = 9 216 bytes = 18 blocks.**
 
@@ -242,13 +248,30 @@ Whole-disc listings — a backend that reports anything else is wrong, because t
 | `northstar` | 1 | 1 284 |
 | `amg-now` | 1 | 1 230 |
 
+## What a reader gets
+
+Against the five local discs, listing every sample the header declares:
+
+| Disc | Samples | Payload | Looped | Stereo halves |
+|---|---|---|---|---|
+| `lcdp05` | 890 | 120 060 868 | 435 | 361 |
+| `edirol-brass` | 1 016 | 152 709 552 | 584 | 56 |
+| `northstar` | 1 284 | 219 814 004 | 1 284 | 1 110 |
+| `amg-now` | 1 230 | 388 698 996 | 1 100 | 603 |
+| `l-cdx-01` | 1 972 | 601 370 200 | 806 | 600 |
+| **total** | **6 392** | **1 482 653 620** | 4 209 | 2 730 |
+
+Every count equals the header's declared figure exactly, and 231 sampled payloads across the five discs read back byte-identical to an independent walk of the allocation table.
+
+Six entries declare more frames than their clusters hold and are clamped to the allocated length — one on `edirol-brass`, five on `l-cdx-01`, including a `:  :` divider entry claiming 13 822 636 frames in a single cluster.
+
 ## Traps
 
 - **Probe on `S770 MR25A` at byte 4 and nothing else.** The version string at `0x20` varies across lineages and keying on it drops the whole L-CDX series.
 - **The directory name is authoritative; the parameter record's name can be stale.** `northstar` has 7 samples where the directory reads `PLK:F7MuteChr*` and the parameter record still reads `PLK:F7MuteChor`. The two records are joined by **index**, never by name — validating the pairing on name equality drops those 7 silently.
 - **A sample may declare more than it owns.** `edirol-brass`'s `BRS:Cpm Tpt G_3A` declares 203 415 frames against 28 clusters, which hold 129 024. Clamp to the allocated bytes and log it; do not trust the declared length as a read size.
 - **Contiguity holds on all 4 420 chains and must not be used as a validity test.**
-- **Any FAT value `>= 0xFFF0` is a terminator**, not just `0xFFF8`.
+- **The terminator floor is `0xFFF6`, not `0xFFF0`.** Cluster numbers reach `0xFFF5` on a full 604 MB partition and one disc really does use the top of it, so too low a floor is as wrong as too high — in the direction that loses a sample rather than corrupting one.
 - **The addresses are 24.8 fixed point.** Reading them as plain u32 gives a byte address 256 times too large, which is inside the disc on a large image and therefore does not look wrong.
 - **`0x110` is a partition size, not a derivation.** It does not divide evenly by the cluster size on any disc.
 - **Cluster 2 is the first addressable cluster, not the first used one.** All four L-CDX discs start sample 0 at cluster 116.
