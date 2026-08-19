@@ -345,3 +345,94 @@ def mono_sample_block(frames: int = 32768, seed: int = 11) -> bytes:
         value = max(-20000, min(20000, value + ((state >> 16) % 401) - 200))
         out += struct.pack("<h", value)
     return bytes(out)
+
+
+def emu3_disc(
+    folders,
+    *,
+    folder_block: int = 6,
+    reserved: int = 2,
+    nul_padded: bool = False,
+    bank_header: bool = True,
+    total_blocks: int = 4096,
+) -> bytes:
+    """Build a synthetic EMU3 image.
+
+    ``folders`` is ``[(folder_name, [(bank_name, [(sample_name, rate, frames)])])]``.
+    Each folder gets its own 512-byte bank directory, which is the layout that
+    matters: reading only the directory the header points at loses every bank
+    past the first folder.
+
+    ``bank_header`` False omits the ``EMULATOR`` header, which is the E-IV
+    case: the banks are listed from the directory and cannot be located, so no
+    samples come out.
+    """
+    from samplerdisc.fs.emu3 import (
+        BANK_MAGIC,
+        BLOCK,
+        ENTRY_LEN,
+        MAGIC,
+        OFF_SAMPLE_HEADER_LEN,
+        OFF_SAMPLE_RATE,
+        OFF_SAMPLE_RECORD_LEN,
+        RECORD_LEN_BIAS,
+        SAMPLE_HEADER_LEN,
+    )
+
+    pad = b"\x00" if nul_padded else b" "
+
+    def name16(text: str) -> bytes:
+        return text.encode("ascii")[:16].ljust(16, pad)
+
+    image = bytearray(total_blocks * BLOCK)
+    image[0:4] = MAGIC
+    bank_block = folder_block + reserved
+    struct.pack_into("<I", image, 0x08, folder_block)
+    struct.pack_into("<I", image, 0x0C, reserved)
+    struct.pack_into("<I", image, 0x10, bank_block)
+
+    # Bank payloads live after the directories; one 1 MiB slot per bank.
+    data_at = 64 * BLOCK
+    slot = 1 << 20
+    if data_at + slot * sum(len(b) for _, b in folders) > len(image):
+        image.extend(b"\x00" * (data_at + slot * sum(len(b) for _, b in folders) - len(image)))
+
+    folder_dir = bytearray()
+    index = 0
+    for f_index, (folder_name, banks) in enumerate(folders):
+        dir_block = bank_block + f_index
+        entry = bytearray(ENTRY_LEN)
+        entry[:16] = name16(folder_name)
+        struct.pack_into("<HH", entry, 18, dir_block, 0xFFFF)
+        struct.pack_into("<H", entry, 26, 0xFFFF)
+        folder_dir += entry
+
+        bank_dir = bytearray()
+        for bank_name, samples in banks:
+            record = bytearray(ENTRY_LEN)
+            record[:16] = name16(bank_name)
+            struct.pack_into("<HH", record, 18, index + 1, 1)
+            struct.pack_into("<H", record, 26, 0x0081)
+            bank_dir += record
+
+            at = data_at + slot * index
+            if bank_header:
+                image[at : at + len(BANK_MAGIC)] = BANK_MAGIC
+                image[at + 16 : at + 32] = name16(bank_name)
+            cursor = at + 256
+            for sample_name, rate, frames in samples:
+                pcm = stereo_audio_block(frames=frames // 2)[: frames * 2]
+                record_len = SAMPLE_HEADER_LEN + len(pcm)
+                head = bytearray(SAMPLE_HEADER_LEN)
+                head[2:18] = name16(sample_name)
+                struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+                struct.pack_into("<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS)
+                struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+                image[cursor : cursor + SAMPLE_HEADER_LEN] = head
+                image[cursor + SAMPLE_HEADER_LEN : cursor + record_len] = pcm
+                cursor += record_len + 16  # a gap: records are not contiguous
+            index += 1
+        image[dir_block * BLOCK : dir_block * BLOCK + len(bank_dir)] = bank_dir
+
+    image[folder_block * BLOCK : folder_block * BLOCK + len(folder_dir)] = folder_dir
+    return bytes(image)

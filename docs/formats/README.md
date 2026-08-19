@@ -10,6 +10,7 @@ Without these docs, the next session re-derives the MDX block chain by hexdumpin
 | [nrg.md](nrg.md) | Nero `.nrg`, v1 and v2 |
 | [rawcd.md](rawcd.md) | Raw CD sectors — `.bin` + `.cue`, `.tao`, `.cdr` |
 | [akai-fs.md](akai-fs.md) | AKAI S1000/S3000 filesystem and sample header |
+| [emu3.md](emu3.md) | E-mu `EMU3` filesystem — EIIIX, ESI/Formula 4000, E-IV |
 | [audio-cd.md](audio-cd.md) | Red Book audio CDs — no filesystem at all |
 
 ## How to read the constants

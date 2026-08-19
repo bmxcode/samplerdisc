@@ -14,6 +14,7 @@ from typing import TYPE_CHECKING
 
 from samplerdisc.fs.base import original_suffix
 from samplerdisc.sample.akai import AkaiSample, NotASample, parse
+from samplerdisc.sample.emu3 import NotASample as Emu3NotASample
 from samplerdisc.stereo import find_pairs, interleave
 from samplerdisc.wav import Loop, write_wav
 
@@ -150,8 +151,8 @@ def extract_volume(
             yield Skipped(volume.name, entry.name, "no data on disc")
             continue
         try:
-            sample = parse(payload, fallback_name=entry.name)
-        except NotASample as exc:
+            sample = _parse_sample(backend, entry, payload)
+        except (NotASample, Emu3NotASample) as exc:
             yield Skipped(volume.name, entry.name, str(exc))
             continue
         if sample.frames == 0:
@@ -162,23 +163,27 @@ def extract_volume(
             os.makedirs(out_dir, exist_ok=True)
             made = True
         path = unique_path(out_dir, safe_name(entry.name))
+        # Root key, tuning and loops are AKAI-only so far; a backend whose
+        # samples do not carry them writes a plain WAV rather than a wrong one.
+        pitch = getattr(sample, "pitch", None)
         write_wav(
             path,
             sample.pcm,
             rate=sample.rate,
-            midi_note=sample.pitch,
-            cents=sample.cents,
+            midi_note=pitch,
+            cents=getattr(sample, "cents", 0.0),
             loops=_wav_loops(sample),
-            name=sample.name,
+            name=sample.name or entry.name,
         )
-        parsed[entry.name] = sample
+        if isinstance(sample, AkaiSample):
+            parsed[entry.name] = sample
         yield Extracted(
             volume=volume.name,
             name=entry.name,
             path=path,
             rate=sample.rate,
             frames=sample.frames,
-            pitch=sample.pitch,
+            pitch=pitch if pitch is not None else 0,
         )
 
     if join_stereo:
@@ -226,9 +231,20 @@ def _join_pairs(
         yield Joined(volume=volume_name, name=pair.base, path=path, rate=left.rate, frames=frames)
 
 
-def _wav_loops(sample: AkaiSample) -> list[Loop]:
-    """AKAI loop ends are exclusive; the RIFF smpl chunk wants them inclusive."""
-    return [Loop(start=loop.start, end=loop.end - 1) for loop in sample.loops]
+def _parse_sample(backend: Backend, entry, payload: bytes):
+    hook = getattr(backend, "parse_sample", None)
+    if hook is not None:
+        return hook(entry, payload)
+    return parse(payload, fallback_name=entry.name)
+
+
+def _wav_loops(sample) -> list[Loop]:
+    """AKAI loop ends are exclusive; the RIFF smpl chunk wants them inclusive.
+
+    A sample format with no loop information yields none, rather than an
+    invented one.
+    """
+    return [Loop(start=loop.start, end=loop.end - 1) for loop in getattr(sample, "loops", ())]
 
 
 def _copy_audio(

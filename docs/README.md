@@ -51,6 +51,7 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D9 | Red Book audio CD tracks → WAV | done |
 | D10 | A probe must confirm a file ([ADR-0012](adr/0012-a-probe-must-confirm-a-file.md)) | done |
 | D11 | MDX generations, the all-stored case, cue-less audio ([ADR-0013](adr/0013-cueless-audio-is-reported-not-guessed.md)) | done |
+| D12 | E-mu `EMU3` backend ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md), [ADR-0015](adr/0015-locate-banks-by-signature.md)) | done; E-IV lists only |
 
 Against the three reference discs: 687 samples, 95 stereo pairs, 380 loops, one skipped entry.
 
