@@ -195,8 +195,13 @@ def decode_name(raw: bytes) -> str:
     Names are ASCII 32..126 plus 0x7F, which is Roland's stereo side marker and
     is deliberately *kept*: it is what pairs a sample with its other half, and
     ``extract`` sanitises it out of the filename later.
+
+    Only the trailing padding goes. A *leading* space is part of the name here
+    -- the four-character group prefix can begin with one, and 215 names across
+    the reference discs do, ``" 94:JJ Ambongo ^"`` among them. Stripping both
+    ends is the obvious thing to write and it renames those samples.
     """
-    return raw.decode("ascii", "replace").rstrip("\x00 ").strip(" ")
+    return raw.decode("ascii", "replace").rstrip("\x00 ")
 
 
 def is_plausible_name(raw: bytes) -> bool:
@@ -352,8 +357,9 @@ class RolandS7xxBackend:
         # straight into the next sample and report its audio as this one's -- a
         # longer file, not an error.
         #
-        # The opposite direction cannot be clamped, only avoided, which is why
-        # the end point is read from offset 28 and not 32. See OFF_PARAM_LENGTH.
+        # The opposite direction -- a declared length far *shorter* than the
+        # audio -- cannot be clamped, only avoided, which is why the end comes
+        # from END_ADDRESS_FIELDS rather than from any single field.
         size = min(frames * 2, allocated) if frames else allocated
         return File(
             name=name,
