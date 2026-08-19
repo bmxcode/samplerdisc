@@ -9,7 +9,8 @@ declares how many objects of each class exist, and every directory sits at a
 constant 512-block. Only the sample *data* is chased, through a DOS-style FAT
 at sector 257.
 
-Every offset here is documented in the format doc against four named discs. Do
+Every offset here is documented in the format doc against nine named discs --
+four read end to end, five confirmed by range-fetching four regions each. Do
 not change a constant without changing the doc, and vice versa.
 """
 
@@ -45,6 +46,10 @@ OFF_COUNTS = 0x114
 #: Allocation table: u16 LE per cluster, indexed by cluster number. Entries 0
 #: and 1 are reserved and the first data cluster is 2, exactly as FAT12/16 does
 #: it.
+#:
+#: 2 is the first *addressable* cluster, not the first *allocated* one -- the
+#: four L-CDX discs start their first sample at cluster 116. Read the start
+#: cluster from the directory; never assume where the data begins.
 FAT_BLOCK = 1028
 FIRST_DATA_CLUSTER = 2
 
@@ -104,6 +109,10 @@ OFF_PARAM_START = 16
 OFF_PARAM_SUSTAIN = 20
 OFF_PARAM_END = 32
 OFF_PARAM_CLUSTERS = 42
+#: An *open* enum: the four local discs show only {0, 1, 2, 4} and l-cdx-01
+#: opens with 16. Carry the byte through and never gate on it -- rejecting an
+#: unknown value here would drop most of that disc on the strength of a set
+#: four discs happened to agree on.
 OFF_PARAM_LOOP_MODE = 44
 OFF_PARAM_KEY = 45
 

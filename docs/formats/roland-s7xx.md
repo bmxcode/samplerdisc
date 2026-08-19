@@ -2,16 +2,28 @@
 
 The filesystem Roland wrote on CD-ROMs for the S-770, S-750 and S-760. It is *not* the S-550 format — `Roland LCD1` opens `* ROLAND S-550 *` and shares no magic, no addressing scheme and no directory record with this one ([ADR-0014](../adr/0014-one-backend-per-on-disc-format.md)).
 
-Verified against four discs spanning both system-disk lineages. Every constant below holds on all four unless it says otherwise.
+Verified against **nine discs across every system-disk lineage the archives hold** — Ver. 1.04, 1.06, 2.19, 2.21, 2.25 and the S-760's 2.23Y and 2.24s. Every constant below holds on all nine unless it says otherwise.
+
+Four are local and read end to end:
 
 | Short name | File | Size | System disk |
 |---|---|---|---|
 | `lcdp05` | `Roland - LCDP05 Solo Strings.iso` | 130 344 960 | Ver. 2.19 |
-| `edirol-brass` | `Edirol - Brass Section vol.1 - Solos (Roland Sxx CD-ROM).iso` | 162 271 232 | **Ver. 1.06** |
+| `edirol-brass` | `Edirol - Brass Section vol.1 - Solos (Roland Sxx CD-ROM).iso` | 162 271 232 | Ver. 1.06 |
 | `northstar` | `NorthStar - Global Instruments - Volume 1 (S7xx).iso` | 296 032 256 | Ver. 2.21 |
 | `amg-now` | `AMG - Now CD-ROM (Roland).iso` | 681 140 224 | Ver. 2.25 |
 
-A fifth and sixth specimen — `L-CDX-02` (`S-760 System Disk    Ver.2.23Y`) and `L-CDP02` (`Ver. 1.04`) — are confirmed **at the header only**, by range-fetching their first 8 KB. The block map below has not yet been checked against the S-760 lineage.
+Five more were checked by range-fetching four regions each — the header, the sample directory at block 1644, the sample parameter record at block 4780, and the allocation-table window covering the first sample's chain — from `archive.org/details/archive-oldschoolscds`:
+
+| Short name | Size | System disk | Samples |
+|---|---|---|---|
+| `l-cdp02` | 125 829 120 | **Ver. 1.04** — the oldest lineage | 812 |
+| `l-cdx-01` | 629 149 696 | **S-760, Ver. 2.23Y** | 1 972 |
+| `l-cdx-02` | 629 454 848 | S-760, Ver. 2.23Y | 2 605 |
+| `l-cdx-03a` | 629 149 696 | S-760, Ver. 2.23Y | 1 969 |
+| `l-cdx-03b` | 629 149 696 | **S-760, Ver. 2.24s** | 2 038 |
+
+On all five: the sample directory sits at block 1644 with every entry of the first 16 tagged `0x44`, the parameter record at block 4780 index 0 is the same object as directory entry 0, its cluster count agrees with the directory's, the FAT chain from the declared start cluster is exactly that long, and `ceil(2 × end_frames / 9216)` equals it. **The S-760 lineage is the same format at every level, not merely at the header** — which was the last place a second format could have hidden under an identical signature, and it does not.
 
 Addressing is in **512-byte blocks**, not the 2048-byte cooked sector. That ratio of four is where an off-by-four hides.
 
@@ -46,7 +58,9 @@ The five counts are what makes this filesystem cheap to read: **a directory is r
 | `northstar` | 32 | 32 | 255 | 1 722 | **1 284** |
 | `amg-now` | 78 | 107 | 828 | 2 169 | **1 230** |
 
-`0x110` is *not* derivable from the disc size and does not divide evenly by the cluster size on any of the four. It is a partition size, useful as a bound on the highest legal cluster and nothing more.
+`0x110` is *not* derivable from the disc size and does not divide evenly by the cluster size on any of the local four. It is a partition size, useful as a bound on the highest legal cluster and nothing more.
+
+It does, however, have a ceiling, and the ceiling closes: **`amg-now` and all four L-CDX discs declare exactly 1 184 980 blocks** despite spanning 629–681 MB of physical media, and `5548 + 65 524 × 18 = 1 184 980` exactly. That is the format filling its u16 allocation table — roughly 604 MB of sample data — and it confirms from arithmetic what the block map only implied from adjacency: the table at sector 257 runs the full 256 blocks to the volume directory, 65 536 entries. No disc measured comes close to using it; the highest cluster seen anywhere is 42 194, on `amg-now`.
 
 ## The block map is fixed
 
@@ -88,6 +102,8 @@ The links at 18/20/22 form a doubly-linked list per class and **are not needed t
 
 At sector 257, u16 LE, one entry per cluster, indexed by cluster number. `entry[0]` is a media marker and `entry[1]` is unused — the **first data cluster is 2**, exactly as FAT12/16 reserves its first two entries.
 
+Cluster 2 is the first *addressable* cluster, not necessarily the first *allocated* one. The four local discs happen to put sample 0 there; all four L-CDX discs start it at **cluster 116**. Read the start cluster from the directory and never assume where the data begins.
+
 **Any value `>= 0xFFF0` terminates a chain.** `0xFFF8` and `0xFFFA` occur on the local discs; `0xFFFE` was seen on a remote disc during the D12 survey. Testing for `0xFFF8` alone would run a chain off the end of its file and into the next one.
 
 **Cluster = 9 216 bytes = 18 blocks.**
@@ -121,7 +137,7 @@ Record *i* is at `4780 × 512 + i × 48`, for the same *i* as sample-directory e
 | 36 | 2 | u16 LE, values `{0, 1, 2, 4, 5}` — **not yet named** |
 | 40 | 2 | zero on all 4 420 |
 | 42 | 2 | u16 LE cluster count, duplicating the directory |
-| 44 | 1 | **loop mode**, values `{0, 1, 2, 4}` |
+| 44 | 1 | **loop mode** — an open enum, see below |
 | 45 | 1 | **original key**, MIDI note |
 | 46 | 2 | zero on all 4 420 |
 
@@ -131,7 +147,9 @@ The addresses are **24.8 fixed point** — the low byte is a fractional sample, 
 
 **The original key at 45 is verified against the names.** `STR:Vln Mt1 G_4` reads 67, `G#4` 68, `A_4` 69, `D#5` 75; the range across the four discs is 24–108.
 
-The cluster count at 42 duplicates the directory's field and matches it on 4 420 of 4 420. Either may be read; the directory is the authority.
+The cluster count at 42 duplicates the directory's field and matches it on 4 420 of 4 420, and on all five range-fetched discs. Either may be read; the directory is the authority.
+
+**Loop mode is an open enum and must not be validated against a closed set.** The four local discs show only `{0, 1, 2, 4}`, and `l-cdx-01` opens with `16`. A parser that rejected an unknown value there would drop most of that disc, silently, on the strength of a set that four discs happened to agree on — which is this project's recurring failure exactly. Carry the byte through; do not gate on it.
 
 ## The payload is 16-bit little-endian
 
@@ -165,7 +183,21 @@ ASCII 32–126, space-padded, **plus `0x7F` and nothing else** — over 4 420 na
 
 ## Verified constants
 
-`lcdp05`, sample 0:
+The nine-disc cross-check, first sample of each. Every row confirms four things at once: the directory entry's class, the index-parallel parameter record, the FAT chain length against the declared cluster count, and the end point against both.
+
+| Disc | Sample 0 | Start cluster | Clusters | Chain | Key |
+|---|---|---|---|---|---|
+| `lcdp05` | `STR:Vln Mt1 G_4 ` | 2 | 21 | 21 | 67 |
+| `edirol-brass` | `BRS:1Fr.Horn A#3` | 11 507 | 56 | 56 | 58 |
+| `northstar` | `GTR:Gm Walk*\x7fL` | 2 | 18 | 18 | 36 |
+| `amg-now` | `KIK:JJ Ambo K1 ^` | 2 | 6 | 6 | 60 |
+| `l-cdp02` | `GTR:12Str E3 Lng` | 2 | 48 | 48 | 52 |
+| `l-cdx-01` | `KIK:TV Kik 2    ` | 116 | 6 | 6 | 60 |
+| `l-cdx-02` | `===:Keys Vol.I==` | 116 | 1 | 1 | 60 |
+| `l-cdx-03a` | `FLT:Picc2E_5C   ` | 116 | 22 | 22 | 76 |
+| `l-cdx-03b` | `===:BrsSections=` | 116 | 1 | 1 | 66 |
+
+`lcdp05`, sample 0, in full:
 
 | Quantity | Value |
 |---|---|
@@ -197,3 +229,5 @@ Whole-disc listings — a backend that reports anything else is wrong, because t
 - **Any FAT value `>= 0xFFF0` is a terminator**, not just `0xFFF8`.
 - **The addresses are 24.8 fixed point.** Reading them as plain u32 gives a byte address 256 times too large, which is inside the disc on a large image and therefore does not look wrong.
 - **`0x110` is a partition size, not a derivation.** It does not divide evenly by the cluster size on any disc.
+- **Cluster 2 is the first addressable cluster, not the first used one.** All four L-CDX discs start sample 0 at cluster 116.
+- **Loop mode is an open enum.** Four discs say `{0, 1, 2, 4}` and a fifth says `16`. Do not gate on it.
