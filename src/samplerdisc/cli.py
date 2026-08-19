@@ -247,7 +247,7 @@ def build_parser() -> argparse.ArgumentParser:
     extract.add_argument("out")
     extract.add_argument("-v", "--verbose", action="store_true", help="name each file written")
     extract.add_argument(
-        "--no-stereo", action="store_true", help="do not rejoin -L/-R pairs into stereo"
+        "--no-stereo", action="store_true", help="do not rejoin L/R pairs into stereo"
     )
     extract.add_argument(
         "--keep-originals",
@@ -265,7 +265,7 @@ def build_parser() -> argparse.ArgumentParser:
     batch.add_argument("directory")
     batch.add_argument("out")
     batch.add_argument("--manifest", help="write a JSON report of the run")
-    batch.add_argument("--no-stereo", action="store_true", help="do not rejoin -L/-R pairs")
+    batch.add_argument("--no-stereo", action="store_true", help="do not rejoin L/R pairs")
     batch.add_argument(
         "--keep-originals",
         action="store_true",

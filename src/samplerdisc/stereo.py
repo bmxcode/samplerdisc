@@ -1,10 +1,20 @@
-"""Rejoin the split mono files AKAI samplers used for stereo.
+"""Rejoin the split mono files samplers used for stereo.
 
 There is no stereo sample type on these machines: a stereo sound is two mono
-files whose names end -L and -R, paired by the sampler at load time. Nothing in
-the filesystem records the pairing, so this is a name heuristic -- which is why
-the joined file is written *alongside* the mono originals and never instead of
-them (ADR-0007).
+files whose names end in a side marker, L and R, paired by the sampler at load
+time. Nothing in the filesystem records the pairing, so this is a name
+heuristic -- which is why the joined file is written *alongside* the mono
+originals and never instead of them (ADR-0007).
+
+Two manufacturers spell the separator differently. AKAI uses a hyphen --
+``MOVIN 105 -L`` -- and Roland S-7xx uses byte ``0x7F`` -- ``STR:Vn1
+Pizz55\\x7fL``. What lives here is the *convention*, a base name followed by a
+separator and a side letter, of which those are two observed spellings; that is
+why this stays in brand-neutral core rather than moving into ``fs/``. Neither
+character is a Roland or an AKAI constant in the sense ADR-0003 guards -- there
+is no format knowledge here, nothing that must be verified against a disc to be
+read correctly, and a third manufacturer's spelling widens the class rather
+than adding a backend hook.
 """
 
 from __future__ import annotations
@@ -14,9 +24,15 @@ import sys
 from array import array
 from dataclasses import dataclass
 
-#: Trailing -L / -R, optionally with padding around it. AKAI names are fixed
-#: width, so the side marker is often followed by spaces.
-_SIDE = re.compile(r"^(?P<base>.*?)\s*-\s*(?P<side>[LR])\s*$", re.IGNORECASE)
+#: A trailing side letter behind a separator, optionally with padding around
+#: it. Both name forms are fixed width and space-padded, so the side marker is
+#: often followed by spaces. The separator is a class of two: ``-`` as AKAI
+#: writes it, and ``0x7F`` as Roland S-7xx does -- the latter appears 2130
+#: times across the reference discs and is documented under "Names" in
+#: docs/formats/roland-s7xx.md. It is deliberately *not* optional: ``KICKL``
+#: and ``KICKR`` are not a pair, and a separator-free reading is exactly the
+#: loose heuristic ADR-0007 keeps the mono originals against.
+_SIDE = re.compile(r"^(?P<base>.*?)\s*[-\x7f]\s*(?P<side>[LR])\s*$", re.IGNORECASE)
 
 
 @dataclass(frozen=True)
