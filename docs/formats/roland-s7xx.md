@@ -136,10 +136,10 @@ Record *i* is at `4780 × 512 + i × 48`, for the same *i* as sample-directory e
 |---|---|---|
 | 0 | 16 | name — *may be stale*, see below |
 | 16 | 4 | u32 LE **start point**, 24.8 fixed point |
-| 20 | 4 | u32 LE **loop start**, 24.8 fixed point |
-| 24 | 4 | u32 LE **loop end**, 24.8 fixed point |
-| 28 | 4 | u32 LE **end point**, 24.8 fixed point |
-| 32 | 4 | u32 LE **length**, 24.8 — the end point plus a 4-frame guard |
+| 20 | 4 | u32 LE **sustain loop start**, 24.8 fixed point |
+| 24 | 4 | u32 LE **sustain loop end**, 24.8 fixed point |
+| 28 | 4 | u32 LE **release loop start**, 24.8 fixed point |
+| 32 | 4 | u32 LE **release loop end**, 24.8 fixed point |
 | 36 | 2 | u16 LE, values `{0, 1, 2, 4, 5, 6}` — **not named** |
 | 40 | 2 | zero on all 4 420 |
 | 42 | 2 | u16 LE cluster count, duplicating the directory |
@@ -149,17 +149,36 @@ Record *i* is at `4780 × 512 + i × 48`, for the same *i* as sample-directory e
 
 The addresses are **24.8 fixed point** — the low byte is a fractional sample, so the frame address is the u32 shifted right by 8. The fraction is zero on every record for the fields at 16, 24, 28 and 32, and *non-zero on 220 records* for the **loop start** at 20, which is what a sub-sample loop tuning looks like and is the tell that confirms the reading. Nothing else in the format carries a fraction, and the one field that does is the one where a sampler needs it.
 
-**The length at 32 is verified independently of everything else**: it predicts the FAT cluster count on 4 417 of 4 420 samples, and on the first sample of all five range-fetched discs. It is the field to size a read from.
+### There are two loops, and no length field at all
 
-`32 = 28 + 4` on **6 168 of 6 392 samples** across the five local discs, and the four frames between them are silence — all-zero on 66–98% of samples per disc, and the median absolute value of the last 64 frames before the end point is 0 on every disc, because these samples fade out. So the two fields are interchangeable in practice; 32 is preferred only because it is the one the cluster arithmetic closes on.
+The five addresses are a start point and **two loops** — a sustain loop and a release loop, which is the S-7xx's own model. Every record on five discs fits one of three shapes:
 
-### How the loop was established
+| Shape | Samples | What it is |
+|---|---|---|
+| `(28, 32)` is a few frames near the end | 6 188 | release loop unused, parked |
+| `(28, 32)` is a verbatim copy of `(20, 24)` | 166 | release reuses the sustain loop |
+| `(28, 32)` is a third region | 9 | a genuinely separate release loop |
+| `32 < 28` — inverted, damaged | 29 | see the trap below |
+
+That accounts for all 6 392.
+
+**None of the five is a length, and there is no length field.** The end of the audio is the **furthest address the record references** — a sample must at least reach the last point it points at. That is not a convenience, because every single field fails alone:
+
+| End taken from | Fits its allocation | Contains its own loop | Cluster arithmetic exact |
+|---|---|---|---|
+| field 28 | 99.9% | 97.4% | 97.3% |
+| field 32 | 99.9% | 99.5% | 99.4% |
+| **furthest of 24, 28, 32** | **99.91%** | **100.00%** | **99.84%** |
+
+### How the sustain loop was established
 
 Two measurements that use different evidence, over every ordered pair of the five address fields — the loop start was *not* assumed:
 
 **The join test.** A forward loop `[L, E)` splices `x[E-1]` back to `x[L]`, and on a well-made loop that join is no rougher than any ordinary sample-to-sample step. Scoring each pair by the size of its join over the local mean step: `a20 -> a24` is the outright winner on **460 of 579 samples (79.4%)**, is the winner on **every disc individually** (56–88%), and has a median join of **1.47× the local step** — which is what seamless looks like. No other pair wins more than 10%.
 
 **The shape test.** At a loop point the tone at `L` and the tone at `E` are the same phase of the same note, so their waveforms should correlate once amplitude is normalised away, while a wrong pair lands at a random phase. `a20 -> a24` wins on **73–99% per disc**. Absolute correlations are modest — these are vibrato'd acoustic instruments and the two windows are seconds apart — but the ranking is unambiguous.
+
+The release pair was then forced by the records that no single-loop reading can explain: 166 samples where `(28, 32)` is a verbatim copy of `(20, 24)`, and 70 on `lcdp05` alone where field 28 falls *before* the sustain loop end and so cannot be an end point.
 
 A first pass at the join test crowned `a28 -> a32` with a median join of exactly 0.00. That was **not** a loop: those two fields are four frames apart in a fade-out, so the join was small because the signal was silent, not because the waveform matched. Guarding on a minimum loop length and a minimum amplitude is what made the measurement mean anything, and it is worth recording as the shape of the mistake — a metric that rewards silence will find plenty of it on a sampler disc.
 
@@ -254,14 +273,14 @@ Against the five local discs, listing every sample the header declares:
 
 | Disc | Samples | Payload | Looped | Stereo halves |
 |---|---|---|---|---|
-| `lcdp05` | 890 | 120 060 868 | 435 | 361 |
-| `edirol-brass` | 1 016 | 152 709 552 | 584 | 56 |
+| `lcdp05` | 890 | 122 444 586 | 435 | 361 |
+| `edirol-brass` | 1 016 | 153 184 618 | 584 | 56 |
 | `northstar` | 1 284 | 219 814 004 | 1 284 | 1 110 |
 | `amg-now` | 1 230 | 388 698 996 | 1 100 | 603 |
 | `l-cdx-01` | 1 972 | 601 370 200 | 806 | 600 |
-| **total** | **6 392** | **1 482 653 620** | 4 209 | 2 730 |
+| **total** | **6 392** | **1 485 512 404** | **4 209** | 2 730 |
 
-Every count equals the header's declared figure exactly, and 231 sampled payloads across the five discs read back byte-identical to an independent walk of the allocation table.
+Every count equals the header's declared figure exactly — including the loop counts, which come out right on every disc — and 231 sampled payloads read back byte-identical to an independent walk of the allocation table.
 
 Six entries declare more frames than their clusters hold and are clamped to the allocated length — one on `edirol-brass`, five on `l-cdx-01`, including a `:  :` divider entry claiming 13 822 636 frames in a single cluster.
 
@@ -273,6 +292,8 @@ Six entries declare more frames than their clusters hold and are clamped to the 
 - **Contiguity holds on all 4 420 chains and must not be used as a validity test.**
 - **The terminator floor is `0xFFF6`, not `0xFFF0`.** Cluster numbers reach `0xFFF5` on a full 604 MB partition and one disc really does use the top of it, so too low a floor is as wrong as too high — in the direction that loses a sample rather than corrupting one.
 - **The addresses are 24.8 fixed point.** Reading them as plain u32 gives a byte address 256 times too large, which is inside the disc on a large image and therefore does not look wrong.
+- **There is no length field, and field 32 is the tempting impostor.** It is the end point plus four frames on most records — and on 29 of 6 392 it holds the *cluster count* instead. `STR:ArcBss f C_2` reads 13 there against a real end of 56 647 frames, so sizing a read from it writes 26 bytes of a 113 KB sample: a WAV that opens cleanly in any editor, reports 13 frames, and is silent. Nothing anywhere reports a problem. Take the furthest address instead.
+- **Field 28 is not an end point either.** On 166 samples it is the release loop's *start* and sits before the sustain loop end.
 - **`0x110` is a partition size, not a derivation.** It does not divide evenly by the cluster size on any disc.
 - **Cluster 2 is the first addressable cluster, not the first used one.** All four L-CDX discs start sample 0 at cluster 116.
 - **Loop mode is an open enum.** Four discs say `{0, 1, 2, 4}` and the S-760 disc says `16`. Do not gate on it.

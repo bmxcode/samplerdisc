@@ -16,8 +16,10 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 
+from samplerdisc.sample import NotASample as _NotASample
 
-class NotASample(ValueError):
+
+class NotASample(_NotASample):
     """The payload is not usable as audio."""
 
 

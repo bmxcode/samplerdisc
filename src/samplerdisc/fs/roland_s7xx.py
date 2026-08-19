@@ -128,19 +128,34 @@ OFF_ENTRY_INDEX = 22
 SAMPLE_PARAM_BLOCK = 4780
 PARAM_LEN = 48
 
-#: Five 24.8 fixed-point addresses. The loop pair was established by measuring
-#: every ordered pair of them for splice smoothness and for waveform-shape
-#: match at the two ends -- 20 -> 24 wins both, on all five discs. The loop
-#: start was not assumed; see the format doc.
+#: Five 24.8 fixed-point addresses: a start point and **two loops**, which is
+#: the S-7xx's own model -- a sustain loop and a release loop.
+#:
+#: The sustain pair was established by measuring every ordered pair of the five
+#: for splice smoothness and for waveform-shape match; 20 -> 24 wins both, on
+#: all five discs, and the loop start was not assumed. The release pair was
+#: then forced by the records that do not fit any single-loop reading: on 166
+#: samples (28, 32) is a verbatim copy of (20, 24), and on 6188 it is a handful
+#: of frames parked at the end of the sample. Between them those two shapes
+#: plus 38 damaged records account for all 6392.
 OFF_PARAM_START = 16
-OFF_PARAM_LOOP_START = 20
-OFF_PARAM_LOOP_END = 24
-#: The end point. The length below is this plus a 4-frame guard on 6168 of the
-#: 6392 samples measured, and those 4 frames are silence.
-OFF_PARAM_END = 28
-#: Use this one to size a read: it is the field that predicts the FAT cluster
-#: count, on 4417 of 4420 samples.
-OFF_PARAM_LENGTH = 32
+OFF_PARAM_SUSTAIN_START = 20
+OFF_PARAM_SUSTAIN_END = 24
+OFF_PARAM_RELEASE_START = 28
+OFF_PARAM_RELEASE_END = 32
+
+#: None of the five is a length, and there is no length field. The end of the
+#: audio is the furthest address the record references -- a sample must at
+#: least reach the last point it points at.
+#:
+#: That is not a convenience: every single field fails on its own. 32 holds the
+#: *cluster count* on 29 records ("STR:ArcBss f C_2" reads 13 against a real
+#: end of 56 647 frames, so sizing a read from it emits 26 bytes of a 113 KB
+#: sample as a WAV that opens perfectly and is silent), and 28 falls short of
+#: the sustain loop on 166. Taking the furthest fits the allocation on 99.91%
+#: of samples, contains its own loop on 100%, and closes the cluster
+#: arithmetic on 99.84% -- better than 32 alone (99.4%) or 28 alone (97.3%).
+END_ADDRESS_FIELDS = (OFF_PARAM_SUSTAIN_END, OFF_PARAM_RELEASE_START, OFF_PARAM_RELEASE_END)
 OFF_PARAM_CLUSTERS = 42
 #: An *open* enum: {0, 1, 2, 4} on four discs and 16 on l-cdx-01, the S-760.
 #: Never gate on it -- rejecting an unknown value would have dropped 144 of
@@ -317,17 +332,28 @@ class RolandS7xxBackend:
         allocated = clusters * CLUSTER
         frames = 0
         key = loop_mode = loop_start = loop_end = point = 0
+        release_start = release_end = 0
         if len(record) >= PARAM_LEN:
-            frames = struct.unpack_from("<I", record, OFF_PARAM_LENGTH)[0] >> ADDRESS_SHIFT
-            point = struct.unpack_from("<I", record, OFF_PARAM_START)[0] >> ADDRESS_SHIFT
-            loop_start = struct.unpack_from("<I", record, OFF_PARAM_LOOP_START)[0] >> ADDRESS_SHIFT
-            loop_end = struct.unpack_from("<I", record, OFF_PARAM_LOOP_END)[0] >> ADDRESS_SHIFT
+
+            def address(at: int) -> int:
+                return struct.unpack_from("<I", record, at)[0] >> ADDRESS_SHIFT
+
+            point = address(OFF_PARAM_START)
+            loop_start = address(OFF_PARAM_SUSTAIN_START)
+            loop_end = address(OFF_PARAM_SUSTAIN_END)
+            release_start = address(OFF_PARAM_RELEASE_START)
+            release_end = address(OFF_PARAM_RELEASE_END)
+            frames = max(address(at) for at in END_ADDRESS_FIELDS)
             loop_mode = record[OFF_PARAM_LOOP_MODE]
             key = record[OFF_PARAM_KEY]
-        # Clamp rather than trust: Edirol's "BRS:Cpm Tpt G_3A" declares 203 415
-        # frames against 28 clusters, which hold 129 024. Reading the declared
-        # length would walk straight into the next sample and report its audio
-        # as this one's -- a longer file, not an error.
+        # Clamp rather than trust, in the one direction that can be checked:
+        # Edirol's "BRS:Cpm Tpt G_3A" declares 203 415 frames against 28
+        # clusters, which hold 129 024. Reading the declared length would walk
+        # straight into the next sample and report its audio as this one's -- a
+        # longer file, not an error.
+        #
+        # The opposite direction cannot be clamped, only avoided, which is why
+        # the end point is read from offset 28 and not 32. See OFF_PARAM_LENGTH.
         size = min(frames * 2, allocated) if frames else allocated
         return File(
             name=name,
@@ -342,6 +368,8 @@ class RolandS7xxBackend:
                 ("loop_mode", loop_mode),
                 ("loop_start", loop_start),
                 ("loop_end", loop_end),
+                ("release_start", release_start),
+                ("release_end", release_end),
                 ("start_point", point),
                 ("declared_frames", frames),
                 # This disc's own cluster ceiling, so read_file can bound the
@@ -410,6 +438,26 @@ class RolandS7xxBackend:
     def _read_run(self, image: SectorImage, offset: int, first: int, count: int) -> bytes:
         at = DATA_BLOCK * BLOCK + (first - FIRST_DATA_CLUSTER) * CLUSTER
         return image.read(offset + at, count * CLUSTER)
+
+    def parse_sample(self, entry: File, payload: bytes):
+        """The parameters travelled on the File; the payload is already PCM.
+
+        Everything this needs was read from the 48-byte parameter record during
+        the directory walk, because on this format that record lives at block
+        4780 and the audio lives past block 5548 -- there is no header in front
+        of the samples to parse.
+        """
+        from samplerdisc.sample import roland_s7xx as sample_roland
+
+        return sample_roland.parse(
+            payload,
+            rate=entry.get("rate", SAMPLE_RATE),
+            key=entry.get("key"),
+            loop_mode=entry.get("loop_mode"),
+            loop_start=entry.get("loop_start"),
+            loop_end=entry.get("loop_end"),
+            fallback_name=entry.name,
+        )
 
     def original_suffix(self, entry: File) -> str:
         return ".s7s" if entry.kind == "sample" else ".bin"
