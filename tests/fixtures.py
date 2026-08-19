@@ -28,8 +28,17 @@ def incompressible_block(seed: int = 1, size: int = DEFAULT_BLOCK_SIZE) -> bytes
     return bytes(out[:size])
 
 
-def make_mdx(blocks: list[bytes], stored: set[int] | None = None) -> tuple[bytes, bytes]:
-    """Build a compressed MDX. Returns (file bytes, expected decoded payload)."""
+def make_mdx(
+    blocks: list[bytes],
+    stored: set[int] | None = None,
+    disc_soft: bool = False,
+) -> tuple[bytes, bytes]:
+    """Build a compressed MDX. Returns (file bytes, expected decoded payload).
+
+    ``disc_soft`` writes the later header seen on 2015-era images -- version
+    ``02 01``, "Disc Soft Ltd.", and 2560 rather than 192 in the field at 0x38.
+    The payload still starts at 0x40 in both, which is the point of testing it.
+    """
     stored = stored or set()
     payload = bytearray()
     expected = bytearray()
@@ -43,10 +52,19 @@ def make_mdx(blocks: list[bytes], stored: set[int] | None = None) -> tuple[bytes
 
     header = bytearray(PAYLOAD_OFFSET)
     header[0 : len(MAGIC)] = MAGIC
-    header[0x10:0x12] = b"\x02\x00"
-    header[0x12:0x2C] = b"(C) 2000-2011 DT Soft Ltd."
+    # Fixed-width fields: a slice assignment of the wrong length grows the
+    # bytearray and shifts every offset after it, which produces a header that
+    # parses to nonsense rather than an error.
+    version, notice = (
+        (b"\x02\x01", b"(C) 2000-2015 DiscSoft Ltd")
+        if disc_soft
+        else (b"\x02\x00", b"(C) 2000-2011 DT Soft Ltd.")
+    )
+    assert len(notice) == 0x2C - 0x12, f"copyright notice must be {0x2C - 0x12} bytes"
+    header[0x10:0x12] = version
+    header[0x12:0x2C] = notice
     struct.pack_into("<Q", header, 0x30, PAYLOAD_OFFSET + len(payload))
-    struct.pack_into("<Q", header, 0x38, 192)
+    struct.pack_into("<Q", header, 0x38, 2560 if disc_soft else 192)
     descriptor = b"\x00" * 640
     return bytes(header) + bytes(payload) + descriptor, bytes(expected)
 
@@ -292,3 +310,38 @@ def subchannel_block(seed: int = 0, sectors: int = 15) -> tuple[bytes, bytes]:
         stored += data + b"\x40\x00" * (SUBCHANNEL_LEN // 2)
         cooked += data
     return bytes(stored), bytes(cooked)
+
+
+def stereo_audio_block(frames: int = 16384, seed: int = 7) -> bytes:
+    """A smooth 16-bit LE stereo waveform whose channels differ.
+
+    Not a sine: a slow random walk per channel, which is closer to what real
+    programme material looks like to the statistics in ``audiocd`` and avoids a
+    periodicity the gate could pick up on for the wrong reason.
+    """
+    out = bytearray()
+    left = right = 0
+    state = seed | 1
+    for _ in range(frames):
+        state = (state * 1103515245 + 12345) & 0xFFFFFFFF
+        left = max(-20000, min(20000, left + ((state >> 16) % 401) - 200))
+        state = (state * 1103515245 + 12345) & 0xFFFFFFFF
+        right = max(-20000, min(20000, right + ((state >> 16) % 401) - 200))
+        out += struct.pack("<hh", left, right)
+    return bytes(out)
+
+
+def mono_sample_block(frames: int = 32768, seed: int = 11) -> bytes:
+    """A smooth 16-bit LE *mono* waveform -- what a sampler payload looks like.
+
+    The audio gate must not accept this: it is exactly the shape that fools a
+    plain smoothness test, and real Roland discs are full of it.
+    """
+    out = bytearray()
+    value = 0
+    state = seed | 1
+    for _ in range(frames):
+        state = (state * 1103515245 + 12345) & 0xFFFFFFFF
+        value = max(-20000, min(20000, value + ((state >> 16) % 401) - 200))
+        out += struct.pack("<h", value)
+    return bytes(out)

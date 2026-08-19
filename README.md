@@ -87,6 +87,7 @@ Every extracted WAV was checked against the bytes on the disc it came from: all 
 - **Roland, E-mu, Ensoniq and Kurzweil filesystems.** `AMG - Now CD-ROM (Roland).iso` from that collection is an S-770 disc and does not read. The container layer opens it, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
 - **`.mds`/`.mdf` is untested.** There is code for it, and it has never seen a real pair — searches of both archive.org and the nnty.fun collection (~300 files) turned up none, so sample CDs in this form may simply be rare. It reads the `.mdf` and sniffs its geometry rather than parsing the descriptor, which should work for a single-track data disc. Treat it as unsupported until someone confirms otherwise, and please open an issue if you have one.
 - **`CUES` chunks in NRG** are not parsed; only `CUEX`. No disc using the older form was to hand to check the layout against.
+- **An audio CD with no cue sheet cannot be split into tracks.** `samplerdisc info` tells you when a disc's content looks like Red Book audio, and `extract --assume-audio-cd` writes the whole stream as one WAV, but the track boundaries live in a cue, not in the bytes.
 - **AIFF payloads on ISO 9660 discs are copied, not converted** — they come out as `.aiff`.
 - **AKAI S900, floppy images and the DD partition.** Use [akaiutil](https://sourceforge.net/projects/akaiutil/).
 

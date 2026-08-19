@@ -9,12 +9,24 @@ Verified against `s3000-lib1` (264 088 447 bytes).
 | Offset | Size | Meaning |
 |---|---|---|
 | `0x00` | 16 | `"MEDIA DESCRIPTOR"` |
-| `0x10` | 2 | version — `02 00` here |
-| `0x12` | 26 | `"(C) 2000-2011 DT Soft Ltd."` |
-| `0x30` | 8 | u64 LE, offset of the trailing MDS descriptor — `264087807` |
-| `0x38` | 8 | u64 LE, `192` |
+| `0x10` | 2 | version |
+| `0x12` | 26 | copyright notice |
+| `0x30` | 8 | u64 LE, offset of the trailing MDS descriptor |
+| `0x38` | 8 | u64 LE, **not** the payload offset |
 
-**The payload starts at `0x40`, not at the `192` in the field at `0x38`.** That field looks exactly like a data offset and is not one. Starting at `192` lands mid-stream and the first inflate fails with `invalid stored block lengths`, which reads like a corrupt file rather than a wrong offset.
+Two generations are in the wild, and they differ only in this header:
+
+| | `s3000-lib1` | `clearmountain` |
+|---|---|---|
+| Version at `0x10` | `02 00` | `02 01` |
+| Notice at `0x12` | `(C) 2000-2011 DT Soft Ltd.` | `© 2000-2015 Disc Soft Ltd.` |
+| Descriptor offset at `0x30` | `264087807` | `632728048` |
+| Field at `0x38` | `192` | **`2560`** |
+| Descriptor length | 640 | 3008 |
+
+**The payload starts at `0x40` on both, not at the value in the field at `0x38`.** That field looks exactly like a data offset and is not one. On the 2011 image, starting at `192` lands mid-stream and the first inflate fails with `invalid stored block lengths`, which reads like a corrupt file rather than a wrong offset.
+
+The 2015 image is what settles it. One wrong value in a plausible-looking field could be a coincidence; the same field holding a *different* wrong value on another image cannot be. `0x40` was confirmed on it independently, by diffing the decoded stream against a `.cdr` of the same disc: the two are byte-identical with the payload taken from `0x40`, at a delta of exactly 64.
 
 The payload runs from `0x40` up to the descriptor offset from `0x30`. The descriptor itself — 640 bytes here — is high-entropy and did not yield to inflate at any alignment. **It is not needed.** Everything required to decode the image comes from the block chain.
 
@@ -75,11 +87,30 @@ The walk landing *exactly* on the descriptor offset was the decisive evidence wh
 
 **It is not a runtime check.** Once a decoder has the stored-block fallback, exact termination is a loop invariant: a stored block consumes `min(32768, remaining)`, so the last one always absorbs precisely what is left, whatever went wrong earlier. A decoder that asserts on it is asserting on arithmetic it just performed.
 
-What does show a misparse is the **ratio of stored to compressed blocks**. A wrong payload offset makes nearly every block fail to inflate, so the counts inverted from the 4-in-16 526 below are the signal to watch. `samplerdisc info` prints both.
+A wrong payload offset makes nearly every block fail to inflate, so the **ratio of stored to compressed blocks** moves — and for a payload that is expected to compress, an inversion of the 4-in-16 526 below is worth looking at. `samplerdisc info` prints both counts.
+
+**But an all-stored image is not evidence of a misparse.** That was claimed here, and on ADR-0006, and it is wrong as stated. `Ew-040 PRO Samples 6 _ Bob Clearmountain Drums II.mdx` decodes as 0 compressed and 19 310 stored, and is completely correct: the disc is a Red Book audio CD, and PCM does not deflate. Every block was stored because storing was the right answer.
+
+So the ratio only says something about a payload you expect to compress. All-stored has two causes and the counts cannot separate them:
+
+- the content genuinely does not compress — audio, or a disc full of raw PCM;
+- the block size is wrong, so every compressed block failed the size check and was taken literally.
+
+**The discriminator is a second view of the same disc**, not a statistic inside the container. For the Clearmountain disc that was a `.cdr` of the same title: `MdxImage.read()` output matched it byte for byte at every offset sampled, which no misparse survives. A filesystem being found is the other second view, and a cheaper one. Failing both, `samplerdisc info` reports the state rather than a verdict — see *The all-stored case* below.
 
 For comparison, `AMG - Vince Clarke Lucky Bastard AKAI.mdx`: block size 32 160, 17 624 blocks, 17 622 compressed, 2 stored.
 
 Output is **2048-byte cooked sectors** — no sync pattern, no header, no ECC. Scanning the decoded stream for the CD sync pattern `00 FF×10 00` finds nothing.
+
+## The all-stored case
+
+The block size is read off the first block, which only works when the first block is compressed. When it is stored there is nothing to measure, `DEFAULT_BLOCK_SIZE` is assumed, and `block_size_measured` records that it was assumed.
+
+For an image that is stored throughout, this does not matter, and the reason is worth stating because it is not obvious: stored blocks consume `min(block_size, remaining)` and emit exactly what they consume, so whatever the block size, the blocks partition the payload contiguously and the output is the payload verbatim. The Clearmountain image decodes correctly with an assumed 32 768 that is almost certainly not the size its writer used.
+
+For a *mixed* image whose lead-in is stored and whose body is compressed at a size other than 32 768, it would matter — every compressed block would fail the size check and be taken literally. That case has no specimen. What can be said is that it cannot fail silently: a wrong block size makes every compressed block fail, so the image presents as all-stored with `block_size_measured` false, and `info` says so.
+
+**Searching the payload for the first real DEFLATE stream is the obvious fix and is not one.** Scanning a 2 MB window of ordinary CD audio at byte alignment turns up **167 byte runs that inflate cleanly** and terminate. A forward scan would therefore pick a plausible, wrong block size on a disc that decodes perfectly today — trading a silent failure never observed for one we would introduce. Reporting the state costs nothing and is honest about what the container can and cannot know.
 
 ## The tail
 
@@ -89,7 +120,7 @@ This is a known, accepted loose end. Those trailing bytes fall outside any block
 
 ## Traps
 
-- The payload offset is `0x40`, not the `192` at `0x38`.
+- The payload offset is `0x40`, not the value at `0x38` — `192` on a 2011 image, `2560` on a 2015 one, and neither is it.
 - Raw DEFLATE (`-15`), not zlib-wrapped — `zlib.decompress` on its own will not do it.
 - The block size varies between images. Measure it; do not assume 32768.
 - No block index exists. Do not go looking for one; the 640-byte descriptor is too small to hold ~16 500 entries and does not decode.

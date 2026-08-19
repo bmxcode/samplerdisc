@@ -300,3 +300,51 @@ def test_usual_block_size_still_works(tmp_path):
     image = MdxImage(write(tmp_path, "usual.mdx", raw))
     assert image.block_size == DEFAULT_BLOCK_SIZE
     assert image.read(0, len(expected)) == expected
+
+
+# --- MDX generations and the all-stored case (D11) -----------------------
+
+
+def test_payload_starts_at_0x40_in_the_2015_header_too(tmp_path):
+    """The field at 0x38 reads 192 on a 2011 image and 2560 on a 2015 one.
+
+    Neither is the payload offset. One wrong value could be coincidence; two
+    different wrong values in the same field settle it. See docs/formats/mdx.md.
+    """
+    blocks = [fixtures.compressible_block(i) for i in range(3)]
+    data, expected = fixtures.make_mdx(blocks, disc_soft=True)
+    path = tmp_path / "discsoft.mdx"
+    path.write_bytes(data)
+    with MdxImage(path) as image:
+        assert image.read(0, len(expected)) == expected
+        assert image.block_size == DEFAULT_BLOCK_SIZE
+
+
+def test_an_all_stored_image_is_reported_not_guessed_at(tmp_path):
+    """PCM does not deflate, so an audio CD image is legitimately all stored.
+
+    The container cannot tell that from a block size it failed to measure, so
+    it reports both facts and leaves the reading to the caller rather than
+    searching the payload for a DEFLATE stream that may not be there.
+    """
+    blocks = [fixtures.incompressible_block(i) for i in range(4)]
+    data, expected = fixtures.make_mdx(blocks, stored={0, 1, 2, 3})
+    path = tmp_path / "stored.mdx"
+    path.write_bytes(data)
+    with MdxImage(path) as image:
+        assert image.stored_only
+        assert not image.block_size_measured
+        # Block size is arithmetically irrelevant when every block is stored:
+        # the blocks partition the payload contiguously whatever it is.
+        assert image.read(0, len(expected)) == expected
+
+
+def test_a_measured_block_size_is_not_reported_as_assumed(tmp_path):
+    """A size read off a block that inflated is a size that works."""
+    blocks = [fixtures.compressible_block(i) for i in range(3)]
+    data, _ = fixtures.make_mdx(blocks)
+    path = tmp_path / "measured.mdx"
+    path.write_bytes(data)
+    with MdxImage(path) as image:
+        assert image.block_size_measured
+        assert not image.stored_only

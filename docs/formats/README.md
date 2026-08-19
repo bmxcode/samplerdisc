@@ -23,5 +23,6 @@ The reference discs are not in this repository ([ADR-0008](../adr/0008-no-media-
 | `s3000-lib1` | `AKAI.S3000.Sound.Library.1.mdx` | 264 088 447 |
 | `black2black` | `TZAMGB2BAK1.bin` + `.cue` | 622 049 904 |
 | `loopsoup` | `AMG - Loop Soup AKAI.nrg` | 542 419 100 |
+| `clearmountain` | `Ew-040 PRO Samples 6 _ Bob Clearmountain Drums II.mdx` (+ `.cdr`) | 632 731 056 |
 
 Point `SAMPLERDISC_TEST_DISCS` at a directory containing them to run the disc-backed tests.
