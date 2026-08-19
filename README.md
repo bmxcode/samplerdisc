@@ -69,18 +69,22 @@ Compressed `.mdx` is the piece no other open-source tool reads today. The format
 
 ## Tested against
 
-19 disc images from the [retro-sample-cds](https://archive.org/details/retro-sample-cds) collection — seven compressed `.mdx`, four `.iso`, two `.nrg`, a raw `.bin`, and one audio CD:
+46 disc images from two archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds) and [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds). Seventeen compressed `.mdx`, twenty flat `.iso`/`.bin`, five raw CD images, two `.nrg`, two audio CDs.
 
 | | |
 |---|---|
-| Discs converted | 18 of 19 |
-| Samples | 5 698 |
-| Stereo pairs rejoined | 928 |
-| Audio CD tracks | 96 |
-| Entries skipped (damage) | 20 (0.3%) |
-| Time | 13.5 s |
+| Discs converted | 34 of 46 |
+| Samples | 22 320 |
+| Stereo pairs rejoined | 1 523 |
+| Audio CD tracks | 161 |
+| Entries skipped (damage) | 20 |
+| Time | 21 s |
 
-Every extracted WAV was checked against the bytes on the disc it came from: all 5 698 are byte-identical with matching sample rates, none silent, none unreadable.
+Every extracted WAV was checked against the bytes on the disc it came from — **all 22 320 are byte-identical**, none unreadable, none zero-length. Ten are silent for their whole length and are meant to be: they are named `Dead Air`, on a Proteus library that ships silence as a sample.
+
+Sample rates run from 6 000 to 48 000 Hz across 908 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
+
+The twelve that do not convert are accounted for: six Roland files (four S-770, and one S-550 disc present as both `.iso` and `.nrg`), two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, one Emulator IV disc that lists its 12 banks but does not extract them, and one ISO 9660 disc holding E-mu `.EBL` banks rather than audio.
 
 ## What doesn't work yet
 
@@ -127,6 +131,10 @@ uv run ruff check . && uv run ruff format --check . && uv run pytest -q
 ```
 
 Test fixtures are synthetic and built in code. Disc images are never committed ([ADR-0008](docs/adr/0008-no-media-in-the-repo.md)); tests that need a real disc read `SAMPLERDISC_TEST_DISCS` and skip when it is unset.
+
+## Changelog
+
+[CHANGELOG.md](CHANGELOG.md) records what changed between releases and why.
 
 ## Legal
 
