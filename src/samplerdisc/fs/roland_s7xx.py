@@ -105,14 +105,30 @@ OFF_ENTRY_INDEX = 22
 #: them silently.
 SAMPLE_PARAM_BLOCK = 4780
 PARAM_LEN = 48
+
+#: Five 24.8 fixed-point addresses. The loop pair was established by measuring
+#: every ordered pair of them for splice smoothness and for waveform-shape
+#: match at the two ends -- 20 -> 24 wins both, on all five discs. The loop
+#: start was not assumed; see the format doc.
 OFF_PARAM_START = 16
-OFF_PARAM_SUSTAIN = 20
-OFF_PARAM_END = 32
+OFF_PARAM_LOOP_START = 20
+OFF_PARAM_LOOP_END = 24
+#: The end point. The length below is this plus a 4-frame guard on 6168 of the
+#: 6392 samples measured, and those 4 frames are silence.
+OFF_PARAM_END = 28
+#: Use this one to size a read: it is the field that predicts the FAT cluster
+#: count, on 4417 of 4420 samples.
+OFF_PARAM_LENGTH = 32
 OFF_PARAM_CLUSTERS = 42
-#: An *open* enum: the four local discs show only {0, 1, 2, 4} and l-cdx-01
-#: opens with 16. Carry the byte through and never gate on it -- rejecting an
-#: unknown value here would drop most of that disc on the strength of a set
-#: four discs happened to agree on.
+#: An *open* enum: {0, 1, 2, 4} on four discs and 16 on l-cdx-01, the S-760.
+#: Never gate on it -- rejecting an unknown value would have dropped 144 of
+#: that disc's samples on the strength of a set four discs agreed on.
+#:
+#: It gates *playback*, not validity. Mode-0 samples carry loop addresses that
+#: splice just as cleanly as mode-1 ones (80.6% against 86.5%), so a zero here
+#: says the sampler does not loop the sample -- not that the addresses are
+#: junk. Emit a loop when this is non-zero; conclude nothing when it is zero.
+#: What the non-zero values distinguish is not established.
 OFF_PARAM_LOOP_MODE = 44
 OFF_PARAM_KEY = 45
 
@@ -122,9 +138,13 @@ OFF_PARAM_KEY = 45
 #: disc and so does not look wrong.
 ADDRESS_SHIFT = 8
 
-#: Measured, not decoded. Pitch against the original-key byte lands on 44100 on
-#: every sample checked across four discs, and no rate field has been
-#: identified. See ADR-0018 for what that exposes.
+#: Measured, not decoded, and the measurement has a known blind spot: 44100 and
+#: 22050 differ by exactly one octave, which is the interval pitch estimation
+#: resolves worst and that an original-key byte can itself be wrong by. What
+#: the measurement does establish is that every sample shares one rate and that
+#: it is 44100 * 2**k -- every ratio measured lands within a few percent of an
+#: exact power of two -- and that the majority land on k=0. No field in the
+#: 48-byte record stratifies it. See ADR-0018 for what that exposes.
 SAMPLE_RATE = 44100
 
 #: Names are ASCII 32..126 plus 0x7F, over 4420 names on four discs. 0x7F is

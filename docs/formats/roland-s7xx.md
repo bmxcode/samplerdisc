@@ -12,18 +12,18 @@ Four are local and read end to end:
 | `edirol-brass` | `Edirol - Brass Section vol.1 - Solos (Roland Sxx CD-ROM).iso` | 162 271 232 | Ver. 1.06 |
 | `northstar` | `NorthStar - Global Instruments - Volume 1 (S7xx).iso` | 296 032 256 | Ver. 2.21 |
 | `amg-now` | `AMG - Now CD-ROM (Roland).iso` | 681 140 224 | Ver. 2.25 |
+| `l-cdx-01` | `Roland - L-CDX-01 - Rhythm Section Instruments (Roland Sxx CD-ROM).iso` | 629 149 696 | **S-760, Ver. 2.23Y** |
 
-Five more were checked by range-fetching four regions each — the header, the sample directory at block 1644, the sample parameter record at block 4780, and the allocation-table window covering the first sample's chain — from `archive.org/details/archive-oldschoolscds`:
+Four more were checked by range-fetching four regions each — the header, the sample directory at block 1644, the sample parameter record at block 4780, and the allocation-table window covering the first sample's chain — from `archive.org/details/archive-oldschoolscds`:
 
 | Short name | Size | System disk | Samples |
 |---|---|---|---|
 | `l-cdp02` | 125 829 120 | **Ver. 1.04** — the oldest lineage | 812 |
-| `l-cdx-01` | 629 149 696 | **S-760, Ver. 2.23Y** | 1 972 |
-| `l-cdx-02` | 629 454 848 | S-760, Ver. 2.23Y | 2 605 |
+| `l-cdx-02` | 629 454 848 | **S-760, Ver. 2.23Y** | 2 605 |
 | `l-cdx-03a` | 629 149 696 | S-760, Ver. 2.23Y | 1 969 |
 | `l-cdx-03b` | 629 149 696 | **S-760, Ver. 2.24s** | 2 038 |
 
-On all five: the sample directory sits at block 1644 with every entry of the first 16 tagged `0x44`, the parameter record at block 4780 index 0 is the same object as directory entry 0, its cluster count agrees with the directory's, the FAT chain from the declared start cluster is exactly that long, and `ceil(2 × end_frames / 9216)` equals it. **The S-760 lineage is the same format at every level, not merely at the header** — which was the last place a second format could have hidden under an identical signature, and it does not.
+On all four: the sample directory sits at block 1644 with every entry of the first 16 tagged `0x44`, the parameter record at block 4780 index 0 is the same object as directory entry 0, its cluster count agrees with the directory's, the FAT chain from the declared start cluster is exactly that long, and `ceil(2 × end_frames / 9216)` equals it. **The S-760 lineage is the same format at every level, not merely at the header** — which was the last place a second format could have hidden under an identical signature, and it does not.
 
 Addressing is in **512-byte blocks**, not the 2048-byte cooked sector. That ratio of four is where an off-by-four hides.
 
@@ -130,26 +130,42 @@ Record *i* is at `4780 × 512 + i × 48`, for the same *i* as sample-directory e
 |---|---|---|
 | 0 | 16 | name — *may be stale*, see below |
 | 16 | 4 | u32 LE **start point**, 24.8 fixed point |
-| 20 | 4 | u32 LE **sustain loop point**, 24.8 fixed point |
-| 24 | 4 | u32 LE address, 24.8 — **not yet named** |
-| 28 | 4 | u32 LE address, 24.8 — **not yet named** |
-| 32 | 4 | u32 LE **end point**, 24.8 fixed point |
-| 36 | 2 | u16 LE, values `{0, 1, 2, 4, 5}` — **not yet named** |
+| 20 | 4 | u32 LE **loop start**, 24.8 fixed point |
+| 24 | 4 | u32 LE **loop end**, 24.8 fixed point |
+| 28 | 4 | u32 LE **end point**, 24.8 fixed point |
+| 32 | 4 | u32 LE **length**, 24.8 — the end point plus a 4-frame guard |
+| 36 | 2 | u16 LE, values `{0, 1, 2, 4, 5, 6}` — **not named** |
 | 40 | 2 | zero on all 4 420 |
 | 42 | 2 | u16 LE cluster count, duplicating the directory |
 | 44 | 1 | **loop mode** — an open enum, see below |
 | 45 | 1 | **original key**, MIDI note |
 | 46 | 2 | zero on all 4 420 |
 
-The addresses are **24.8 fixed point** — the low byte is a fractional sample, so the frame address is the u32 shifted right by 8. The fraction is zero on every record for the fields at 16, 24, 28 and 32, and *non-zero on 189 records* for the sustain loop at 20, which is what a sub-sample loop tuning looks like and is the tell that confirms the reading.
+The addresses are **24.8 fixed point** — the low byte is a fractional sample, so the frame address is the u32 shifted right by 8. The fraction is zero on every record for the fields at 16, 24, 28 and 32, and *non-zero on 220 records* for the **loop start** at 20, which is what a sub-sample loop tuning looks like and is the tell that confirms the reading. Nothing else in the format carries a fraction, and the one field that does is the one where a sampler needs it.
 
-**The end point at 32 is verified independently of everything else**: it predicts the FAT cluster count on 4 417 of 4 420 samples, on four discs.
+**The length at 32 is verified independently of everything else**: it predicts the FAT cluster count on 4 417 of 4 420 samples, and on the first sample of all five range-fetched discs. It is the field to size a read from.
+
+`32 = 28 + 4` on **6 168 of 6 392 samples** across the five local discs, and the four frames between them are silence — all-zero on 66–98% of samples per disc, and the median absolute value of the last 64 frames before the end point is 0 on every disc, because these samples fade out. So the two fields are interchangeable in practice; 32 is preferred only because it is the one the cluster arithmetic closes on.
+
+### How the loop was established
+
+Two measurements that use different evidence, over every ordered pair of the five address fields — the loop start was *not* assumed:
+
+**The join test.** A forward loop `[L, E)` splices `x[E-1]` back to `x[L]`, and on a well-made loop that join is no rougher than any ordinary sample-to-sample step. Scoring each pair by the size of its join over the local mean step: `a20 -> a24` is the outright winner on **460 of 579 samples (79.4%)**, is the winner on **every disc individually** (56–88%), and has a median join of **1.47× the local step** — which is what seamless looks like. No other pair wins more than 10%.
+
+**The shape test.** At a loop point the tone at `L` and the tone at `E` are the same phase of the same note, so their waveforms should correlate once amplitude is normalised away, while a wrong pair lands at a random phase. `a20 -> a24` wins on **73–99% per disc**. Absolute correlations are modest — these are vibrato'd acoustic instruments and the two windows are seconds apart — but the ranking is unambiguous.
+
+A first pass at the join test crowned `a28 -> a32` with a median join of exactly 0.00. That was **not** a loop: those two fields are four frames apart in a fade-out, so the join was small because the signal was silent, not because the waveform matched. Guarding on a minimum loop length and a minimum amplitude is what made the measurement mean anything, and it is worth recording as the shape of the mistake — a metric that rewards silence will find plenty of it on a sampler disc.
 
 **The original key at 45 is verified against the names.** `STR:Vln Mt1 G_4` reads 67, `G#4` 68, `A_4` 69, `D#5` 75; the range across the four discs is 24–108.
 
 The cluster count at 42 duplicates the directory's field and matches it on 4 420 of 4 420, and on all five range-fetched discs. Either may be read; the directory is the authority.
 
-**Loop mode is an open enum and must not be validated against a closed set.** The four local discs show only `{0, 1, 2, 4}`, and `l-cdx-01` opens with `16`. A parser that rejected an unknown value there would drop most of that disc, silently, on the strength of a set that four discs happened to agree on — which is this project's recurring failure exactly. Carry the byte through; do not gate on it.
+**Loop mode is an open enum and must not be validated against a closed set.** The values seen across five discs are `{0, 1, 2, 4, 16}` — and `16` appears only on `l-cdx-01`, which is to say only on the S-760 lineage. A parser that rejected an unknown value would have dropped 144 of that disc's samples, silently, on the strength of a set that four discs happened to agree on.
+
+**The mode byte gates playback, not validity.** It is tempting to read mode `0` as "these loop fields are junk". It is not: mode-0 samples have a `a20 -> a24` join that is seamless on **80.6%** of them, against **86.5%** for non-zero modes. The loop points are crafted on nearly every sample; the mode byte decides whether the sampler uses them. So a loop should be emitted when the mode is non-zero, and the mode being zero is not evidence that the addresses are wrong.
+
+What the non-zero values *mean* — forward, alternating, reverse — is **not established**. All of `{1, 2, 4, 16}` show seamless joins, and nothing distinguishes them. Mode 1 covers 3 962 of the 6 392 samples measured; the other three together cover 263.
 
 ## The payload is 16-bit little-endian
 
@@ -159,9 +175,15 @@ Measured at **each record's own start**, never at a sector boundary: little-endi
 
 ## The sample rate
 
-**44 100 on every disc measured, and no rate field has been identified.**
+**44 100. No rate field has been identified, and one measurement cannot settle it on its own — so here is exactly what the evidence does and does not support.**
 
-The rate is established by pitch: the period of the recorded waveform, against the note in the original-key byte, lands on 44 100 across every sample checked on all four discs, with nothing clustering at 22 050. Byte 36 — the only remaining low-cardinality field — does not correlate with measured pitch and is *not* a rate flag.
+Measuring the period of the recorded waveform against the note in the original-key byte puts `edirol-brass` at 44 100 on **93%** of its chromatic samples. Pooled over the discs the figure is 62%, with the remainder sitting at almost exactly ×0.5 and ×2.0.
+
+**Those are octave ambiguities, and they are the reason pitch alone cannot decide this.** 44 100 and 22 050 differ by exactly one octave, which is precisely the interval that pitch estimation is worst at resolving and that a sample's original key can itself be wrong by. Any method that octave-corrects destroys the distinction it was meant to measure. This is stated plainly because the tempting move — octave-correct the estimates, watch them all snap to 44 100, and call it verified — proves nothing at all.
+
+What the measurement *does* establish is the fine structure. Every ratio measured lands within a few percent of an exact power of two: 0.486, 0.959, 0.977, 0.988, 0.998, 1.924, 1.956, 1.980. So **all samples share one rate**, and that rate is 44 100 × 2ᵏ. Anything like 32 000 or 48 000 is excluded. Given the S-770 records at 44.1 and 22.05 kHz, that leaves two candidates, and the majority landing on ×1.0 picks 44 100.
+
+**Byte 36 is not the rate flag.** Its values `{0, 1, 2, 4, 5, 6}` do not stratify the measured pitch at all — ×0.5, ×1.0 and ×2.0 appear in every bucket, as they do for every value of the loop-mode byte. Nothing else in the 48-byte record has the cardinality a rate flag would.
 
 That is a measurement, not a decode, and the exposure is stated in [ADR-0018](../adr/0018-the-s7xx-sample-rate-is-measured.md): a 22.05 kHz disc would come out at double speed with nothing reporting it.
 
@@ -230,4 +252,6 @@ Whole-disc listings — a backend that reports anything else is wrong, because t
 - **The addresses are 24.8 fixed point.** Reading them as plain u32 gives a byte address 256 times too large, which is inside the disc on a large image and therefore does not look wrong.
 - **`0x110` is a partition size, not a derivation.** It does not divide evenly by the cluster size on any disc.
 - **Cluster 2 is the first addressable cluster, not the first used one.** All four L-CDX discs start sample 0 at cluster 116.
-- **Loop mode is an open enum.** Four discs say `{0, 1, 2, 4}` and a fifth says `16`. Do not gate on it.
+- **Loop mode is an open enum.** Four discs say `{0, 1, 2, 4}` and the S-760 disc says `16`. Do not gate on it.
+- **Loop mode 0 does not mean the loop addresses are junk.** They are crafted on mode-0 samples too — the byte decides whether the sampler *uses* them. Emit a loop when the mode is non-zero; do not conclude anything about the addresses when it is zero.
+- **A loop metric that rewards silence will find silence.** Scoring loop candidates by splice smoothness picks `a28 -> a32` — four frames apart in a fade-out — unless it is guarded by a minimum loop length and a minimum amplitude.
