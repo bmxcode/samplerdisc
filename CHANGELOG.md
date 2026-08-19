@@ -2,6 +2,25 @@
 
 Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](docs/formats/); decisions and their rejected alternatives live in [docs/adr/](docs/adr/). This file records what changed for someone using the tool.
 
+## Unreleased
+
+### Added
+
+- **Roland S-7xx discs read.** The `S770 MR25A` filesystem — S-770, S-750 and S-760 — is now a backend, verified against nine discs spanning every system-disk lineage the archives hold: Ver. 1.04, 1.06, 2.19, 2.21, 2.25 and the S-760's 2.23Y and 2.24s. Five read end to end; four more were confirmed by range-fetching four regions each. The five local ones yield **6 392 samples and 1 341 stereo pairs with nothing skipped**, every payload byte-identical to its disc. Root key and loop points travel into each WAV's `smpl` chunk. ([docs/formats/roland-s7xx.md](docs/formats/roland-s7xx.md))
+
+  These discs previously reported "no recognised filesystem". If you shelved a Roland disc on that basis, try it again.
+
+- **Stereo pairs are rejoined on every format, not just AKAI.** Roland marks the two halves of a stereo sound with byte `0x7F` before the `L`/`R` rather than a hyphen, and the joiner only knew about hyphens — so `northstar`, where 1 110 of 1 284 samples are one half of a pair, came out entirely mono. The separator is now a character class. ([ADR-0017](docs/adr/0017-the-stereo-side-marker-is-a-character-class.md))
+
+### Known limits
+
+- **A Roland disc comes out as one flat volume.** Its samples are grouped through a volume → performance → patch → partial chain; the middle two record formats are undecoded, and guessing them would misfile samples with nothing reporting it. Every sample is listed under the disc's own `ID<n>:` label instead. ([ADR-0016](docs/adr/0016-the-s7xx-hierarchy-is-located-not-walked.md))
+- **Roland sample rates are written as 44 100 rather than read.** No rate field has been identified, and measuring pitch cannot separate 44 100 from 22 050 because they differ by exactly one octave — the interval pitch estimation resolves worst and an original key can itself be wrong by. All nine reference discs measure 44 100. A 22.05 kHz disc would come out an octave high, uniformly, with nothing reporting it. ([ADR-0018](docs/adr/0018-the-s7xx-sample-rate-is-measured.md))
+
+### Fixed
+
+- `--no-stereo` described the pairing as "-L/-R" in `extract` and `batch`, which is now only half the story.
+
 ## 0.2.0 — 2026-08-19
 
 ### Fixed

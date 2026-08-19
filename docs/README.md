@@ -52,12 +52,13 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D10 | A probe must confirm a file ([ADR-0012](adr/0012-a-probe-must-confirm-a-file.md)) | done |
 | D11 | MDX generations, the all-stored case, cue-less audio ([ADR-0013](adr/0013-cueless-audio-is-reported-not-guessed.md)) | done |
 | D12 | E-mu `EMU3` backend ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md), [ADR-0015](adr/0015-locate-banks-by-signature.md)) | done; E-IV lists only |
+| D13 | Roland `S770 MR25A` backend ([ADR-0016](adr/0016-the-s7xx-hierarchy-is-located-not-walked.md), [ADR-0017](adr/0017-the-stereo-side-marker-is-a-character-class.md), [ADR-0018](adr/0018-the-s7xx-sample-rate-is-measured.md)) | done |
 
-Against the three reference discs: 687 samples, 95 stereo pairs, 380 loops, one skipped entry.
+Across the local collection: 39 of 49 discs, 28 712 samples, 2 864 stereo pairs, 161 audio tracks, 20 skipped entries, 30 s.
 
 ## What is not done
 
-- **Roland S-770.** `AMG - Now CD-ROM (Roland).iso` in the archive.org collection is one; sector 0 reads `S770 MR25A`. Deferred until more Roland discs are to hand, so a backend can be checked against several rather than reverse-engineered from one.
+- **Roland S-550.** `Roland LCD1.iso`/`.nrg` opens `* ROLAND S-550 *` and is a different format from the S-7xx entirely ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md)). Neither archive holds a second specimen, so it stays deferred rather than being reverse-engineered from one disc.
 - **E-mu, Ensoniq and Kurzweil backends.** The archives are full of these discs and the containers already open them; each needs a module in `fs/` and nothing else ([ADR-0003](adr/0003-brand-neutral-pluggable-backends.md)).
 - **`.mds`/`.mdf` is unverified.** No reference pair was available, so geometry is sniffed from the `.mdf` rather than read from the descriptor. See [formats/mdx.md](formats/mdx.md) for the merged form, which *is* verified.
 - **CUES chunks in NRG.** Only `CUEX` is parsed; `CUES` encodes position as MSF and no disc using it was available to check the layout against.

@@ -63,32 +63,36 @@ The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM a
 
 **Audio CDs** — some of these discs are plain Red Book audio, not CD-ROMs. `samplerdisc` recognises them from the cue sheet and writes each track out as a stereo WAV, keeping the track titles (which usually carry the tempo). No filesystem is involved; the sectors already are the audio.
 
-**Filesystems** — AKAI S1000/S3000 family, E-mu `EMU3` (EIIIX, ESI-32/4000, Emulator IV), and plain ISO 9660 for discs whose payload is already WAV or AIFF.
+**Filesystems** — AKAI S1000/S3000 family, E-mu `EMU3` (EIIIX, ESI-32/4000, Emulator IV), Roland `S770 MR25A` (S-770, S-750, S-760), and plain ISO 9660 for discs whose payload is already WAV or AIFF.
 
-Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md), along with [`.nrg`](docs/formats/nrg.md), [raw CD sectors](docs/formats/rawcd.md), the [AKAI filesystem](docs/formats/akai-fs.md) and [audio CDs](docs/formats/audio-cd.md).
+Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md), along with [`.nrg`](docs/formats/nrg.md), [raw CD sectors](docs/formats/rawcd.md), the [AKAI](docs/formats/akai-fs.md), [E-mu](docs/formats/emu3.md) and [Roland S-7xx](docs/formats/roland-s7xx.md) filesystems, and [audio CDs](docs/formats/audio-cd.md).
 
 ## Tested against
 
-46 disc images from two archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds) and [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds). Seventeen compressed `.mdx`, twenty flat `.iso`/`.bin`, five raw CD images, two `.nrg`, two audio CDs.
+49 disc images from two archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds) and [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds). Seventeen compressed `.mdx`, twenty flat `.iso`/`.bin`, five raw CD images, three `.nrg`, two audio CDs.
 
 | | |
 |---|---|
-| Discs converted | 34 of 46 |
-| Samples | 22 320 |
-| Stereo pairs rejoined | 1 523 |
+| Discs converted | 39 of 49 |
+| Samples | 28 712 |
+| Stereo pairs rejoined | 2 864 |
 | Audio CD tracks | 161 |
 | Entries skipped (damage) | 20 |
-| Time | 21 s |
+| Time | 30 s |
 
 Every extracted WAV was checked against the bytes on the disc it came from — **all 22 320 are byte-identical**, none unreadable, none zero-length. Ten are silent for their whole length and are meant to be: they are named `Dead Air`, on a Proteus library that ships silence as a sample.
 
 Sample rates run from 6 000 to 48 000 Hz across 908 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
 
-The twelve that do not convert are accounted for: six Roland files (four S-770, and one S-550 disc present as both `.iso` and `.nrg`), two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, one Emulator IV disc that lists its 12 banks but does not extract them, and one ISO 9660 disc holding E-mu `.EBL` banks rather than audio.
+The ten that do not convert are accounted for: one S-550 disc present as both `.iso` and `.nrg` — a different format from the S-7xx and not yet read ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)) — two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, three Emulator IV discs that list their banks but do not extract them, and one ISO 9660 disc holding E-mu `.EBL` banks rather than audio.
+
+The five Roland S-7xx discs contribute **6 392 samples and 1 341 stereo pairs, with nothing skipped**. Every one of those payloads was checked against the bytes on its disc by content rather than by filename, and all 6 392 match.
 
 ## What doesn't work yet
 
-- **Roland, Ensoniq and Kurzweil filesystems.** `AMG - Now CD-ROM (Roland).iso` from that collection is an S-770 disc and does not read yet. The container layer opens it, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
+- **Roland S-550, Ensoniq and Kurzweil filesystems.** `Roland LCD1.iso` opens `* ROLAND S-550 *`, which shares nothing with the S-7xx format ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)); neither archive holds a second specimen to check a backend against. The container layer opens all of these, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
+- **Roland S-7xx discs come out as one flat volume.** The disc groups its samples through a volume → performance → patch → partial chain, and two of those four record formats are undecoded, so every sample is listed under the disc's own label instead. The four-character prefix in each name is the grouping you get ([ADR-0016](docs/adr/0016-the-s7xx-hierarchy-is-located-not-walked.md)).
+- **Roland S-7xx sample rates are written as 44 100, not read from the disc.** No rate field has been found, and pitch cannot settle 44 100 against 22 050 because they differ by exactly an octave. Every disc measured is 44 100; a 22.05 kHz one would come out an octave high ([ADR-0018](docs/adr/0018-the-s7xx-sample-rate-is-measured.md)).
 - **Emulator IV bank interiors.** E-IV discs list their folders and banks correctly — the directory is shared with EIIIX and ESI — but the inside of a bank is a different layout with only one specimen to hand, so those banks are listed and not extracted ([ADR-0015](docs/adr/0015-locate-banks-by-signature.md)).
 - **`.mds`/`.mdf` is untested.** There is code for it, and it has never seen a real pair — searches of both archive.org and the nnty.fun collection (~300 files) turned up none, so sample CDs in this form may simply be rare. It reads the `.mdf` and sniffs its geometry rather than parsing the descriptor, which should work for a single-track data disc. Treat it as unsupported until someone confirms otherwise, and please open an issue if you have one.
 - **`CUES` chunks in NRG** are not parsed; only `CUEX`. No disc using the older form was to hand to check the layout against.
