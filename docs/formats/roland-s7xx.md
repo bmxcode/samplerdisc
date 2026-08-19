@@ -1,0 +1,199 @@
+# Roland `S770 MR25A`
+
+The filesystem Roland wrote on CD-ROMs for the S-770, S-750 and S-760. It is *not* the S-550 format — `Roland LCD1` opens `* ROLAND S-550 *` and shares no magic, no addressing scheme and no directory record with this one ([ADR-0014](../adr/0014-one-backend-per-on-disc-format.md)).
+
+Verified against four discs spanning both system-disk lineages. Every constant below holds on all four unless it says otherwise.
+
+| Short name | File | Size | System disk |
+|---|---|---|---|
+| `lcdp05` | `Roland - LCDP05 Solo Strings.iso` | 130 344 960 | Ver. 2.19 |
+| `edirol-brass` | `Edirol - Brass Section vol.1 - Solos (Roland Sxx CD-ROM).iso` | 162 271 232 | **Ver. 1.06** |
+| `northstar` | `NorthStar - Global Instruments - Volume 1 (S7xx).iso` | 296 032 256 | Ver. 2.21 |
+| `amg-now` | `AMG - Now CD-ROM (Roland).iso` | 681 140 224 | Ver. 2.25 |
+
+A fifth and sixth specimen — `L-CDX-02` (`S-760 System Disk    Ver.2.23Y`) and `L-CDP02` (`Ver. 1.04`) — are confirmed **at the header only**, by range-fetching their first 8 KB. The block map below has not yet been checked against the S-760 lineage.
+
+Addressing is in **512-byte blocks**, not the 2048-byte cooked sector. That ratio of four is where an off-by-four hides.
+
+## Probe on the magic and nothing else
+
+`S770 MR25A` at **byte 4**. Not byte 0 — the first four bytes are zero.
+
+The free-text field at `0x20` is a trap. It reads `SYS-772 HardDisk Sys Ver. N.NN` on most discs and `S-760 System Disk    Ver.2.23Y` on `L-CDX-02`, so **a probe keyed on `SYS-772` would silently drop the entire L-CDX series** — four large libraries whose format is identical underneath.
+
+## Header
+
+| Offset | Size | Meaning | `lcdp05` |
+|---|---|---|---|
+| `0x04` | 10 | `"S770 MR25A"` | — |
+| `0x20` | 31 | free text, **varies; never probe on it** | `SYS-772 HardDisk Sys Ver. 2.19` |
+| `0x40` | 32 | `"       Copyright   Roland      "` | — |
+| `0x100` | 16 | volume label, `ID<n>:<12-char name>` | `ID2:Solo Strngs ` |
+| `0x110` | 4 | u32 LE, filesystem size in 512-blocks | 253 952 |
+| `0x114` | 2 | u16 LE, **volume count** | 13 |
+| `0x116` | 2 | u16 LE, **performance count** | 53 |
+| `0x118` | 2 | u16 LE, **patch count** | 200 |
+| `0x11A` | 2 | u16 LE, **partial count** | 1 169 |
+| `0x11C` | 2 | u16 LE, **sample count** | 890 |
+| `0x11E` | … | `0xFF` filler to `0x200` | — |
+
+The five counts are what makes this filesystem cheap to read: **a directory is read to its declared count, never walked to a terminator.** That removes the entire directory-overrun failure class — the one that `protozoa`'s `0x42` filler produced on `EMU3` ([emu3.md](emu3.md)) — because there is no terminator to mistake filler for.
+
+| Disc | volumes | performances | patches | partials | **samples** |
+|---|---|---|---|---|---|
+| `lcdp05` | 13 | 53 | 200 | 1 169 | **890** |
+| `edirol-brass` | 20 | 46 | 253 | 1 232 | **1 016** |
+| `northstar` | 32 | 32 | 255 | 1 722 | **1 284** |
+| `amg-now` | 78 | 107 | 828 | 2 169 | **1 230** |
+
+`0x110` is *not* derivable from the disc size and does not divide evenly by the cluster size on any of the four. It is a partition size, useful as a bound on the highest legal cluster and nothing more.
+
+## The block map is fixed
+
+There is no pointer chasing above the sample layer. Every base below sits at the same 512-block on all four discs, and each region's capacity is exactly the distance to the next.
+
+| Block | Sector | Region | Blocks | Record | Entries |
+|---|---|---|---|---|---|
+| 0 | 0 | header | — | — | — |
+| 1028 | 257 | allocation table | 256 | u16 LE | 65 536 clusters |
+| 1284 | 321 | volume directory (`0x40`) | 8 | 32 B | 128 |
+| 1292 | 323 | performance directory (`0x41`) | 32 | 32 B | 512 |
+| 1324 | 331 | patch directory (`0x42`) | 64 | 32 B | 1 024 |
+| 1388 | 347 | partial directory (`0x43`) | 256 | 32 B | 4 096 |
+| 1644 | 411 | **sample directory (`0x44`)** | 512 | 32 B | **8 192** |
+| 2156 | 539 | volume / performance / patch parameters | 1 600 | — | — |
+| 3756 | 939 | partial parameters | 1 024 | 128 B | 4 096 |
+| 4780 | 1195 | **sample parameters** | 768 | **48 B** | **8 192** |
+| **5548** | **1387** | **sample data — first cluster is 2** | to end of disc | 9 216 B | — |
+
+Two closures make this a finding rather than an arrangement that happens to fit. 8 192 sample-directory entries of 32 bytes is *exactly* the 512 blocks to the next region, and 8 192 sample-parameter records of 48 bytes is *exactly* the 768 blocks from 4780 to 5548. **The sample data area begins where the parameter area ends.**
+
+## Directory record — 32 bytes, one shape for all five classes
+
+| Offset | Size | Meaning |
+|---|---|---|
+| 0 | 16 | name, ASCII, space-padded |
+| 16 | 1 | class tag — `0x40` volume, `0x41` performance, `0x42` patch, `0x43` partial, `0x44` sample |
+| 17 | 1 | zero |
+| 18 | 2 | u16 LE next link, `0x8000`-flagged |
+| 20 | 2 | u16 LE prev link, `0x8000`-flagged, `0xFFFF` on the head |
+| 22 | 2 | u16 LE own index, 0-based, unflagged |
+| 24 | 4 | zero on all 4 420 sample entries measured |
+| 28 | 2 | u16 LE **first cluster** — sample entries |
+| 30 | 2 | u16 LE **cluster count** — sample entries |
+
+The links at 18/20/22 form a doubly-linked list per class and **are not needed to read the disc**. Entry *i* lives at `base + i × 32` and the count comes from the header; the links are a cross-check, not a walk.
+
+## The allocation table is a DOS-style FAT
+
+At sector 257, u16 LE, one entry per cluster, indexed by cluster number. `entry[0]` is a media marker and `entry[1]` is unused — the **first data cluster is 2**, exactly as FAT12/16 reserves its first two entries.
+
+**Any value `>= 0xFFF0` terminates a chain.** `0xFFF8` and `0xFFFA` occur on the local discs; `0xFFFE` was seen on a remote disc during the D12 survey. Testing for `0xFFF8` alone would run a chain off the end of its file and into the next one.
+
+**Cluster = 9 216 bytes = 18 blocks.**
+
+```
+cluster_address = 5548 × 512 + (c − 2) × 9216
+```
+
+Verified three independent ways, which is what it took, because a cluster size that is not a power of two is the sort of thing one talks oneself out of:
+
+- **The FAT chain length equals the directory's declared cluster count on 4 420 of 4 420 samples**, across all four discs. No other cluster size is consistent with that at all.
+- On `lcdp05` sample 0 — 21 clusters, 189 292 declared bytes — the audio's zero tail begins at block 5918 and the *next* sample's audio begins at block 5926, which is cluster 23 to the byte.
+- `ceil(2 × end_frames / 9216)` equals the declared cluster count on 4 417 of 4 420 samples.
+
+### Contiguity is a coincidence here too
+
+All 4 420 chains on all four discs are contiguous — `entry[i] == i + 1` throughout. **Do not use that.** It is the same shape of coincidence that broke on 41 of 46 banks on `eiiix-2` in [emu3.md](emu3.md), and using contiguity as a validity test costs nothing until the disc that does not do it arrives, at which point a sample reports its neighbour's audio as its own and nothing complains. Follow the FAT.
+
+## Sample parameter record — 48 bytes, index-parallel to the directory
+
+Record *i* is at `4780 × 512 + i × 48`, for the same *i* as sample-directory entry *i*. The relation is **the index and only the index** — see the trap below.
+
+| Offset | Size | Meaning |
+|---|---|---|
+| 0 | 16 | name — *may be stale*, see below |
+| 16 | 4 | u32 LE **start point**, 24.8 fixed point |
+| 20 | 4 | u32 LE **sustain loop point**, 24.8 fixed point |
+| 24 | 4 | u32 LE address, 24.8 — **not yet named** |
+| 28 | 4 | u32 LE address, 24.8 — **not yet named** |
+| 32 | 4 | u32 LE **end point**, 24.8 fixed point |
+| 36 | 2 | u16 LE, values `{0, 1, 2, 4, 5}` — **not yet named** |
+| 40 | 2 | zero on all 4 420 |
+| 42 | 2 | u16 LE cluster count, duplicating the directory |
+| 44 | 1 | **loop mode**, values `{0, 1, 2, 4}` |
+| 45 | 1 | **original key**, MIDI note |
+| 46 | 2 | zero on all 4 420 |
+
+The addresses are **24.8 fixed point** — the low byte is a fractional sample, so the frame address is the u32 shifted right by 8. The fraction is zero on every record for the fields at 16, 24, 28 and 32, and *non-zero on 189 records* for the sustain loop at 20, which is what a sub-sample loop tuning looks like and is the tell that confirms the reading.
+
+**The end point at 32 is verified independently of everything else**: it predicts the FAT cluster count on 4 417 of 4 420 samples, on four discs.
+
+**The original key at 45 is verified against the names.** `STR:Vln Mt1 G_4` reads 67, `G#4` 68, `A_4` 69, `D#5` 75; the range across the four discs is 24–108.
+
+The cluster count at 42 duplicates the directory's field and matches it on 4 420 of 4 420. Either may be read; the directory is the authority.
+
+## The payload is 16-bit little-endian
+
+Sample data is signed 16-bit little-endian mono PCM — already what a WAV data chunk holds, so writing a WAV is a copy with a header in front of it ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
+
+Measured at **each record's own start**, never at a sector boundary: little-endian first-difference beats big-endian on **252 of 252** windows sampled across the four discs. This is the measurement `emu3` got wrong first, and the reason it is stated with its method — sampling at 2048-byte boundaries makes little-endian data one byte out read exactly like big-endian data, and "LE from *n*" versus "BE from *n+1*" cannot be told apart by smoothness because they share their high bytes.
+
+## The sample rate
+
+**44 100 on every disc measured, and no rate field has been identified.**
+
+The rate is established by pitch: the period of the recorded waveform, against the note in the original-key byte, lands on 44 100 across every sample checked on all four discs, with nothing clustering at 22 050. Byte 36 — the only remaining low-cardinality field — does not correlate with measured pitch and is *not* a rate flag.
+
+That is a measurement, not a decode, and the exposure is stated in [ADR-0018](../adr/0018-the-s7xx-sample-rate-is-measured.md): a 22.05 kHz disc would come out at double speed with nothing reporting it.
+
+## The object hierarchy — located, not walked
+
+Samples live in one flat, global directory. What groups them is the chain volume → performance → patch → partial → sample, and this project does not walk it ([ADR-0016](../adr/0016-the-s7xx-hierarchy-is-located-not-walked.md)). Both ends of the chain are visible, and are recorded here so that a later deliverable starts from evidence rather than from a hex editor:
+
+- **Volume parameter records** at block 2156 carry a `0xFFFF`-terminated list of u16 performance indices at `+32`.
+- **Partial parameter records** at block 3756 are 128 bytes with four 16-byte slots; each slot opens with a u16 sample index, or `0xFFFF` when empty. On `lcdp05`, partial `STR:Mute Vln MAA` references sample 0, `STR:Vln Mt1 G_4` — the muted violin it is named for.
+- The **performance and patch** parameter records in between are located and not decoded.
+
+## Names
+
+ASCII 32–126, space-padded, **plus `0x7F` and nothing else** — over 4 420 names on four discs.
+
+`0x7F` is the **stereo side marker**: `STR:Vn1 Pizz55\x7fL` and `STR:Vn1 Pizz55\x7fR` are the two halves of one stereo sound, in the same convention AKAI spells `-L`/`-R`. It appears 2 130 times across the four discs and covers 1 110 of `northstar`'s 1 284 samples, so a joiner that only recognises a hyphen leaves most of that disc mono ([ADR-0017](../adr/0017-the-stereo-side-marker-is-a-character-class.md)).
+
+`amg-now` also suffixes 340 names with `^`, and `northstar` 174 with `*`. Neither has been shown to mean anything.
+
+## Verified constants
+
+`lcdp05`, sample 0:
+
+| Quantity | Value |
+|---|---|
+| Name | `STR:Vln Mt1 G_4 ` |
+| First cluster | 2 |
+| Clusters | 21 |
+| Byte address | 2 840 576 |
+| End point | 94 646 frames |
+| Payload | 189 292 bytes |
+| Original key | 67 (G4) |
+| Loop mode | 1 |
+| Sustain loop | 77 268 frames |
+
+Whole-disc listings — a backend that reports anything else is wrong, because these come straight from the header:
+
+| Disc | Volumes | Samples |
+|---|---|---|
+| `lcdp05` | 1 | 890 |
+| `edirol-brass` | 1 | 1 016 — one skipped, see below |
+| `northstar` | 1 | 1 284 |
+| `amg-now` | 1 | 1 230 |
+
+## Traps
+
+- **Probe on `S770 MR25A` at byte 4 and nothing else.** The version string at `0x20` varies across lineages and keying on it drops the whole L-CDX series.
+- **The directory name is authoritative; the parameter record's name can be stale.** `northstar` has 7 samples where the directory reads `PLK:F7MuteChr*` and the parameter record still reads `PLK:F7MuteChor`. The two records are joined by **index**, never by name — validating the pairing on name equality drops those 7 silently.
+- **A sample may declare more than it owns.** `edirol-brass`'s `BRS:Cpm Tpt G_3A` declares 203 415 frames against 28 clusters, which hold 129 024. Clamp to the allocated bytes and log it; do not trust the declared length as a read size.
+- **Contiguity holds on all 4 420 chains and must not be used as a validity test.**
+- **Any FAT value `>= 0xFFF0` is a terminator**, not just `0xFFF8`.
+- **The addresses are 24.8 fixed point.** Reading them as plain u32 gives a byte address 256 times too large, which is inside the disc on a large image and therefore does not look wrong.
+- **`0x110` is a partition size, not a derivation.** It does not divide evenly by the cluster size on any disc.
