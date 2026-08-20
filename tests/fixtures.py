@@ -717,6 +717,9 @@ def emu3_disc(
     ``bank_header`` False omits the ``EMULATOR`` header and writes nothing in
     its place: banks are listed from the directory and no samples come out.
 
+    A bank given no samples gets a header declaring a zero-length sample area,
+    which is what the index banks on `esi32-gm`, `eiiix-1` and `eiiix-2` do.
+
     ``eiv`` True builds the Emulator IV shape instead -- no ``EMULATOR``
     header, and each bank's samples reached through a chained ``E3S1`` sample
     directory. The bank slot is 1 MiB, so the allocation unit the reader has to
@@ -738,6 +741,7 @@ def emu3_disc(
         EIV_RECORD_OFFSET,
         ENTRY_LEN,
         MAGIC,
+        OFF_BANK_SAMPLE_BYTES,
         OFF_EIV_INDEX,
         OFF_EIV_LENGTH,
         OFF_EIV_NAME,
@@ -824,7 +828,8 @@ def emu3_disc(
             if bank_header:
                 image[at : at + len(BANK_MAGIC)] = BANK_MAGIC
                 image[at + 16 : at + 32] = name16(bank_name)
-            cursor = at + 256
+            sample_area = at + 256
+            cursor = sample_area
             for sample_name, rate, frames in samples:
                 pcm = stereo_audio_block(frames=frames // 2)[: frames * 2]
                 record_len = SAMPLE_HEADER_LEN + len(pcm)
@@ -836,6 +841,12 @@ def emu3_disc(
                 image[cursor : cursor + SAMPLE_HEADER_LEN] = head
                 image[cursor + SAMPLE_HEADER_LEN : cursor + record_len] = pcm
                 cursor += record_len + 16  # a gap: records are not contiguous
+            if bank_header:
+                # The header states the size of the sample area, and states
+                # zero for a bank that has none -- which is how an index bank
+                # on a real disc is told apart from one the walk failed to
+                # bound.
+                struct.pack_into("<I", image, at + OFF_BANK_SAMPLE_BYTES, cursor - sample_area)
             index += 1
         image[dir_block * BLOCK : dir_block * BLOCK + len(bank_dir)] = bank_dir
 

@@ -60,6 +60,17 @@ BANK_MAGIC = b"EMULATOR"
 OFF_BANK_NAME = 16
 BANK_NAME_LEN = 16
 
+#: u32 LE, bytes of sample data in the bank. Reads **zero** on 4 of the 112
+#: located banks and non-zero on the rest: one index bank on each of
+#: `esi32-gm`, `eiiix-1` and `eiiix-2`, which carry the library's contents list
+#: and no audio at all, plus `protozoa`'s last bank, whose bound is wrong for a
+#: separate reason and which is why this is read only *after* the walk has
+#: already come back empty. It is the difference between a bank that yields
+#: nothing because it holds nothing and one that yields nothing because the
+#: walk is wrong -- which ADR-0012 says must not be left to a human reading the
+#: names.
+OFF_BANK_SAMPLE_BYTES = 0x34
+
 #: Sample record, relative to its own start. A record begins two bytes before
 #: its name; those two bytes are zero on every record after the first.
 SAMPLE_NAME_OFFSET = 2
@@ -540,7 +551,26 @@ class Emu3Backend:
                 after = [b for b in boundaries if b > at]
                 limit = after[0] if after else image.size
                 volume.files = list(self._samples(image, offset, at, limit))
+                if not volume.files and self._declares_no_samples(image, offset, at):
+                    # An index bank: correctly located, correctly bounded, and
+                    # empty because the disc made it empty. Not noting it
+                    # leaves it looking exactly like a mis-bounded bank.
+                    volume.note = "the bank header declares a zero-length sample area"
             yield volume
+
+    def _declares_no_samples(self, image: SectorImage, offset: int, bank_at: int) -> bool:
+        """Whether the bank header itself says its sample area is empty.
+
+        A header too short to hold the field is *not* an explanation. That is
+        the tail-damage case, where the honest answer is that this bank was not
+        read, and letting it pass as "declared empty" would hide exactly the
+        thing the note exists to make visible.
+        """
+        want = OFF_BANK_SAMPLE_BYTES + 4
+        head = image.read(offset + bank_at, want)
+        if len(head) < want:
+            return False
+        return struct.unpack_from("<I", head, OFF_BANK_SAMPLE_BYTES)[0] == 0
 
     def _samples(self, image: SectorImage, offset: int, bank_at: int, limit: int) -> Iterator[File]:
         """Enumerate a bank's sample records by signature, within its bounds.

@@ -148,6 +148,52 @@ def test_payload_is_returned_verbatim(tmp_path):
     assert payload == image.read(entry.start_block, entry.size)
 
 
+INDEX_BANK = [
+    (
+        "Designed by S&M.",
+        [
+            ("E-mu Banks 1-44", []),
+            ("Full Arco String", [("Arco C1", 22000, 512)]),
+        ],
+    )
+]
+
+
+def test_a_bank_that_declares_no_sample_area_says_so(tmp_path):
+    """An index bank is empty because the disc made it empty.
+
+    Three EIII/ESI reference discs carry exactly one bank each that holds the
+    library's index and no audio -- `esi32-gm`'s ``General Midi   X``,
+    ``E-mu Banks 1-44``, ``Emu Banks 45-88``. Each is located by its own
+    header and bounded to exactly the one allocation unit its directory entry
+    claims, so the walk is right and the bank really is empty. Without the
+    note that reads identically to a bank whose bound is wrong (ADR-0012).
+    """
+    image = image_of(tmp_path, fixtures.emu3_disc(INDEX_BANK), "index.iso")
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    index = volumes["E-mu Banks 1-44"]
+    assert index.files == []
+    assert index.note
+    # The bank beside it is untouched: the note is not a blanket excuse.
+    assert [f.name for f in volumes["Full Arco String"].files] == ["Arco C1"]
+    assert not volumes["Full Arco String"].note
+
+
+def test_an_unexplained_empty_bank_gets_no_note(tmp_path):
+    """The note states a fact, so it must not appear where the fact is absent.
+
+    A bank that declares sample data and yields none is the ADR-0012 signature
+    and has to stay visible as such. Noting it unconditionally -- "no samples
+    found" -- would silence the one check that catches a mis-bounded walk.
+    """
+    data = bytearray(fixtures.emu3_disc(INDEX_BANK))
+    record = data.index(b"Arco C1") - 2  # a record begins two bytes before its name
+    struct.pack_into("<I", data, record + OFF_SAMPLE_HEADER_LEN, 0)
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "u.iso"), 0)}
+    assert volumes["Full Arco String"].files == []
+    assert not volumes["Full Arco String"].note
+
+
 def test_a_bank_with_neither_header_nor_directory_is_listed_with_a_note(tmp_path):
     """A bank whose interior yields nothing must say so.
 
