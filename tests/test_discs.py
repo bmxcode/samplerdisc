@@ -275,7 +275,7 @@ def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(stem: str) -> None:
 #: it (ADR-0019): its primary tree masters 1 061 files under 1 001 8.3 names.
 _ISO9660 = {
     "Digital Sound Factory - E-MU Vintage Pro": ("VintagePro", 1062),
-    "BSBSSD2": ("BSBSS", 2059),
+    "Best Service - Brass Super Section (CD2)": ("BSBSS", 2059),
 }
 
 
