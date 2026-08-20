@@ -10,11 +10,11 @@ from __future__ import annotations
 import os
 import re
 from dataclasses import dataclass
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Protocol
 
 from samplerdisc.fs.base import original_suffix
-from samplerdisc.sample.akai import AkaiSample, NotASample, parse
-from samplerdisc.sample.emu3 import NotASample as Emu3NotASample
+from samplerdisc.sample import NotASample
+from samplerdisc.sample.akai import parse
 from samplerdisc.stereo import find_pairs, interleave
 from samplerdisc.wav import Loop, write_wav
 
@@ -23,6 +23,22 @@ if TYPE_CHECKING:
 
     from samplerdisc.container.base import SectorImage
     from samplerdisc.fs.base import Backend, File, Volume
+
+
+class _Pairable(Protocol):
+    """What the stereo joiner needs of a parsed sample.
+
+    Deliberately not ``AkaiSample``: joining used to be gated on that class, so
+    every non-AKAI format came out mono however its halves were named. On a
+    Roland disc that is most of the disc -- 1 110 of NorthStar's 1 284 samples
+    are one half of a pair.
+    """
+
+    name: str
+    rate: int
+    frames: int
+    pcm: bytes
+
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9 ._+#-]")
 
@@ -115,7 +131,7 @@ def extract_volume(
     """
     made = False
     originals_made = False
-    parsed: dict[str, AkaiSample] = {}
+    parsed: dict[str, _Pairable] = {}
     for entry in volume.files:
         if keep_originals and entry.kind in _KEEP_KINDS:
             payload = backend.read_file(image, origin, entry)
@@ -152,7 +168,7 @@ def extract_volume(
             continue
         try:
             sample = _parse_sample(backend, entry, payload)
-        except (NotASample, Emu3NotASample) as exc:
+        except NotASample as exc:
             yield Skipped(volume.name, entry.name, str(exc))
             continue
         if sample.frames == 0:
@@ -163,8 +179,8 @@ def extract_volume(
             os.makedirs(out_dir, exist_ok=True)
             made = True
         path = unique_path(out_dir, safe_name(entry.name))
-        # Root key, tuning and loops are AKAI-only so far; a backend whose
-        # samples do not carry them writes a plain WAV rather than a wrong one.
+        # A format that does not carry root key, tuning or loops writes a plain
+        # WAV rather than a wrong one.
         pitch = getattr(sample, "pitch", None)
         write_wav(
             path,
@@ -175,8 +191,7 @@ def extract_volume(
             loops=_wav_loops(sample),
             name=sample.name or entry.name,
         )
-        if isinstance(sample, AkaiSample):
-            parsed[entry.name] = sample
+        parsed[entry.name] = sample
         yield Extracted(
             volume=volume.name,
             name=entry.name,
@@ -191,7 +206,7 @@ def extract_volume(
 
 
 def _join_pairs(
-    volume_name: str, parsed: dict[str, AkaiSample], out_dir: str
+    volume_name: str, parsed: dict[str, _Pairable], out_dir: str
 ) -> Iterator[Skipped | Joined]:
     pairs = find_pairs(list(parsed))
     if not pairs:
@@ -219,10 +234,12 @@ def _join_pairs(
         write_wav(
             path,
             pcm,
-            rate=left.rate,
             channels=2,
-            midi_note=left.pitch,
-            cents=left.cents,
+            rate=left.rate,
+            # Root key, tuning and loops are optional: a format that does not
+            # carry one writes a plain WAV rather than an invented value.
+            midi_note=getattr(left, "pitch", None),
+            cents=getattr(left, "cents", 0.0),
             # Loop points are frame offsets, so they carry over unchanged from
             # the left half to the interleaved file.
             loops=_wav_loops(left),

@@ -6,6 +6,7 @@ here is constructed from scratch and carries no audio.
 
 from __future__ import annotations
 
+import itertools
 import struct
 import zlib
 
@@ -345,6 +346,241 @@ def mono_sample_block(frames: int = 32768, seed: int = 11) -> bytes:
         value = max(-20000, min(20000, value + ((state >> 16) % 401) - 200))
         out += struct.pack("<h", value)
     return bytes(out)
+
+
+def roland_cluster(cluster: int, seed: int = 11) -> bytes:
+    """The 9 216 bytes this fixture writes into one Roland cluster.
+
+    Keyed on the cluster *number*, so every cluster on a synthetic disc holds
+    different audio. That is what makes a chain test mean anything: a walk that
+    assumes contiguity instead of following the allocation table then returns
+    visibly wrong bytes rather than plausible ones.
+    """
+    from samplerdisc.fs.roland_s7xx import CLUSTER
+
+    return mono_sample_block(frames=CLUSTER // 2, seed=seed + 2 * cluster)
+
+
+def roland_sample(
+    name: str,
+    chain,
+    *,
+    clusters: int | None = None,
+    frames: int | None = None,
+    key: int = 60,
+    loop_mode: int = 1,
+    loop: tuple[int, int] = (0, 0),
+    loop_start_fraction: int = 0,
+    release: tuple[int, int] | None = None,
+    start_point: int = 0,
+    param_name: str | None = None,
+    terminator: int = 0xFFF8,
+    seed: int = 11,
+) -> dict:
+    """One sample for ``roland_s7xx_disc``.
+
+    ``chain`` is the list of clusters actually linked in the allocation table,
+    in order -- give it out of sequence to build a fragmented sample.
+    ``clusters`` is what the *directory* declares, which defaults to the length
+    of the chain and is set shorter to build a chain that runs past its own
+    declared count.
+
+    ``frames`` is the furthest address the parameter record references, which
+    on this format is the only thing that says where the audio ends -- there is
+    no length field. It defaults to exactly filling the declared clusters, and
+    ``release`` then parks a few frames at the end, which is the shape 6 188 of
+    the 6 392 measured records have.
+
+    ``terminator`` is the value written after the last cluster: real discs use
+    0xFFF8, 0xFFFA and 0xFFFE, and all three must end a chain.
+    """
+    from samplerdisc.fs.roland_s7xx import CLUSTER
+
+    chain = tuple(chain)
+    declared = len(chain) if clusters is None else clusters
+    if frames is None:
+        frames = declared * CLUSTER // 2
+    if release is None:
+        release = (max(0, frames - 4), frames)
+    return {
+        "name": name,
+        "param_name": name if param_name is None else param_name,
+        "chain": chain,
+        "clusters": declared,
+        "frames": frames,
+        "key": key,
+        "loop_mode": loop_mode,
+        "loop": loop,
+        "loop_start_fraction": loop_start_fraction,
+        "release": release,
+        "start_point": start_point,
+        "terminator": terminator,
+        "seed": seed,
+    }
+
+
+def roland_s7xx_disc(
+    samples,
+    *,
+    label: str = "ID2:Solo Strngs ",
+    version_text: str = "SYS-772 HardDisk Sys Ver. 2.19",
+    counts: tuple[int, int, int, int] = (1, 4, 8, 16),
+    sample_count: int | None = None,
+    fs_blocks: int | None = None,
+    filler: int = 0,
+    zero_sample_directory: bool = False,
+) -> bytes:
+    """Build a synthetic Roland ``S770 MR25A`` image.
+
+    ``samples`` is a list of ``roland_sample()`` dicts. Everything is written
+    from the backend's own constants (ADR-0008: not one byte comes off a disc),
+    so the fixture and the reader cannot drift apart about where a region sits.
+
+    ``filler`` writes that many extra, entirely valid-looking sample entries
+    *past* the header's declared count. There is no terminator in this format
+    and the count is the only authority, so a reader that scans instead of
+    counting picks them up.
+
+    ``zero_sample_directory`` leaves the directory at block 1644 zeroed while
+    the header stays plausible -- the ADR-0012 case, where a magic and a
+    pointer are structure and nothing has been confirmed.
+    """
+    from samplerdisc.fs.roland_s7xx import (
+        ADDRESS_SHIFT,
+        BLOCK,
+        CLASS_ORDER,
+        CLASS_SAMPLE,
+        CLUSTER,
+        CLUSTER_BLOCKS,
+        DATA_BLOCK,
+        DIR_BLOCK,
+        ENTRY_LEN,
+        FAT_BLOCK,
+        FIRST_DATA_CLUSTER,
+        LABEL_LEN,
+        MAGIC,
+        NAME_LEN,
+        OFF_COUNTS,
+        OFF_ENTRY_CLASS,
+        OFF_ENTRY_INDEX,
+        OFF_ENTRY_NEXT,
+        OFF_ENTRY_PREV,
+        OFF_ENTRY_START,
+        OFF_FS_BLOCKS,
+        OFF_LABEL,
+        OFF_MAGIC,
+        OFF_PARAM_CLUSTERS,
+        OFF_PARAM_KEY,
+        OFF_PARAM_LOOP_MODE,
+        OFF_PARAM_RELEASE_END,
+        OFF_PARAM_RELEASE_START,
+        OFF_PARAM_START,
+        OFF_PARAM_SUSTAIN_END,
+        OFF_PARAM_SUSTAIN_START,
+        PARAM_LEN,
+        SAMPLE_PARAM_BLOCK,
+    )
+
+    specs = list(samples)
+    used = [c for spec in specs for c in spec["chain"]] or [FIRST_DATA_CLUSTER]
+    highest = max(max(used), FIRST_DATA_CLUSTER)
+    if fs_blocks is None:
+        # Four clusters of slack, so max_cluster() leaves room above the last
+        # one actually written and an extent test is not accidentally exact.
+        fs_blocks = DATA_BLOCK + (highest - FIRST_DATA_CLUSTER + 5) * CLUSTER_BLOCKS
+    image = bytearray(DATA_BLOCK * BLOCK + (highest - FIRST_DATA_CLUSTER + 1) * CLUSTER)
+
+    # The links at 18/20/22 -- next, prev, own index -- are three consecutive
+    # u16s, so they are written in one pack. They are a cross-check and never a
+    # walk: entry i is at base + i * ENTRY_LEN and the count comes from the
+    # header.
+    assert (OFF_ENTRY_PREV, OFF_ENTRY_INDEX) == (OFF_ENTRY_NEXT + 2, OFF_ENTRY_NEXT + 4)
+
+    def name16(text: str) -> bytes:
+        return text.encode("ascii")[:NAME_LEN].ljust(NAME_LEN)
+
+    def address(frames: int, fraction: int = 0) -> int:
+        """24.8 fixed point: the low byte is a fractional frame."""
+        return (frames << ADDRESS_SHIFT) | fraction
+
+    # --- header. The magic is at byte 4; the first four bytes are zero. Both
+    # text fields run 31 bytes and are NUL-terminated on a real disc, which is
+    # why neither is 32 here.
+    image[OFF_MAGIC : OFF_MAGIC + len(MAGIC)] = MAGIC
+    image[0x10:0x1F] = b" " * 15
+    image[0x20:0x3F] = version_text.encode("ascii")[:31].ljust(31)
+    image[0x40:0x5F] = b"       Copyright   Roland      "
+    image[OFF_LABEL : OFF_LABEL + LABEL_LEN] = label.encode("ascii")[:LABEL_LEN].ljust(LABEL_LEN)
+    struct.pack_into("<I", image, OFF_FS_BLOCKS, fs_blocks)
+    declared_samples = len(specs) if sample_count is None else sample_count
+    struct.pack_into("<5H", image, OFF_COUNTS, *counts, declared_samples)
+    image[OFF_COUNTS + 10 : 0x200] = b"\xff" * (0x200 - OFF_COUNTS - 10)
+
+    # --- the four directories above the samples. Not walked (ADR-0016), but
+    # they exist on every disc and a fixture without them is not the format.
+    for cls, count in zip(CLASS_ORDER[:4], counts, strict=True):
+        base = DIR_BLOCK[cls] * BLOCK
+        for index in range(count):
+            entry = bytearray(ENTRY_LEN)
+            entry[:NAME_LEN] = name16(f"{cls:02X}:object {index:03d}")
+            entry[OFF_ENTRY_CLASS] = cls
+            nxt = 0x8000 | (index + 1) if index + 1 < count else 0xFFFF
+            prev = 0x8000 | (index - 1) if index else 0xFFFF
+            struct.pack_into("<HHH", entry, OFF_ENTRY_NEXT, nxt, prev, index)
+            image[base + index * ENTRY_LEN : base + (index + 1) * ENTRY_LEN] = entry
+
+    # --- allocation table. Entry 0 is a media marker and entry 1 is unused,
+    # exactly as FAT12/16 reserves its first two.
+    fat = FAT_BLOCK * BLOCK
+    struct.pack_into("<HH", image, fat, 0xFFF8, 0xFFFF)
+    for spec in specs:
+        chain = spec["chain"]
+        for here, nxt in itertools.pairwise(chain):
+            struct.pack_into("<H", image, fat + 2 * here, nxt)
+        struct.pack_into("<H", image, fat + 2 * chain[-1], spec["terminator"])
+
+    # --- sample directory, sample parameters, and the audio itself.
+    entries = specs + [
+        roland_sample(f"FIL:filler {i:04d}", (FIRST_DATA_CLUSTER,)) for i in range(filler)
+    ]
+    dir_base = DIR_BLOCK[CLASS_SAMPLE] * BLOCK
+    param_base = SAMPLE_PARAM_BLOCK * BLOCK
+    for index, spec in enumerate(entries):
+        if not zero_sample_directory:
+            entry = bytearray(ENTRY_LEN)
+            entry[:NAME_LEN] = name16(spec["name"])
+            entry[OFF_ENTRY_CLASS] = CLASS_SAMPLE
+            # The doubly-linked list at 18/20/22 is a cross-check, never a walk.
+            nxt = 0x8000 | (index + 1) if index + 1 < len(entries) else 0xFFFF
+            prev = 0x8000 | (index - 1) if index else 0xFFFF
+            struct.pack_into("<HHH", entry, OFF_ENTRY_NEXT, nxt, prev, index)
+            struct.pack_into("<HH", entry, OFF_ENTRY_START, spec["chain"][0], spec["clusters"])
+            image[dir_base + index * ENTRY_LEN : dir_base + (index + 1) * ENTRY_LEN] = entry
+
+        loop_start, loop_end = spec["loop"]
+        record = bytearray(PARAM_LEN)
+        record[:NAME_LEN] = name16(spec["param_name"])
+        struct.pack_into("<I", record, OFF_PARAM_START, address(spec["start_point"]))
+        # The fraction is zero everywhere except the sustain loop start, where
+        # 220 real records carry one -- a sub-sample loop tuning.
+        fraction = address(loop_start, spec["loop_start_fraction"])
+        struct.pack_into("<I", record, OFF_PARAM_SUSTAIN_START, fraction)
+        struct.pack_into("<I", record, OFF_PARAM_SUSTAIN_END, address(loop_end))
+        struct.pack_into("<I", record, OFF_PARAM_RELEASE_START, address(spec["release"][0]))
+        struct.pack_into("<I", record, OFF_PARAM_RELEASE_END, address(spec["release"][1]))
+        # Offset 36 holds {0, 1, 2, 4, 5, 6} and is not named in the format doc.
+        struct.pack_into("<H", record, 36, 1)
+        struct.pack_into("<H", record, OFF_PARAM_CLUSTERS, spec["clusters"])
+        record[OFF_PARAM_LOOP_MODE] = spec["loop_mode"]
+        record[OFF_PARAM_KEY] = spec["key"]
+        image[param_base + index * PARAM_LEN : param_base + (index + 1) * PARAM_LEN] = record
+
+    for spec in specs:
+        for cluster in spec["chain"]:
+            at = DATA_BLOCK * BLOCK + (cluster - FIRST_DATA_CLUSTER) * CLUSTER
+            image[at : at + CLUSTER] = roland_cluster(cluster, spec["seed"])
+
+    return bytes(image)
 
 
 def emu3_disc(

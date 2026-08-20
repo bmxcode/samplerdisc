@@ -11,6 +11,7 @@ import struct
 from dataclasses import dataclass
 
 from samplerdisc.fs.akai import NAME_LEN, decode_name, is_plausible_name
+from samplerdisc.sample import NotASample as _NotASample
 
 #: S1000 header. S3000 discs may use a 192-byte variant.
 HEADER_LEN_S1000 = 150
@@ -50,7 +51,7 @@ MIN_RATE = 4000
 MAX_RATE = 50000
 
 
-class NotASample(ValueError):
+class NotASample(_NotASample):
     """The payload does not begin with a sample header."""
 
 

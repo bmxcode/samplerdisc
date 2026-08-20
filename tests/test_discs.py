@@ -11,6 +11,7 @@ in ADR-0012.
 from __future__ import annotations
 
 import os
+import struct
 from pathlib import Path
 
 import pytest
@@ -118,3 +119,73 @@ def test_known_unreadable_discs_are_not_claimed(stem: str) -> None:
     with open_image(matches[0]) as image:
         origin = find_origin(image)
     assert origin is None, f"{stem} was claimed by {origin.backend.name if origin else '?'}"
+
+
+#: Discs whose filesystem is pinned by name, with the backend that must claim
+#: them and the sample count its header declares. ADR-0005 asks for the
+#: resolved origin to be asserted per backend rather than covered incidentally,
+#: and the counts are the strongest available check on the walk: they are read
+#: from the header, so a backend that stops early or runs long disagrees with
+#: the disc's own arithmetic rather than with a number someone wrote down.
+_ROLAND_S7XX = {
+    "Roland - LCDP05 Solo Strings": 890,
+    "Edirol - Brass Section vol.1 - Solos (Roland Sxx CD-ROM)": 1016,
+    "NorthStar - Global Instruments - Volume 1 (S7xx)": 1284,
+    "AMG - Now CD-ROM (Roland)": 1230,
+    "Roland - L-CDX-01 - Rhythm Section Instruments (Roland Sxx CD-ROM)": 1972,
+}
+
+
+@pytest.mark.parametrize("stem", sorted(_ROLAND_S7XX))
+def test_roland_s7xx_discs_resolve_and_list_their_declared_samples(stem: str) -> None:
+    """Pinned where present, skipped where not -- a contributor's shelf is not ours."""
+    matches = [p for p in _discs() if p.stem == stem]
+    if not matches:
+        pytest.skip(f"{stem} not in this collection")
+    with open_image(matches[0]) as image:
+        origin = find_origin(image)
+        assert origin is not None, f"{stem}: no filesystem found"
+        assert origin.backend.name == "roland_s7xx"
+        assert origin.offset == 0
+        volumes = list(origin.backend.volumes(image, origin.offset))
+        # One flat volume, named from the ID<n>: label -- ADR-0016.
+        assert len(volumes) == 1
+        assert volumes[0].name.startswith("ID")
+        samples = [f for f in volumes[0].files if f.kind == "sample"]
+        assert len(samples) == _ROLAND_S7XX[stem]
+
+
+@pytest.mark.parametrize("stem", sorted(_ROLAND_S7XX))
+def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(stem: str) -> None:
+    """The WAV data chunk is a copy, so the bytes must survive the round trip.
+
+    Checked against a second, independent walk of the allocation table rather
+    than against ``read_file`` itself, and over a spread of the disc rather
+    than its first few entries -- the samples that broke during development
+    were in the middle.
+    """
+    matches = [p for p in _discs() if p.stem == stem]
+    if not matches:
+        pytest.skip(f"{stem} not in this collection")
+    from samplerdisc.fs import roland_s7xx as fs
+
+    with open_image(matches[0]) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        volume = next(iter(origin.backend.volumes(image, origin.offset)))
+        samples = [f for f in volume.files if f.kind == "sample"]
+        for entry in samples[:: max(1, len(samples) // 40)]:
+            payload = origin.backend.read_file(image, origin.offset, entry)
+            assert len(payload) == entry.size
+            # Rebuild the extent from the table by hand and compare.
+            expected = bytearray()
+            cluster = entry.start_block
+            for _ in range(entry.get("clusters")):
+                at = fs.DATA_BLOCK * fs.BLOCK + (cluster - fs.FIRST_DATA_CLUSTER) * fs.CLUSTER
+                expected += image.read(origin.offset + at, fs.CLUSTER)
+                (cluster,) = struct.unpack(
+                    "<H", image.read(origin.offset + fs.FAT_BLOCK * fs.BLOCK + 2 * cluster, 2)
+                )
+                if cluster >= fs.CHAIN_END:
+                    break
+            assert payload == bytes(expected[: entry.size]), entry.name

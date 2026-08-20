@@ -32,6 +32,65 @@ def test_split_side(name, expected):
     assert split_side(name) == expected
 
 
+@pytest.mark.parametrize(
+    ("name", "expected"),
+    [
+        # Roland S-7xx separates the side letter with 0x7F, not a hyphen.
+        ("STR:Vn1 Pizz55\x7fL", ("STR:Vn1 Pizz55", "L")),
+        ("STR:Vn1 Pizz55\x7fR", ("STR:Vn1 Pizz55", "R")),
+        # Names are fixed width and space-padded, so the marker is not last.
+        ("STR:Vn1 Pizz\x7fL  ", ("STR:Vn1 Pizz", "L")),
+        ("STR:Vn1 Pizz \x7f L", ("STR:Vn1 Pizz", "L")),
+        # 0x7F is legal in these names generally; only a side letter pairs.
+        ("STR:Vn1 Pizz\x7fX", None),
+        ("STR:Vn1 Pizz\x7f", None),
+        ("STR:Vn1\x7fLoop", None),
+        # Real, from amg-now, and the case that most rewards anchoring the
+        # side letter at the end: the base itself ends in "-R", so a pattern
+        # that let anything follow would read this as the right half of
+        # "FX :Headache" and weld it to an unrelated sound.
+        ("FX :Headache-R\x7fN", None),
+        # A marker with no base is not half of anything.
+        ("\x7fL", None),
+        ("\x7fR", None),
+        ("  \x7fL ", None),
+    ],
+)
+def test_split_side_roland(name, expected):
+    assert split_side(name) == expected
+
+
+@pytest.mark.parametrize("name", ["KICKL", "KICKR", "PIANO L", "PIANO R"])
+def test_the_separator_is_not_optional(name):
+    """``KICKL``/``KICKR`` are not a pair, and guessing they are is unrecoverable."""
+    assert split_side(name) is None
+
+
+def test_roland_pairs_are_matched_by_base_name():
+    pairs = find_pairs(
+        [
+            "STR:Vn1 Pizz55\x7fL",
+            "STR:Solo Vla",
+            "STR:Vn1 Pizz55\x7fR",
+            "MOVIN 105 -L",
+            "MOVIN 105 -R",
+        ]
+    )
+    assert [(p.base, p.left, p.right) for p in pairs] == [
+        ("STR:Vn1 Pizz55", "STR:Vn1 Pizz55\x7fL", "STR:Vn1 Pizz55\x7fR"),
+        ("MOVIN 105", "MOVIN 105 -L", "MOVIN 105 -R"),
+    ]
+
+
+def test_an_unmatched_roland_half_is_not_a_pair():
+    assert find_pairs(["STR:Lone\x7fL"]) == []
+    assert find_pairs(["STR:Lone\x7fR"]) == []
+
+
+def test_ambiguous_roland_names_are_left_alone():
+    assert find_pairs(["A\x7fL", "A\x7fL", "A\x7fR"]) == []
+
+
 def test_pairs_are_matched_by_base_name():
     pairs = find_pairs(["MOVIN 105 -L", "KICK", "MOVIN 105 -R", "SWG-T2-100-L", "SWG-T2-100-R"])
     assert [(p.base, p.left, p.right) for p in pairs] == [
