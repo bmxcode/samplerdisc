@@ -56,7 +56,7 @@ class Backend:
 
 `probe()` runs at every candidate offset during origin detection, so it must be cheap, and specific enough not to match zeros or audio.
 
-`fs/akai.py` walks `Partition → Volume → File` ([akai-fs.md](formats/akai-fs.md)). AKAI caps a partition at 512 MB, so a large disc carries several — walk the table rather than assuming one. `fs/iso9660.py` covers discs whose payload is already WAV or AIFF, which is a meaningful share of the archives.
+`fs/akai.py` walks `Partition → Volume → File` ([akai-fs.md](formats/akai-fs.md)). AKAI caps a partition at 512 MB, so a large disc carries several — walk the table rather than assuming one. `fs/iso9660.py` covers discs whose payload is already WAV or AIFF, which is a meaningful share of the archives; it walks the Joliet supplementary descriptor where a disc carries one, because the primary descriptor's 8.3 names are lossy and on a real disc are not even unique — 61 of Vintage Pro's files share one ([iso9660.md](formats/iso9660.md), [ADR-0019](adr/0019-prefer-joliet-names.md)).
 
 Damaged input degrades rather than crashing: entries whose start block or size fall outside the image are skipped and logged. Several of these rips have tail damage, and a disc yielding 400 of 420 samples is a good outcome.
 

@@ -20,6 +20,12 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 
 ### Fixed
 
+- **ISO 9660 discs are read through Joliet, so long filenames survive.** `Digital Sound Factory - E-MU Vintage Pro` listed 1 062 files under 1 002 paths: MagicISO caps its 8.3 short names at twelve characters in total and lets the `~N` counter eat the extension, so **61 separate files all came back as `VINTAG~0.EXB/SAMPLE~0/VINTA~1000.E`**. The disc carried a Joliet descriptor with the real names — `Vintage Pro.exb/SamplePool/Vintage ProSL001.ebl` and so on, all 1 062 distinct — the whole time. Where a disc has Joliet it is now the name space we walk. ([docs/formats/iso9660.md](docs/formats/iso9660.md), [ADR-0019](docs/adr/0019-prefer-joliet-names.md))
+
+  Nothing was lost to this: `unique_path` was already suffixing collisions, and `BSBSSD2` — the only other ISO 9660 disc tested — extracts byte-for-byte identically to before, because its short names were already unique. What changes is that listings and filenames now carry the disc's own capitalisation, spacing and extensions rather than an uppercase approximation.
+
+- **An ISO 9660 volume label stops at the first NUL.** The field is meant to be space-padded; MagicISO NUL-terminates it and leaves the buffer's previous contents behind. Vintage Pro was reported as `VintagePro 57`, the `57` two stray bytes of its volume set identifier `20101002_0257`. It is `VintagePro`.
+
 - **A `.mds`/`.mdf` pair was refused.** The split `.mds` descriptor opens with the same `MEDIA DESCRIPTOR` magic as a merged `.mdx`, and detection tested that magic before it tested anything else — so every real `.mds` went to the MDX parser and came back as `implausible descriptor offset 0`, and the `.mds` branch of the detector was unreachable for the input it exists for. The major version at `0x10` tells the two apart — `01` split, `02` merged — and is now what routes them, by signature rather than by extension ([ADR-0004](docs/adr/0004-detect-by-signature.md), [docs/formats/mdx.md](docs/formats/mdx.md)).
 
   The first pair to be tried on it, `Back In Time Records Korg Universe vol.1`, reads as 260 287 sectors carrying an AKAI filesystem — five volumes, 159 files. If you have a `.mds`/`.mdf` disc that this tool refused, try it again.

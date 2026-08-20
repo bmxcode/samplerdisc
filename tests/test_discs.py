@@ -268,3 +268,35 @@ def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(stem: str) -> None:
                 if cluster >= fs.CHAIN_END:
                     break
             assert payload == bytes(expected[: entry.size]), entry.name
+
+
+#: ISO 9660 discs pinned by name, with the volume label and file count each
+#: must yield. Both carry Joliet, and Vintage Pro is why the backend now reads
+#: it (ADR-0019): its primary tree masters 1 061 files under 1 001 8.3 names.
+_ISO9660 = {
+    "Digital Sound Factory - E-MU Vintage Pro": ("VintagePro", 1062),
+    "BSBSSD2": ("BSBSS", 2059),
+}
+
+
+@pytest.mark.parametrize("stem", sorted(_ISO9660))
+def test_iso9660_discs_list_every_file_under_a_distinct_path(stem: str) -> None:
+    """Distinctness is the assertion, not the count.
+
+    A count alone passed throughout the bug: the walk always found all 1 062 of
+    Vintage Pro's files, and 60 of them arrived wearing another file's name.
+    """
+    matches = [p for p in _discs() if p.stem == stem]
+    if not matches:
+        pytest.skip(f"{stem} not in this collection")
+    label, count = _ISO9660[stem]
+    with open_image(matches[0]) as image:
+        origin = find_origin(image)
+        assert origin is not None, f"{stem}: no filesystem found"
+        assert origin.backend.name == "iso9660"
+        volumes = list(origin.backend.volumes(image, origin.offset))
+        assert len(volumes) == 1
+        assert volumes[0].name == label
+        names = [f.name for f in volumes[0].files]
+        assert len(names) == count
+        assert len(set(names)) == count

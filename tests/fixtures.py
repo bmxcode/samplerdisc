@@ -250,14 +250,28 @@ def akai_sample(
     return bytes(header) + pcm
 
 
-def make_iso9660(files: dict[str, bytes], label: str = "SAMPLE CD") -> bytes:
-    """A minimal single-level ISO 9660 image.
+def make_iso9660(
+    files: dict[str, bytes],
+    label: str = "SAMPLE CD",
+    joliet: bool = False,
+    short_names: dict[str, str] | None = None,
+    joliet_label: str | None = None,
+) -> bytes:
+    """A minimal ISO 9660 image, optionally with a Joliet name space.
 
     Enough of the standard to exercise the backend: a 16-sector system area, a
     primary volume descriptor, a terminator, a root directory and the file
-    extents. No Joliet, no Rock Ridge, no subdirectories.
+    extents. No Rock Ridge, no subdirectories.
+
+    ``files`` maps name to payload. The primary tree carries
+    ``short_names[name]`` where given and the uppercased name otherwise, so a
+    fixture can put several files under one 8.3 name -- which is what Vintage
+    Pro does with 61 of them. With ``joliet`` a supplementary descriptor is
+    written whose tree carries the ``files`` keys verbatim in UCS-2, pointing
+    at the same extents: the two trees differ only in what they call things.
     """
     sector = 2048
+    short_names = short_names or {}
 
     def both32(value: int) -> bytes:
         return struct.pack("<I", value) + struct.pack(">I", value)
@@ -278,39 +292,82 @@ def make_iso9660(files: dict[str, bytes], label: str = "SAMPLE CD") -> bytes:
         rec[33 : 33 + len(name)] = name
         return bytes(rec)
 
-    root_extent = 19
-    entries = bytearray()
-    entries += record(b"\x00", root_extent, sector, 0x02)
-    entries += record(b"\x01", root_extent, sector, 0x02)
+    def pack(records: list[bytes]) -> bytes:
+        """A directory extent. Records never straddle a sector boundary."""
+        out = bytearray()
+        for rec in records:
+            if len(out) % sector + len(rec) > sector:
+                out += b"\x00" * (sector - len(out) % sector)
+            out += rec
+        blocks = max(1, (len(out) + sector - 1) // sector)
+        return bytes(out).ljust(blocks * sector, b"\x00")
 
-    data_extent = root_extent + 1
+    primary_extent = 19
+    joliet_extent = primary_extent + 1 if joliet else 0
+    data_extent = (joliet_extent or primary_extent) + 1
+
+    primary = [
+        record(b"\x00", primary_extent, sector, 0x02),
+        record(b"\x01", primary_extent, sector, 0x02),
+    ]
+    wide = [
+        record(b"\x00", joliet_extent, sector, 0x02),
+        record(b"\x01", joliet_extent, sector, 0x02),
+    ]
     payloads = bytearray()
     for name, blob in files.items():
-        encoded = name.upper().encode("ascii") + b";1"
-        entries += record(encoded, data_extent, len(blob), 0)
+        # A masterer has no way to spell a non-ASCII character in the primary
+        # tree, so it substitutes -- which is half of why Joliet exists.
+        short = short_names.get(name, name.upper()).encode("ascii", "replace")
+        short = short.replace(b"?", b"_") + b";1"
+        primary.append(record(short, data_extent, len(blob), 0))
+        wide.append(
+            record(
+                name.encode("utf-16-be") + "\u003b1".encode("utf-16-be"), data_extent, len(blob), 0
+            )
+        )
         blocks = (len(blob) + sector - 1) // sector
         payloads += blob + b"\x00" * (blocks * sector - len(blob))
         data_extent += blocks
 
-    root_dir = bytes(entries).ljust(sector, b"\x00")
+    primary_dir = pack(primary)
+    joliet_dir = pack(wide) if joliet else b""
 
-    pvd = bytearray(sector)
-    pvd[0] = 1
-    pvd[1:6] = b"CD001"
-    pvd[6] = 1
-    pvd[40:72] = label.ljust(32).encode("ascii")[:32]
-    pvd[80:88] = both32(data_extent)
-    pvd[128:132] = both16(sector)
-    pvd[156:190] = record(b"\x00", root_extent, sector, 0x02)[:34]
+    def descriptor(kind: int, root_extent: int, root_len: int, ident: bytes) -> bytes:
+        vd = bytearray(sector)
+        vd[0] = kind
+        vd[1:6] = b"CD001"
+        vd[6] = 1
+        vd[40:72] = ident.ljust(32, b"\x00")[:32]
+        vd[80:88] = both32(data_extent)
+        vd[128:132] = both16(sector)
+        vd[156:190] = record(b"\x00", root_extent, root_len, 0x02)[:34]
+        return bytes(vd)
+
+    descriptors = [descriptor(1, primary_extent, len(primary_dir), label.ljust(32).encode("ascii"))]
+    if joliet:
+        svd = bytearray(
+            descriptor(
+                2,
+                joliet_extent,
+                len(joliet_dir),
+                (joliet_label if joliet_label is not None else label).encode("utf-16-be"),
+            )
+        )
+        # UCS-2 level 3: what every Joliet disc in the collection carries.
+        svd[88:91] = b"%/E"
+        descriptors.append(bytes(svd))
 
     terminator = bytearray(sector)
     terminator[0] = 255
     terminator[1:6] = b"CD001"
     terminator[6] = 1
+    descriptors.append(bytes(terminator))
+    if not joliet:
+        descriptors.append(b"\x00" * sector)  # spare, so the root lands at 19
 
     system_area = b"\x00" * (16 * sector)
-    spare = b"\x00" * sector
-    return system_area + bytes(pvd) + bytes(terminator) + spare + root_dir + bytes(payloads)
+    return system_area + b"".join(descriptors) + primary_dir + joliet_dir + bytes(payloads)
 
 
 def tiny_wav(tmp_path, frames: int = 32, rate: int = 44100) -> bytes:

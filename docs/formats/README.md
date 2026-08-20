@@ -12,6 +12,7 @@ Without these docs, the next session re-derives the MDX block chain by hexdumpin
 | [akai-fs.md](akai-fs.md) | AKAI S1000/S3000 filesystem and sample header |
 | [emu3.md](emu3.md) | E-mu `EMU3` filesystem — EIIIX, ESI/Formula 4000, E-IV |
 | [roland-s7xx.md](roland-s7xx.md) | Roland `S770 MR25A` filesystem — S-770, S-750, S-760 |
+| [iso9660.md](iso9660.md) | ISO 9660 and Joliet — discs whose payload is already audio |
 | [audio-cd.md](audio-cd.md) | Red Book audio CDs — no filesystem at all |
 
 ## How to read the constants
@@ -31,5 +32,7 @@ The reference discs are not in this repository ([ADR-0008](../adr/0008-no-media-
 | `northstar` | `NorthStar - Global Instruments - Volume 1 (S7xx).iso` | 296 032 256 |
 | `amg-now` | `AMG - Now CD-ROM (Roland).iso` | 681 140 224 |
 | `l-cdx-01` | `Roland - L-CDX-01 - Rhythm Section Instruments (Roland Sxx CD-ROM).iso` | 629 149 696 |
+| `vintage-pro` | `Digital Sound Factory - E-MU Vintage Pro.bin` + `.cue` | 45 558 240 |
+| `bsbssd2` | `BSBSSD2.bin` + `.cue` | 539 584 080 |
 
 Point `SAMPLERDISC_TEST_DISCS` at a directory containing them to run the disc-backed tests.
