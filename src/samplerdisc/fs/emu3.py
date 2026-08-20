@@ -4,8 +4,10 @@ One on-disc format spans three product lines the archives file separately --
 EIIIX, ESI/Formula 4000 and E-IV all write ``EMU3`` at byte 0 and the same
 folder and bank directories (ADR-0014). The *bank interior* is not shared, and
 that is the one place this module branches: EIII/ESI banks carry an
-``EMULATOR 3X`` header and are located by it, while E-IV banks carry none and
-are reached through a chained ``E3S1`` sample directory instead (ADR-0020).
+``EMULATOR``-family header and are located by it, while E-IV banks carry none
+and are reached through a chained ``E3S1`` sample directory instead (ADR-0020).
+A located bank owns the records inside the run its own header declares, and
+nothing else that happens to lie in its region (ADR-0021).
 
 Every offset here is documented in the format doc against a named disc. Do not
 change a constant without changing the doc, and vice versa.
@@ -56,19 +58,50 @@ _MAX_FOLDERS = 64
 
 #: EIII/ESI bank header. The name repeats the directory entry, which is what
 #: lets a bank be located by signature rather than by arithmetic.
-BANK_MAGIC = b"EMULATOR"
+#:
+#: The 16-byte signature reads ``"EMULATOR 3X    \0"`` on EIIIX and ESI,
+#: ``"EMULATOR THREE \0"`` on EIII and ``"EMU SI-32 v3   \0"`` on the two
+#: Formula 4000 banks of `protozoa`. Matching the family prefix rather than
+#: the whole field is deliberate: a ROM revision that changes the version
+#: suffix would otherwise hide a bank, and the name at ``OFF_BANK_NAME`` --
+#: which has to match a directory entry -- is what actually confirms the hit.
+#:
+#: `protozoa` is why the second family is here at all. ``Orbit Presets 4k``
+#: and ``Phatt Presets 4K`` are ordinary banks with an ordinary interior; they
+#: were invisible only because their header says ``EMU SI-32`` where their
+#: neighbours say ``EMULATOR``, and an unlocated bank hands its region to the
+#: bank in front of it.
+BANK_MAGICS = (b"EMULATOR", b"EMU SI-32")
 OFF_BANK_NAME = 16
 BANK_NAME_LEN = 16
 
-#: u32 LE, bytes of sample data in the bank. Reads **zero** on 4 of the 112
-#: located banks and non-zero on the rest: one index bank on each of
-#: `esi32-gm`, `eiiix-1` and `eiiix-2`, which carry the library's contents list
-#: and no audio at all, plus `protozoa`'s last bank, whose bound is wrong for a
-#: separate reason and which is why this is read only *after* the walk has
-#: already come back empty. It is the difference between a bank that yields
-#: nothing because it holds nothing and one that yields nothing because the
-#: walk is wrong -- which ADR-0012 says must not be left to a human reading the
-#: names.
+#: u32 LE, bytes before the bank's sample area, and the anchor the walk starts
+#: from. Every record a bank owns lies at or after it.
+OFF_BANK_SAMPLE_START = 0x30
+
+#: The first record of a populated bank starts exactly this far into the
+#: declared sample area -- on 107 of the 110 populated banks of the four
+#: EIII/ESI reference discs, and on none of them any earlier.
+#: ``OFF_BANK_SAMPLE_BYTES`` measures the run from there, so the run ends at
+#: ``0x30 + SAMPLE_AREA_PREAMBLE + 0x34``, where the last record ends exactly
+#: (72 banks) or one 92-byte header short (19). The remaining 19 are looser in
+#: both directions -- 11 whose last record's payload overshoots, 8 whose run
+#: has slack -- which is why the run gates where a record *starts* and never
+#: where its audio ends.
+SAMPLE_AREA_PREAMBLE = 74
+
+#: u32 LE, the length of the bank's record run, measured from its first
+#: record. Together with OFF_BANK_SAMPLE_START this is the bank's own
+#: statement of which records are its own, and it is the bound the walk uses
+#: (ADR-0021). Reads **zero** on 4 of the 114 located banks: one index bank on
+#: each of `esi32-gm`, `eiiix-1` and `eiiix-2`, plus `protozoa`'s ``Protozoa
+#: X`` -- each of which carries the library's contents list and no audio.
+#:
+#: A zero here therefore makes the run empty, and the note that follows an
+#: empty walk restates the bound rather than corroborating it independently.
+#: That is a real loss and it is taken deliberately: the alternative measured
+#: on `protozoa` was to credit ``Protozoa       X`` with 63 records that are,
+#: name for name, the Phatt banks' (ADR-0021).
 OFF_BANK_SAMPLE_BYTES = 0x34
 
 #: Sample record, relative to its own start. A record begins two bytes before
@@ -436,20 +469,19 @@ class Emu3Backend:
                 banks.append(_Bank(name, folder, start, length))
         return banks
 
-    def _bank_offsets(self, image: SectorImage, offset: int) -> dict[str, int]:
-        """Locate EIII/ESI banks by their own header, keyed on bank name.
+    def _bank_headers(self, image: SectorImage, offset: int) -> list[tuple[int, str]]:
+        """Every bank header on the image, as ``(address, bank name)``.
 
-        The directory's start field is not a usable byte address: the implied
-        allocation unit measures 256 KiB on three reference discs and 1 MiB on
-        another, and no header field predicts which. The bank header repeats
-        the directory name verbatim, so matching on it is both exact and
-        self-checking -- and it is the same reasoning as ADR-0004, applied a
-        layer down.
+        Duplicates are kept. A disc writes the same bank twice -- an older
+        revision left in an unallocated region, or a copy running off the end
+        of the image -- and which of them a directory entry means is decided
+        in _bank_offsets(), not here.
 
-        Returns an empty map for a disc whose banks carry no header, which is
-        the E-IV case and is why those list without extracting.
+        Returns an empty list for a disc whose banks carry no header, which is
+        the E-IV case and is why those are reached through a sample directory.
         """
-        found: dict[str, int] = {}
+        found: list[tuple[int, str]] = []
+        pattern = re.compile(b"|".join(re.escape(magic) for magic in BANK_MAGICS))
         position = 0
         carry = b""
         while position < image.size:
@@ -458,14 +490,97 @@ class Emu3Backend:
                 break
             haystack = carry + chunk
             base = position - len(carry)
-            for match in re.finditer(re.escape(BANK_MAGIC), haystack):
+            for match in pattern.finditer(haystack):
                 at = match.start()
                 raw = haystack[at + OFF_BANK_NAME : at + OFF_BANK_NAME + BANK_NAME_LEN]
                 if len(raw) == BANK_NAME_LEN and is_plausible_name(raw):
-                    found.setdefault(decode_name(raw), base + at)
+                    found.append((base + at, decode_name(raw)))
             carry = haystack[-64:]
             position += len(chunk)
+        return sorted(set(found))
+
+    def _placement(
+        self, banks: list[_Bank], headers: list[tuple[int, str]]
+    ) -> tuple[int, int] | None:
+        """Fit ``header address == unit * start + bias`` across the disc.
+
+        ADR-0015 refused to *place* a bank by arithmetic on ``start`` and that
+        stands: nothing here places anything. The fit is measured from headers
+        already located by signature, and its only use is to say which of two
+        headers wearing the same name the directory entry meant -- exactly the
+        way ADR-0020 fits an allocation unit for E-IV and then only ever uses
+        it to confirm a chain it found independently.
+
+        Only banks whose name resolves to a single header may vote. A name
+        written twice is the question being asked, so it cannot also be the
+        evidence. Measured: 45 of 45 votes agree on `eiiix-1` and `eiiix-2`,
+        14 of 14 on `protozoa`, 6 of 6 on `esi32-gm`.
+        """
+        at_name: dict[str, list[int]] = {}
+        for at, name in headers:
+            at_name.setdefault(name, []).append(at)
+        fixed = [(b.start, at_name[b.name][0]) for b in banks if len(at_name.get(b.name, ())) == 1]
+        best: tuple[int, int, int] | None = None
+        for first_start, first_at in fixed:
+            for start, at in fixed:
+                span = start - first_start
+                gap = at - first_at
+                if span <= 0 or gap <= 0 or gap % span:
+                    continue
+                unit = gap // span
+                bias = first_at - unit * first_start
+                agree = sum(1 for s, a in fixed if unit * s + bias == a)
+                if best is None or agree > best[0]:
+                    best = (agree, unit, bias)
+        # A fit derived from a pair is satisfied by that pair for free, so two
+        # agreements prove nothing; three is the first that is corroborated.
+        # Below that the disc has not shown a placement rule and the first
+        # header of each name is as good an answer as any.
+        if best is None or best[0] < 3:
+            return None
+        return best[1], best[2]
+
+    def _bank_offsets(self, banks: list[_Bank], headers: list[tuple[int, str]]) -> dict[str, int]:
+        """One header per bank name: the one the directory placed there.
+
+        Keying on the name alone and keeping the first hit reads the wrong
+        copy where a disc holds two. `esi32-gm` carries an older revision of
+        ``2.5M Drums+SFX X`` and ``1.3M Drums+SFX X`` in a region its
+        directory does not allocate, both *before* the banks the directory
+        points at; `protozoa` carries a second ``Phatt Presets  X`` after
+        them. Whichever end you take, one of those discs is read wrong.
+        """
+        at_name: dict[str, list[int]] = {}
+        for at, name in headers:
+            at_name.setdefault(name, []).append(at)
+        found = {name: addresses[0] for name, addresses in at_name.items()}
+        placement = self._placement(banks, headers)
+        if placement is None:
+            return found
+        unit, bias = placement
+        for bank in banks:
+            want = unit * bank.start + bias
+            if want in at_name.get(bank.name, ()):
+                found[bank.name] = want
         return found
+
+    def _declared_run(
+        self, image: SectorImage, offset: int, bank_at: int
+    ) -> tuple[int, int] | None:
+        """The bank's own statement of its record run, relative to the bank.
+
+        ``(start, end)`` where ``start`` is ``0x30``, the bytes before the
+        sample area, and ``end`` is one ``0x34`` past the first record. A
+        header too short to hold both fields returns ``None``: that is tail
+        damage, and a bank that was not read must not come back looking like
+        a bank that declared nothing.
+        """
+        want = OFF_BANK_SAMPLE_BYTES + 4
+        head = image.read(offset + bank_at, want)
+        if len(head) < want:
+            return None
+        start, length = struct.unpack_from("<II", head, OFF_BANK_SAMPLE_START)
+        return start, start + SAMPLE_AREA_PREAMBLE + length
 
     def _eiv(self, image: SectorImage, banks: list[_Bank]):
         """Locate E-IV sample directories and bind them to banks by address.
@@ -520,14 +635,15 @@ class Emu3Backend:
             )
 
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
-        located = self._bank_offsets(image, offset)
-        # A bank ends where the next one begins. The directory's length field
-        # would be the obvious bound and is not usable -- see _bank_offsets --
-        # so the bound comes from the same measured positions as the starts.
-        # Without it a bank's sample walk runs into its neighbour and reports
-        # that neighbour's samples as its own, which looks entirely plausible.
-        boundaries = sorted(located.values())
         banks = self._banks(image, offset)
+        headers = self._bank_headers(image, offset)
+        located = self._bank_offsets(banks, headers)
+        # A bank ends where its own header says its records end, and no later
+        # than the next bank header on the disc. Neither bound is enough
+        # alone: the next header is 16 MiB away where `protozoa` gives a bank
+        # 8 MiB of records, and a header damaged in the rip would declare a
+        # run reaching into whatever follows it.
+        boundaries = sorted({at for at, _ in headers})
         # The E-IV scan is a pass over the image, so it runs once and only when
         # a bank actually needs it. An all-EIII disc never pays for it.
         eiv_tags: dict[int, bytes] = {}
@@ -539,18 +655,32 @@ class Emu3Backend:
             at = located.get(bank.name)
             if at is None:
                 found = eiv_bound.get(bank.start)
-                if found is None:
+                if found is not None:
+                    volume.files = list(self._eiv_samples(eiv_tags, *found))
+                elif located:
+                    # A bank the directory lists and no header on the disc
+                    # claims. On an EIII/ESI disc that is the sampler's own
+                    # code -- ``E3 Main Code``, ``E3X Main Code`` -- which is
+                    # a bank slot holding an operating system and no audio.
+                    # Saying "no sample directory" here was borrowed from the
+                    # E-IV case and named a structure this disc never has.
+                    volume.note = "no bank header found for this bank; listed only"
+                else:
                     # An E-IV bank with no confirmed sample directory. Real,
                     # correctly named, and not guessed at -- the note is what
                     # tells this apart from a probe that matched garbage
                     # (ADR-0012), and the disc-backed suite asserts it.
                     volume.note = "no sample directory found for this bank; listed only"
-                else:
-                    volume.files = list(self._eiv_samples(eiv_tags, *found))
             else:
                 after = [b for b in boundaries if b > at]
                 limit = after[0] if after else image.size
-                volume.files = list(self._samples(image, offset, at, limit))
+                run = self._declared_run(image, offset, at)
+                # The run says where the bank's records *start*. Its last
+                # record's payload may run past the declared end -- 8 records
+                # across `eiiix-1` and `eiiix-2` do -- so the run gates the
+                # record, and the next header still gates the read.
+                span = run if run is not None else (0, limit - at)
+                volume.files = list(self._samples(image, offset, at, span, limit))
                 if not volume.files and self._declares_no_samples(image, offset, at):
                     # An index bank: correctly located, correctly bounded, and
                     # empty because the disc made it empty. Not noting it
@@ -572,7 +702,14 @@ class Emu3Backend:
             return False
         return struct.unpack_from("<I", head, OFF_BANK_SAMPLE_BYTES)[0] == 0
 
-    def _samples(self, image: SectorImage, offset: int, bank_at: int, limit: int) -> Iterator[File]:
+    def _samples(
+        self,
+        image: SectorImage,
+        offset: int,
+        bank_at: int,
+        span: tuple[int, int],
+        limit: int,
+    ) -> Iterator[File]:
         """Enumerate a bank's sample records by signature, within its bounds.
 
         Chaining on the declared length is the obvious walk and it does not
@@ -586,12 +723,21 @@ class Emu3Backend:
         the rate must be plausible, and sixteen bytes must be printable. On the
         reference bank that yields 452 records with 452 distinct, sensible
         names totalling 7.00 MiB inside a bank declaring 8 MiB.
+
+        Specific is not the same as exclusive, which is why ``span`` matters
+        as much as the signature does. A bank's region holds whatever the
+        mastering left there as well as the bank, and a record found outside
+        the declared run is real -- it is simply another bank's (ADR-0021).
+        ``span`` gates where a record may start; ``limit`` is how far the
+        window reaches, and a record may declare a payload that runs past the
+        span but not past the window.
         """
+        first, last = span
         window = image.read(offset + bank_at, max(limit - bank_at, 0))
         needle = struct.pack("<I", SAMPLE_HEADER_LEN)
         for match in re.finditer(re.escape(needle), window):
             at = match.start() - OFF_SAMPLE_HEADER_LEN
-            if at < 0:
+            if not first <= at < last:
                 continue
             record = self._parse_record(window[at : at + SAMPLE_HEADER_LEN])
             if record is None:

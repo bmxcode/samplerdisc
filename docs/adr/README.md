@@ -26,3 +26,4 @@ If you find yourself writing an ADR with no rejected alternative, you are writin
 | [0018](0018-the-s7xx-sample-rate-is-measured.md) | The S-7xx rate is 44 100 by measurement, not by a field | Refusing to extract; a `--rate` override; per-sample pitch inference |
 | [0019](0019-prefer-joliet-names.md) | Prefer Joliet names over the ISO 9660 short names | De-duplicating the short names; merging the two trees; Rock Ridge; naming from the payload |
 | [0020](0020-read-e-iv-through-its-sample-directory.md) | Read E-IV through its `E3S1` sample directory | Waiting for a fourth disc; arithmetic on `start`; a signature walk; an `EMU4` backend; a stereo channel count |
+| [0021](0021-a-bank-owns-the-run-its-header-declares.md) | An EIII/ESI bank owns the record run its own header declares | Bounding by the directory's `length`; deduplicating headers by address; dropping repeated names; listing the `4k` banks with a note; a looser header match |

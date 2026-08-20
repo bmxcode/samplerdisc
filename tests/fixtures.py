@@ -702,6 +702,9 @@ def emu3_disc(
     reserved: int = 2,
     nul_padded: bool = False,
     bank_header: bool = True,
+    formula_4000: tuple[str, ...] = (),
+    stale_tail: tuple[tuple[str, int, int], ...] = (),
+    second_header: str | None = None,
     eiv: bool = False,
     duplicate_sample_dir: bool = False,
     folder_flags: int | None = None,
@@ -714,8 +717,23 @@ def emu3_disc(
     matters: reading only the directory the header points at loses every bank
     past the first folder.
 
-    ``bank_header`` False omits the ``EMULATOR`` header and writes nothing in
-    its place: banks are listed from the directory and no samples come out.
+    ``bank_header`` False omits the bank header and writes nothing in its
+    place: banks are listed from the directory and no samples come out.
+
+    ``formula_4000`` names the banks whose header carries the ``EMU SI-32``
+    signature rather than ``EMULATOR``. `protozoa` writes two of them, and
+    they are ordinary banks in every other respect.
+
+    ``stale_tail`` writes extra records into every bank's region past the run
+    its header declares -- what a disc leaves behind when a bank image is
+    written over a longer one. They are inside the region and are not the
+    bank's.
+
+    ``second_header`` names a bank to write a second, older copy of into the
+    unallocated region above the banks: same name, same shape, fewer records.
+    `esi32-gm` carries two such copies and they sit *before* the banks its
+    directory points at, so taking the first header of a name reads the wrong
+    one.
 
     A bank given no samples gets a header declaring a zero-length sample area,
     which is what the index banks on `esi32-gm`, `eiiix-1` and `eiiix-2` do.
@@ -734,7 +752,7 @@ def emu3_disc(
     every folder on that disc.
     """
     from samplerdisc.fs.emu3 import (
-        BANK_MAGIC,
+        BANK_MAGICS,
         BLOCK,
         EIV_CHAIN_STRIDE,
         EIV_MAGIC,
@@ -742,6 +760,7 @@ def emu3_disc(
         ENTRY_LEN,
         MAGIC,
         OFF_BANK_SAMPLE_BYTES,
+        OFF_BANK_SAMPLE_START,
         OFF_EIV_INDEX,
         OFF_EIV_LENGTH,
         OFF_EIV_NAME,
@@ -750,6 +769,7 @@ def emu3_disc(
         OFF_SAMPLE_RATE,
         OFF_SAMPLE_RECORD_LEN,
         RECORD_LEN_BIAS,
+        SAMPLE_AREA_PREAMBLE,
         SAMPLE_HEADER_LEN,
     )
 
@@ -826,10 +846,15 @@ def emu3_disc(
                 index += 1
                 continue
             if bank_header:
-                image[at : at + len(BANK_MAGIC)] = BANK_MAGIC
+                magic = BANK_MAGICS[1] if bank_name in formula_4000 else BANK_MAGICS[0]
+                image[at : at + len(magic)] = magic
                 image[at + 16 : at + 32] = name16(bank_name)
+            # The declared sample area starts at 0x30 and its first record
+            # sits SAMPLE_AREA_PREAMBLE bytes into it, which is what every
+            # populated bank on the reference discs does.
             sample_area = at + 256
-            cursor = sample_area
+            cursor = sample_area + SAMPLE_AREA_PREAMBLE
+            first_record = cursor
             for sample_name, rate, frames in samples:
                 pcm = stereo_audio_block(frames=frames // 2)[: frames * 2]
                 record_len = SAMPLE_HEADER_LEN + len(pcm)
@@ -842,13 +867,57 @@ def emu3_disc(
                 image[cursor + SAMPLE_HEADER_LEN : cursor + record_len] = pcm
                 cursor += record_len + 16  # a gap: records are not contiguous
             if bank_header:
-                # The header states the size of the sample area, and states
-                # zero for a bank that has none -- which is how an index bank
-                # on a real disc is told apart from one the walk failed to
-                # bound.
-                struct.pack_into("<I", image, at + OFF_BANK_SAMPLE_BYTES, cursor - sample_area)
+                # The header states where its sample area begins and how long
+                # its record run is, measured from the first record. That pair
+                # is what says which records in the bank's region are the
+                # bank's own; a bank with no samples declares a zero-length
+                # run, which is how an index bank on a real disc is told apart
+                # from one the walk failed to bound.
+                struct.pack_into("<I", image, at + OFF_BANK_SAMPLE_START, sample_area - at)
+                struct.pack_into("<I", image, at + OFF_BANK_SAMPLE_BYTES, cursor - first_record)
+            if stale_tail:
+                # What a real disc leaves behind when a bank image is written
+                # over a longer one: the previous occupant's last records,
+                # inside this bank's region and past the run it declares.
+                stale = cursor + 4096
+                for stale_name, rate, frames in stale_tail:
+                    pcm = stereo_audio_block(frames=frames // 2)[: frames * 2]
+                    record_len = SAMPLE_HEADER_LEN + len(pcm)
+                    head = bytearray(SAMPLE_HEADER_LEN)
+                    head[2:18] = name16(stale_name)
+                    struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+                    struct.pack_into(
+                        "<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS
+                    )
+                    struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+                    image[stale : stale + SAMPLE_HEADER_LEN] = head
+                    image[stale + SAMPLE_HEADER_LEN : stale + record_len] = pcm
+                    stale += record_len + 16
             index += 1
         image[dir_block * BLOCK : dir_block * BLOCK + len(bank_dir)] = bank_dir
+
+    if second_header is not None:
+        # An older copy of one bank, in a region the directory allocates to
+        # nobody, *below* the bank it duplicates -- which is where `esi32-gm`
+        # keeps its two. It is a whole bank image: header, declared run, and
+        # one record that is not in the copy the directory points at.
+        stray = 16 * BLOCK
+        magic = BANK_MAGICS[1] if second_header in formula_4000 else BANK_MAGICS[0]
+        image[stray : stray + len(magic)] = magic
+        image[stray + 16 : stray + 32] = name16(second_header)
+        area = stray + 256
+        record_at = area + SAMPLE_AREA_PREAMBLE
+        pcm = stereo_audio_block(frames=32)[:64]
+        record_len = SAMPLE_HEADER_LEN + len(pcm)
+        head = bytearray(SAMPLE_HEADER_LEN)
+        head[2:18] = name16("Older Revision")
+        struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+        struct.pack_into("<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS)
+        struct.pack_into("<I", head, OFF_SAMPLE_RATE, 22000)
+        image[record_at : record_at + SAMPLE_HEADER_LEN] = head
+        image[record_at + SAMPLE_HEADER_LEN : record_at + record_len] = pcm
+        struct.pack_into("<I", image, stray + OFF_BANK_SAMPLE_START, area - stray)
+        struct.pack_into("<I", image, stray + OFF_BANK_SAMPLE_BYTES, record_len)
 
     image[folder_block * BLOCK : folder_block * BLOCK + len(folder_dir)] = folder_dir
     if sample_dir:
