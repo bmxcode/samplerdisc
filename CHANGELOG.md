@@ -2,7 +2,7 @@
 
 Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](docs/formats/); decisions and their rejected alternatives live in [docs/adr/](docs/adr/). This file records what changed for someone using the tool.
 
-## Unreleased
+## 0.3.0 — 2026-08-20
 
 ### Added
 
@@ -24,6 +24,8 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 
   Nothing was lost to this: `unique_path` was already suffixing collisions, and `BSBSSD2` — the only other ISO 9660 disc tested — extracts byte-for-byte identically to before, because its short names were already unique. What changes is that listings and filenames now carry the disc's own capitalisation, spacing and extensions rather than an uppercase approximation.
 
+- **Apple resource forks were extracted as if they were audio.** Bit 2 of an ISO 9660 directory record marks an *associated file* — a second record wearing the data file's name and pointing somewhere else, which Apple-mastered discs use for the resource fork. Thirteen discs in the reference collection carry them, and on each one the number of duplicated paths equalled the number of flagged records exactly: 1 388 of ProSamples vol. 43's 4 189, 359 of vol. 52's, 115 of vol. 40's. Nothing was lost — `unique_path` suffixes — but 8 590 bytes of fork metadata came out as an `.aif` beside the real 2 MB sample, a file that opens, plays as noise and reports nothing wrong. Records flagged `0x04` are now skipped, and all fifteen ISO 9660 discs list zero duplicate paths.
+- **A damaged Joliet descriptor no longer takes the disc down with it.** Preferring Joliet is a decision about names, not about whether a disc reads; a supplementary descriptor with a bad root extent used to discard an intact primary tree and report an empty disc. The walk now falls back.
 - **An ISO 9660 volume label stops at the first NUL.** The field is meant to be space-padded; MagicISO NUL-terminates it and leaves the buffer's previous contents behind. Vintage Pro was reported as `VintagePro 57`, the `57` two stray bytes of its volume set identifier `20101002_0257`. It is `VintagePro`.
 
 - **A `.mds`/`.mdf` pair was refused.** The split `.mds` descriptor opens with the same `MEDIA DESCRIPTOR` magic as a merged `.mdx`, and detection tested that magic before it tested anything else — so every real `.mds` went to the MDX parser and came back as `implausible descriptor offset 0`, and the `.mds` branch of the detector was unreachable for the input it exists for. The major version at `0x10` tells the two apart — `01` split, `02` merged — and is now what routes them, by signature rather than by extension ([ADR-0004](docs/adr/0004-detect-by-signature.md), [docs/formats/mdx.md](docs/formats/mdx.md)).
