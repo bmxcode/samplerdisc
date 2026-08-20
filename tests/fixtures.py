@@ -256,6 +256,8 @@ def make_iso9660(
     joliet: bool = False,
     short_names: dict[str, str] | None = None,
     joliet_label: str | None = None,
+    associated: tuple[str, ...] = (),
+    break_joliet_root: bool = False,
 ) -> bytes:
     """A minimal ISO 9660 image, optionally with a Joliet name space.
 
@@ -269,6 +271,13 @@ def make_iso9660(
     Pro does with 61 of them. With ``joliet`` a supplementary descriptor is
     written whose tree carries the ``files`` keys verbatim in UCS-2, pointing
     at the same extents: the two trees differ only in what they call things.
+
+    ``associated`` names get a *second* record apiece, flagged 0x04 and
+    pointing at a different, much smaller extent -- an Apple resource fork,
+    which is what several ProSamples discs are full of. ``break_joliet_root``
+    points the supplementary descriptor's root past the end of the image,
+    leaving the primary tree intact: a damaged Joliet name space over a
+    readable disc.
     """
     sector = 2048
     short_names = short_names or {}
@@ -315,7 +324,23 @@ def make_iso9660(
         record(b"\x01", joliet_extent, sector, 0x02),
     ]
     payloads = bytearray()
+    fork = b"rsrc"  # stands in for fork metadata; not audio, and much smaller
     for name, blob in files.items():
+        if name in associated:
+            # The fork is listed first, exactly as the real discs do it.
+            short_fork = short_names.get(name, name.upper()).encode("ascii", "replace")
+            short_fork = short_fork.replace(b"?", b"_") + b";1"
+            primary.append(record(short_fork, data_extent, len(fork), 4))
+            wide.append(
+                record(
+                    name.encode("utf-16-be") + "\u003b1".encode("utf-16-be"),
+                    data_extent,
+                    len(fork),
+                    4,
+                )
+            )
+            payloads += fork.ljust(sector, b"\x00")
+            data_extent += 1
         # A masterer has no way to spell a non-ASCII character in the primary
         # tree, so it substitutes -- which is half of why Joliet exists.
         short = short_names.get(name, name.upper()).encode("ascii", "replace")
@@ -356,6 +381,10 @@ def make_iso9660(
         )
         # UCS-2 level 3: what every Joliet disc in the collection carries.
         svd[88:91] = b"%/E"
+        if break_joliet_root:
+            # Root extent past the end of the image. The primary tree is
+            # untouched, so a reader that falls back still sees every file.
+            svd[156:190] = record(b"\x00", 1 << 20, sector, 0x02)[:34]
         descriptors.append(bytes(svd))
 
     terminator = bytearray(sector)

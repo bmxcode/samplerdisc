@@ -300,3 +300,42 @@ def test_iso9660_discs_list_every_file_under_a_distinct_path(stem: str) -> None:
         names = [f.name for f in volumes[0].files]
         assert len(names) == count
         assert len(set(names)) == count
+
+
+@pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))
+def test_an_iso9660_volume_lists_no_path_twice(path: Path) -> None:
+    """On a hierarchical filesystem two entries under one path means one of
+    them is not what it claims.
+
+    Scoped to ISO 9660 deliberately, and the scope is the point rather than a
+    convenience. There a ``File.name`` is a *path*, and the filesystem itself
+    guarantees it is unique within its directory, so a repeat is our error.
+    On the sampler filesystems it is a *name*, and a repeat is the disc's own:
+    an AKAI program and its sample share one name by convention -- ``WELCOME``
+    on `AMG - Now CD-Rom for (AKAI)` is a program and a sample -- and E-mu
+    records are located by signature, so `Protozoa` really does carry two
+    ``Agogo Bell`` records at different extents. Asserting distinctness there
+    would be asserting something about the libraries, not about this code.
+
+    This is the check a file *count* cannot make, and it is worth having as an
+    invariant rather than a table: every ISO 9660 disc walked the right number
+    of records throughout the 8.3-collision bug and throughout the
+    resource-fork bug. What was wrong both times was that some of those
+    records wore another file's name.
+
+    Extraction survives a collision -- ``unique_path`` suffixes -- so the cost
+    is not a lost file but an unusable one: two different extents written out
+    as ``X.wav`` and ``X_2.wav`` with nothing saying which is the audio.
+    """
+    with open_image(path) as image:
+        origin = find_origin(image)
+        if origin is None or origin.backend.name != "iso9660":
+            return
+        for volume in origin.backend.volumes(image, origin.offset):
+            names = [f.name for f in volume.files]
+            duplicated = sorted({n for n in names if names.count(n) > 1})
+            assert not duplicated, (
+                f"{path.name}: volume {volume.name!r} lists "
+                f"{len(names) - len(set(names))} entries under a path it already used, "
+                f"first: {duplicated[:3]}"
+            )

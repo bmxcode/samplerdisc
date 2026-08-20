@@ -217,3 +217,66 @@ def test_the_documented_descriptor_layout_is_what_the_backend_reads():
     assert iso9660.ESCAPE_OFFSET == 88
     assert iso9660.JOLIET_ESCAPES == (b"%/@", b"%/C", b"%/E")
     assert (iso9660.ROOT_RECORD_OFFSET, iso9660.ROOT_RECORD_SIZE) == (156, 34)
+
+
+def test_an_apple_resource_fork_is_not_listed_as_a_file(tmp_path):
+    """Bit 2 of the record flags marks a second record wearing the data
+    file's name and pointing somewhere else -- Apple's resource fork.
+
+    Listing it gives the file two identical paths and extracts a few KB of
+    fork metadata under an audio extension: a WAV that opens, plays as noise
+    and reports nothing wrong. Real discs are full of them -- 1 388 of
+    ProSamples vol. 43's 4 189 records, 359 of vol. 52's, 115 of vol. 40's,
+    and on every one of them the duplicate count equals the flagged count
+    exactly.
+    """
+    files = {"Kick 01.wav": b"K" * 4096, "Snare 02.wav": b"S" * 4096}
+    image = iso_image(tmp_path, files, "forks.iso", joliet=True, associated=("Kick 01.wav",))
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    names = [f.name for f in volume.files]
+
+    assert names == sorted(set(names)), "a resource fork was listed under the data file's name"
+    assert names == ["Kick 01.wav", "Snare 02.wav"]
+    # The one that survived is the audio, not the 4-byte fork.
+    kick = next(f for f in volume.files if f.name == "Kick 01.wav")
+    assert kick.size == 4096
+
+
+def test_a_damaged_joliet_tree_falls_back_to_the_primary(tmp_path):
+    """Preferring Joliet is a decision about names (ADR-0019). It must not
+    become a decision about whether the disc reads at all.
+
+    These are rips and tail damage is normal, so a supplementary descriptor
+    can point at nothing while the primary tree beside it is perfectly good.
+    Committing to Joliet and walking out empty is the ADR-0012 signature --
+    a claimed disc with no files and no explanation.
+    """
+    files = {"Kick 01.wav": b"K" * 4096, "Snare 02.wav": b"S" * 4096}
+    healthy = next(iter(BACKEND.volumes(iso_image(tmp_path, files, "ok.iso", joliet=True), 0)))
+    assert [f.name for f in healthy.files] == ["Kick 01.wav", "Snare 02.wav"]
+
+    broken = next(
+        iter(
+            BACKEND.volumes(
+                iso_image(tmp_path, files, "broken.iso", joliet=True, break_joliet_root=True), 0
+            )
+        )
+    )
+    # Every file still found, under the primary tree's names rather than none.
+    assert len(broken.files) == 2
+    assert [f.name for f in broken.files] == ["KICK 01.WAV", "SNARE 02.WAV"]
+
+
+def test_the_fallback_does_not_fire_on_a_healthy_disc(tmp_path):
+    """The guard above must not quietly become "walk whichever tree is bigger".
+
+    A Joliet tree that legitimately yields files is used even when the primary
+    would also have worked -- otherwise the preference this whole change exists
+    for would depend on which tree happened to be larger.
+    """
+    files = {"Kick 01.wav": b"K" * 4096}
+    image = iso_image(
+        tmp_path, files, "healthy.iso", joliet=True, short_names={"Kick 01.wav": "KICK~001.WAV"}
+    )
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    assert [f.name for f in volume.files] == ["Kick 01.wav"]
