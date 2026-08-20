@@ -33,6 +33,8 @@ The reference discs are not in this repository ([ADR-0008](../adr/0008-no-media-
 | `amg-now` | `AMG - Now CD-ROM (Roland).iso` | 681 140 224 |
 | `l-cdx-01` | `Roland - L-CDX-01 - Rhythm Section Instruments (Roland Sxx CD-ROM).iso` | 629 149 696 |
 | `vintage-pro` | `Digital Sound Factory - E-MU Vintage Pro.bin` + `.cue` | 45 558 240 |
-| `bsbssd2` | `BSBSSD2.bin` + `.cue` | 539 584 080 |
+| `bsbssd2` | `Best Service - Brass Super Section (CD2).bin` + `.cue` | 539 584 080 |
 
-Point `SAMPLERDISC_TEST_DISCS` at a directory containing them to run the disc-backed tests.
+Point `SAMPLERDISC_TEST_DISCS` at a directory containing them to run the disc-backed tests. The scan recurses, so pointing it at the collection root rather than one folder is fine.
+
+Two of these were renamed on disk in August 2026 and appear under their old names in [CHANGELOG.md](../../CHANGELOG.md) and [ADR-0019](../adr/0019-prefer-joliet-names.md), which are historical records and were left alone: `bsbssd2` was `BSBSSD2.bin`, and `AMG - Ruff Cutz.bin` was `AMG - RUFF_CUTZ.bin`. A disc-backed test that keys on a filename **skips** when it does not match, so a rename disables it silently — `test_iso9660_discs_list_every_file_under_a_distinct_path` was skipping on `bsbssd2` for exactly this reason.

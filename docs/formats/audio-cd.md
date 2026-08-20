@@ -1,6 +1,6 @@
 # Red Book audio CDs
 
-Some discs in these collections are not CD-ROMs at all. `AMG - RUFF_CUTZ` is a plain audio CD with 96 tracks — the kind you would put in a hi-fi. There is no partition, no volume, no filesystem to walk, and a tool that goes looking for one reports the disc as unreadable when nothing is wrong with it.
+Some discs in these collections are not CD-ROMs at all. `AMG - Ruff Cutz` is a plain audio CD with 96 tracks — the kind you would put in a hi-fi. There is no partition, no volume, no filesystem to walk, and a tool that goes looking for one reports the disc as unreadable when nothing is wrong with it.
 
 ## Recognising one
 
@@ -42,7 +42,7 @@ lba = (minutes * 60 + seconds) * 75 + frames
 
 A track runs from its own `INDEX 01` to the next track's, and the last runs to the end of the file. Byte offset is `lba * 2352`.
 
-## Verified against `AMG - RUFF_CUTZ.bin`
+## Verified against `AMG - Ruff Cutz.bin`
 
 | Quantity | Value |
 |---|---|
