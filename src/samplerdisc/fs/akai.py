@@ -29,6 +29,20 @@ NAME_LEN = 12
 VOLUME_DIR_OFFSET = 0xCA
 VOLUME_ENTRY_LEN = 16
 
+#: Fields within a volume entry. The type is a **byte** at 12, and 13 is a
+#: separate field -- reading the pair as one u16 inflates the type by 256 per
+#: volume on the one disc where 13 is not zero. See docs/formats/akai-fs.md.
+VOLUME_TYPE_OFFSET = 12
+VOLUME_INDEX_OFFSET = 13
+VOLUME_START_OFFSET = 14
+
+#: Volume type byte: which sampler owns the volume, or 0 for one the sampler
+#: will not load. Counted across 44 discs: 338 type 1, 91 type 7, 9 type 3,
+#: 10 type 0. It is NOT an allocation flag -- four type-0 volumes carry 63
+#: files between them, which is why the allocation map below does that job.
+VOLUME_TYPE_INACTIVE = 0
+VOLUME_TYPES = {0: "inactive", 1: "S1000", 3: "S3000", 7: "CD3000"}
+
 #: File entries within a volume, 24 bytes each.
 FILE_ENTRY_LEN = 24
 
@@ -62,6 +76,29 @@ SAMPLE_VALID = 0x80
 
 _MAX_VOLUMES = 100
 
+#: The partition header's first u16: the partition's size in blocks, which is
+#: also the number of entries in the allocation map. A partition is far smaller
+#: than the disc -- 3840 to 7680 blocks across the 44 discs measured, against
+#: images of 27 000 to 82 000 -- so this bounds the map, never the image.
+PARTITION_BLOCKS_OFFSET = 0x00
+
+#: The partition's **block allocation map**, one u16 per block, immediately
+#: after the volume directory's hundred slots. This is the disc's own record of
+#: what each block holds, and it is what tells a live volume from a slot that
+#: was formatted and never used -- a question the volume entry itself cannot
+#: answer. Verified across all 44 AKAI discs: every one of 14 607 files has a
+#: chain of exactly ceil(size / BLOCK_SIZE) blocks, counting the files of the
+#: five deleted volumes out -- their blocks went back to the free list, so
+#: their chains no longer describe the audio still sitting in them.
+#: See docs/formats/akai-fs.md and ADR-0022.
+FAT_OFFSET = VOLUME_DIR_OFFSET + _MAX_VOLUMES * VOLUME_ENTRY_LEN
+
+#: Allocation map codes. Anything below FAT_VOLUME_DIR is the next block of a
+#: chain, so a file's extent is walked by following them to FAT_CHAIN_END.
+FAT_FREE = 0x0000
+FAT_VOLUME_DIR = 0x4000
+FAT_CHAIN_END = 0xC000
+
 #: A volume's file directory is one block. Reading further walks into the next
 #: block, which is file data, and yields entries assembled from audio.
 _MAX_FILES = BLOCK_SIZE // FILE_ENTRY_LEN
@@ -93,6 +130,59 @@ def is_empty_slot(entry: bytes) -> bool:
     than to nothing.
     """
     return not any(entry)
+
+
+def allocation_map(image: SectorImage, offset: int) -> list[int]:
+    """The partition's block allocation map, or ``[]`` when it cannot be read.
+
+    Bounded by the partition's own declared block count rather than by the
+    image, which is the whole point: the map is the disc speaking about itself,
+    so a disc that declares nothing usable gets no map and no notes derived
+    from one, instead of a map invented out of whatever follows the header.
+    """
+    declared = image.read(offset + PARTITION_BLOCKS_OFFSET, 2)
+    if len(declared) < 2:
+        return []
+    (blocks,) = struct.unpack("<H", declared)
+    available = max((image.size - offset) // BLOCK_SIZE, 0)
+    if not 0 < blocks <= available:
+        return []
+    raw = image.read(offset + FAT_OFFSET, blocks * 2)
+    usable = len(raw) // 2
+    return list(struct.unpack(f"<{usable}H", raw[: usable * 2]))
+
+
+def why_empty(allocation: list[int], start_block: int) -> str:
+    """Why a volume holding no files holds none, in the disc's own words.
+
+    Every branch reports what the allocation map *declares* about the block and
+    stops there. It deliberately does not diagnose: a free block under a volume
+    that lists nothing is a slot formatted and never used on one disc and a
+    damaged image on another, and the map cannot tell them apart. Saying which
+    would be inventing the half that is not written down (ADR-0022).
+
+    An empty string means the map does not account for the emptiness, which is
+    the ADR-0012 signature and has to stay visible as such.
+    """
+    if not 0 <= start_block < len(allocation):
+        return ""
+    code = allocation[start_block]
+    if code == FAT_FREE:
+        return f"block {start_block} is free in the partition's allocation map"
+    if code == FAT_VOLUME_DIR:
+        return (
+            f"the partition's allocation map marks block {start_block} a volume "
+            f"directory, but no file entry could be read there"
+        )
+    if 0 < code < FAT_VOLUME_DIR or code == FAT_CHAIN_END:
+        return (
+            f"the partition's allocation map assigns block {start_block} to file "
+            f"data, not to a volume directory"
+        )
+    return (
+        f"the partition's allocation map does not mark block {start_block} a "
+        f"volume directory (code 0x{code:04x})"
+    )
 
 
 class AkaiBackend:
@@ -129,11 +219,15 @@ class AkaiBackend:
             raw_name = entry[:NAME_LEN]
             if not is_plausible_name(raw_name):
                 return False
-            _type, start = struct.unpack("<HH", entry[NAME_LEN:VOLUME_ENTRY_LEN])
+            (start,) = struct.unpack("<H", entry[VOLUME_START_OFFSET:VOLUME_ENTRY_LEN])
             if start == 0:
-                # Unallocated. AKAI pre-formats every slot with a default name
-                # like "VOLUME 008", so an unused one is a named entry pointing
-                # at block 0 -- not an empty slot, and not a reason to reject.
+                # AKAI pre-formats every slot with a default name like
+                # "VOLUME 008", so an unused one is a named entry -- not an
+                # empty slot, and not a reason to reject. Pointing at block 0
+                # is one way an unused slot presents and not the only one:
+                # three discs keep a stale start block from formatting
+                # instead, which the allocation map is what settles
+                # (ADR-0022). Here it is only skipped as a probe candidate.
                 continue
             # Start blocks are ordered and in range; that ordering is what
             # separates a real header from bytes that merely decode cleanly.
@@ -189,6 +283,9 @@ class AkaiBackend:
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
         header = image.read(offset, VOLUME_DIR_OFFSET + _MAX_VOLUMES * VOLUME_ENTRY_LEN)
         max_block = (image.size - offset) // BLOCK_SIZE
+        # Read once for the whole partition: 7680 entries is 15 KB at the
+        # largest seen, against a walk that opens a block per volume anyway.
+        allocation = allocation_map(image, offset)
         for index in range(_MAX_VOLUMES):
             base = VOLUME_DIR_OFFSET + index * VOLUME_ENTRY_LEN
             entry = header[base : base + VOLUME_ENTRY_LEN]
@@ -200,11 +297,19 @@ class AkaiBackend:
             if not is_plausible_name(raw_name):
                 continue
             name = decode_name(raw_name)
-            _type, start = struct.unpack("<HH", entry[NAME_LEN:VOLUME_ENTRY_LEN])
+            (start,) = struct.unpack("<H", entry[VOLUME_START_OFFSET:VOLUME_ENTRY_LEN])
             if not name or start == 0 or start > max_block:
                 continue
             volume = Volume(name=name, start_block=start)
             volume.files = list(self._files(image, offset, start, max_block))
+            if not volume.files:
+                # A volume that lists nothing has to say why, and the answer
+                # comes from the disc rather than from a judgement about how
+                # plausible its directory looks (ADR-0012, ADR-0022). A slot
+                # is still listed either way: the four type-0 volumes on this
+                # collection that read as free carry 63 files between them,
+                # so "the map calls it free" is not grounds for dropping one.
+                volume.note = why_empty(allocation, start)
             yield volume
 
     def _files(

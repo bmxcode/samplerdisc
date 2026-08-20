@@ -281,3 +281,184 @@ def test_deleted_entries_are_skipped_not_emitted(tmp_path):
     volumes = list(BACKEND.volumes(image_of(tmp_path, bytes(data), "d.iso"), 0))
     assert [f.name for f in volumes[0].files] == ["KEEPER"]
     assert FILE_ENTRY_LEN == 24
+
+
+# --- the allocation map, and why a volume is empty ----------------------
+
+
+def test_the_volume_entry_type_is_a_byte_and_13_is_a_separate_field(tmp_path):
+    """Reading the pair as one u16 inflates the type by 256 per volume.
+
+    Harmless while nothing read the field, which is exactly how it survived:
+    ``start`` sits at 14 and was never disturbed, so the walk found every
+    volume on every disc regardless. The one disc that sets the byte at 13
+    reported types of 513, 769 and 1025 in a triage sweep, which is what made
+    it visible. See docs/formats/akai-fs.md.
+    """
+    import struct
+
+    from samplerdisc.fs.akai import (
+        VOLUME_DIR_OFFSET,
+        VOLUME_INDEX_OFFSET,
+        VOLUME_START_OFFSET,
+        VOLUME_TYPE_OFFSET,
+        VOLUME_TYPES,
+    )
+
+    data = bytearray(simple_partition())
+    entry = VOLUME_DIR_OFFSET
+    assert data[entry + VOLUME_TYPE_OFFSET] == 1
+    # The readings docs/formats/akai-fs.md records, pinned here so the two
+    # cannot drift apart quietly.
+    assert VOLUME_TYPES[data[entry + VOLUME_TYPE_OFFSET]] == "S1000"
+    assert VOLUME_TYPES == {0: "inactive", 1: "S1000", 3: "S3000", 7: "CD3000"}
+    # Set the byte at 13 the way the one disc that uses it does. A u16 read
+    # would call this type 0x0201; the walk must not care at all.
+    data[entry + VOLUME_INDEX_OFFSET] = 2
+    (start,) = struct.unpack_from("<H", data, entry + VOLUME_START_OFFSET)
+    volumes = list(BACKEND.volumes(image_of(tmp_path, bytes(data), "i.iso"), 0))
+    assert [v.name for v in volumes] == ["SOUP 101-103", "SOUP 104-105"]
+    assert volumes[0].start_block == start
+    assert [len(v.files) for v in volumes] == [1, 1]
+
+
+def test_the_allocation_map_agrees_with_every_file_size(tmp_path):
+    """The check that makes the map evidence rather than a hopeful reading."""
+    from samplerdisc.fs.akai import (
+        BLOCK_SIZE,
+        FAT_CHAIN_END,
+        FAT_VOLUME_DIR,
+        allocation_map,
+    )
+
+    image = image_of(tmp_path, simple_partition(), "map.iso")
+    allocation = allocation_map(image, 0)
+    assert allocation
+    for volume in BACKEND.volumes(image, 0):
+        assert allocation[volume.start_block] == FAT_VOLUME_DIR
+        for entry in volume.files:
+            want = -(-entry.size // BLOCK_SIZE)
+            block, length = entry.start_block, 0
+            while length <= want:
+                length += 1
+                if allocation[block] >= FAT_VOLUME_DIR:
+                    break
+                block = allocation[block]
+            assert length == want
+            assert allocation[block] == FAT_CHAIN_END
+
+
+def test_a_stale_slot_pointing_into_file_data_says_so(tmp_path):
+    """Issue #16: a slot AKAI formatted, whose start block was never cleared.
+
+    The four on `Advance Orchestra` and the one on the OMI disc present as a
+    default name, a type byte of 0 and a start block that lands inside a
+    file's extent -- so the block holds PCM, and the walk stops on the first
+    entry. What says it is not a volume is the map, which has that block
+    chained to a file.
+    """
+    payload = fixtures.akai_sample("KICK", words=8192)
+    data = fixtures.akai_partition(
+        [("VOL 1", [("KICK", 0x73, len(payload), payload)])],
+        # Block 2 is the first file's; block 3 is the second block of its
+        # extent, which is where a stale pointer lands mid-sample.
+        stale_slots=[("VOLUME 016", 3)],
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, data, "s.iso"), 0)}
+    assert [f.name for f in volumes["VOL 1"].files] == ["KICK"]
+    stale = volumes["VOLUME 016"]
+    assert stale.files == []
+    assert "file data" in stale.note and "block 3" in stale.note
+
+
+def test_a_stale_slot_pointing_at_a_free_block_says_so(tmp_path):
+    """The other shape of an unused slot: a start block belonging to nothing."""
+    payload = fixtures.akai_sample("KICK")
+    data = fixtures.akai_partition(
+        [("VOL 1", [("KICK", 0x73, len(payload), payload)])],
+        stale_slots=[("VOLUME 018", 200)],
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, data, "fr.iso"), 0)}
+    empty = volumes["VOLUME 018"]
+    assert empty.files == []
+    assert empty.note == "block 200 is free in the partition's allocation map"
+
+
+def test_a_declared_directory_that_is_not_there_says_so(tmp_path):
+    """Issue #17: the map says volume directory, the image has none.
+
+    This is what an image short of the disc it was made from looks like from
+    inside the filesystem, and it is the case that must not be confused with
+    an unused slot: here the disc is asserting that a directory belongs at
+    that block, so the volume is real and the *image* is what is wrong.
+    """
+    import struct
+
+    from samplerdisc.fs.akai import VOLUME_DIR_OFFSET, VOLUME_ENTRY_LEN, VOLUME_START_OFFSET
+
+    payload = fixtures.akai_sample("KICK")
+    data = bytearray(
+        fixtures.akai_partition(
+            [
+                ("VOL 1", [("KICK", 0x73, len(payload), payload)]),
+                ("14-TRK06 MF1", [("X", 0x73, 32, b"\x00" * 32)]),
+            ],
+            phantom_directories=[300],
+        )
+    )
+    # Point the second volume at the block the map calls a directory and the
+    # image leaves empty, exactly as the four on `Kickin' Lunatic Beats 2 CD1`
+    # point past the four 32 KB blocks their image is missing.
+    struct.pack_into("<H", data, VOLUME_DIR_OFFSET + VOLUME_ENTRY_LEN + VOLUME_START_OFFSET, 300)
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "p.iso"), 0)}
+    lost = volumes["14-TRK06 MF1"]
+    assert lost.files == []
+    assert "marks block 300 a volume directory" in lost.note
+    assert "no file entry could be read there" in lost.note
+
+
+def test_a_volume_with_files_never_carries_a_note(tmp_path):
+    """A note explains an emptiness. A volume that lists files has none to explain."""
+    payload = fixtures.akai_sample("KICK")
+    data = fixtures.akai_partition(
+        [("VOL 1", [("KICK", 0x73, len(payload), payload)])],
+        stale_slots=[("VOLUME 016", 400)],
+    )
+    volumes = list(BACKEND.volumes(image_of(tmp_path, data, "n.iso"), 0))
+    assert [(v.name, bool(v.note)) for v in volumes] == [("VOL 1", False), ("VOLUME 016", True)]
+
+
+def test_no_allocation_map_means_no_note_rather_than_an_invented_one(tmp_path):
+    """Silence beats a guess: an unexplained empty volume has to stay visible.
+
+    A note is the one thing that distinguishes an emptiness the disc accounts
+    for from the ADR-0012 signature. A backend that emitted one whenever it
+    could not read the map would explain away exactly the case the invariant
+    exists to catch, so a partition that declares nothing usable gets nothing.
+    """
+    from samplerdisc.fs.akai import allocation_map
+
+    payload = fixtures.akai_sample("KICK")
+    data = fixtures.akai_partition(
+        [("VOL 1", [("KICK", 0x73, len(payload), payload)])],
+        stale_slots=[("VOLUME 016", 400)],
+        allocation_map=False,
+    )
+    image = image_of(tmp_path, data, "u.iso")
+    assert allocation_map(image, 0) == []
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    assert volumes["VOLUME 016"].files == []
+    assert volumes["VOLUME 016"].note == ""
+
+
+def test_an_absurd_partition_size_yields_no_map(tmp_path):
+    """The declared block count bounds the map, so it has to be sane first."""
+    import struct
+
+    from samplerdisc.fs.akai import PARTITION_BLOCKS_OFFSET, allocation_map
+
+    data = bytearray(simple_partition())
+    struct.pack_into("<H", data, PARTITION_BLOCKS_OFFSET, 0xFFFF)
+    assert allocation_map(image_of(tmp_path, bytes(data), "a.iso"), 0) == []
+    struct.pack_into("<H", data, PARTITION_BLOCKS_OFFSET, 0)
+    assert allocation_map(image_of(tmp_path, bytes(data), "b.iso"), 0) == []

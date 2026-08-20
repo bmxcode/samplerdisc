@@ -22,17 +22,93 @@ Getting index 10 wrong is the classic failure and it is not obvious: `KICKIN B0-
 
 | Offset | Contents |
 |---|---|
-| `0x00` | u16 |
-| `0x02` | u16 table, one entry per volume slot |
-| `0xCA` | **volume directory** — 16-byte entries |
+| `0x00` | u16 LE, **partition size in blocks** — 3840 to 7680 across the 44 discs measured |
+| `0x02` | 100 u16, one per volume slot; every disc holds the same ramp of 3333 per entry and nothing reads it |
+| `0xCA` | **volume directory** — 100 entries of 16 bytes |
+| `0x70A` | **block allocation map** — one u16 per block, as many as `0x00` declares |
+
+The size at `0x00` is what bounds the allocation map, and it is much smaller than the disc: a partition of 7680 blocks is 62.9 MB inside an image of 500 MB or more. A large disc carries **several partitions**, laid end to end — see *More than one partition* below.
 
 Volume entry, 16 bytes:
 
 | Offset | Size | Meaning |
 |---|---|---|
 | 0 | 12 | name, AKAI charset |
-| 12 | 2 | u16 LE type |
+| 12 | **1** | **type** — which sampler owns the volume, or 0 |
+| 13 | **1** | a separate field, zero on 43 of 44 discs |
 | 14 | 2 | u16 LE start block |
+
+**The type is a byte, and 13 is a different field.** Reading the pair as one u16 was harmless for as long as nothing used the value — `start` at 14 is unaffected, so every volume on every disc was still found — and it produced nonsense the moment anything did: the one disc that sets byte 13 reported volume types of 513, 769 and 1025, an inflation of 256 per volume.
+
+What byte 13 is has not been established. It is zero on 4373 of the 4400 non-empty slots across the collection. The exception is `OMI … Universe Of Sounds Vol.1 (Roland S-770,S-750)`, where it runs 2, 3, 4 … 28 over the disc's 27 live volumes in slot order and is 0 on the unused slot at the end — an incrementing per-volume index of some kind, on one disc, with no second specimen to check it against.
+
+### Volume type
+
+| Byte | Volumes | Reading | Evidence |
+|---|---|---|---|
+| 1 | 338 | S1000 | no file in any of them sets the type byte's high bit |
+| 3 | 9 | S3000 | 8 of 9 hold nothing but high-bit files |
+| 7 | 91 | CD3000 | 57 of 91 hold nothing but high-bit files; the rest are mixed |
+| 0 | 10 | not a live volume | — |
+
+The generations line up with the high bit on the *file* type byte, which is the same signal that names a kept original `.s3p` rather than `.s1p`. A volume can hold files of both generations, so the correspondence is a strong tendency and not a rule.
+
+**Type 0 is not an allocation flag, and must not be used as one.** Six of the ten type-0 volumes hold nothing, and the other **four hold 63 files between them** — real audio on `Big Bang` and ProSamples `vol.01`, `vol.19` and `vol.24`. Rejecting type 0 is a one-line change that silently discards all of it. What separates the two groups is the allocation map, not the type.
+
+## Block allocation map
+
+At `0x70A`, immediately after the volume directory's hundred slots: **one u16 per block**, as many as the partition declares at `0x00`. This is the partition's own record of what every block holds, and it is the field that answers questions the volume entry cannot.
+
+| Code | Meaning |
+|---|---|
+| `0x0000` | free |
+| `0x0001`–`0x3FFF` | the next block of a chain |
+| `0x4000` | a volume directory block |
+| `0x8000` | seen 14 times on one disc, never under a volume; unidentified |
+| `0xC000` | last block of a chain |
+
+A file's extent is the chain from its start block to `0xC000`. **That is what verifies the map rather than merely making it plausible**: the chain length and the file size are stated by two different structures, and across all 44 AKAI discs they agree for **14 607 of 14 607 files** — exactly, with no disc disagreeing anywhere.
+
+The exclusion behind that figure is itself the finding. Five volumes sit on blocks the map calls free, and their files' chains are gone with them; four of those five hold 63 files that read perfectly. These are **deleted volumes**: the blocks went back to the free list, and because the medium is a mastered CD-ROM nothing ever reused them, so the directory and the audio are still there to be read. They are listed with their files like any other volume.
+
+`0x4000` marks a volume directory on the S1000 discs, where a directory is a single standalone block — 338 of 338 type-1 volumes. On S3000 and CD3000 discs the directory block is instead the head of a chain running into the volume, so it reads as a chain link. **The code at a volume's start block therefore says different things on different generations, and only `0x0000` means the same thing everywhere.**
+
+## Telling a live volume from a slot that was never used
+
+AKAI pre-formats all 100 slots with a default name like `VOLUME 008`, so an unused slot is a named entry rather than an empty one. Most point at block 0 and are trivially rejected. **Three discs keep a stale start block from formatting instead**, and those point at a real block holding something that is not a directory — which reads as an empty volume, not as an error.
+
+The volume entry cannot settle it: name, type and start block look the same either way. The allocation map can, and each of its answers is a different fact about the disc:
+
+| Map code at the start block | What the disc is saying | Seen on |
+|---|---|---|
+| chain link or `0xC000` | the block holds file data, so no directory was ever there | `Advance Orchestra` ×4, OMI ×1 |
+| `0x0000` | the block belongs to nothing | `Kickin' Lunatic Beats 2 CD1` `VOLUME 018` |
+| `0x4000` | a directory belongs here — so the *image* is what lacks one | `Kickin' Lunatic Beats 2 CD1` ×4 |
+
+The last row is the one worth dwelling on, because it points away from the filesystem entirely. On `Kickin' Lunatic Beats 2 CD1` the map says all four blocks are volume directories and the image holds none at them — and the four directories are in fact present, each exactly **16 blocks (131 072 bytes) earlier** than the volume entry points. That image is short of the disc it was made from; see *An image can be short* below.
+
+Note the asymmetry: a chain link is positive evidence that the slot was never used, while `0x0000` is only the absence of evidence — a free block under an empty volume is an unused slot on one disc and a damaged image on another, and the map cannot tell them apart. Report what the map says and stop there ([ADR-0022](../adr/0022-a-volume-is-explained-by-the-allocation-map.md)).
+
+## More than one partition
+
+Partitions are laid **end to end at multiples of the size declared at `0x00`**, and they hold real content. At block `size` on `Advance Orchestra` there is a second partition header — same 3333 ramp, its own volume directory, first volume `01 VA SUS F` — and another at `2 × size`. This holds across nearly every disc measured.
+
+**Only the first partition is read today**, so most of these discs list a fraction of what they hold. That is [issue #22](https://github.com/bmxcode/samplerdisc/issues/22) and not a small one: `Advance Orchestra` declares 7680 blocks of an image of 66 616.
+
+The tiling is also a usable integrity check on the image, and it is how the damage below was confirmed independently of anything inside partition 1.
+
+## An image can be short
+
+`AMG - Kickin' Lunatic Beats 2 AKAI CD1.mdx` decodes cleanly — 16 299 blocks, every one a valid DEFLATE stream emitting exactly 32 768 bytes, no stored blocks but the tail remainder — and the image it decodes to is **missing four of the disc's 32 KB blocks**. The container is faithful to the file; the file is not a complete copy of the disc.
+
+Two structures agree on the displacement and neither knows about the other:
+
+- the four volume directories are each 16 blocks below where the volume entry points, and the partition-1 file directories place the first gap earlier still, at 8 blocks;
+- **partition 2's header sits at block `size − 16`** rather than at `size`.
+
+131 072 bytes is exactly four MDX blocks, which is a quantity of the *container* and one the AKAI filesystem knows nothing about — that is what identifies the layer at fault. `CD2` of the same pair is short by one such block (its partition 2 is at `size − 4`), and its partition 1 happens to survive it intact.
+
+The visible consequence inside partition 1 is not only the four empty volumes. **Nine files in `13-TRACK 06` extract audio that is not theirs**: their payload header no longer matches the name the directory gives them, because everything past the first gap has slid. A payload whose header disagrees with its directory entry is a cheap check that would catch this and is not made anywhere yet — [issue #23](https://github.com/bmxcode/samplerdisc/issues/23).
 
 Observed volume names, useful as a smoke test that charset and offsets are both right:
 
