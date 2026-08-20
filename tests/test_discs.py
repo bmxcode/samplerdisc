@@ -40,10 +40,31 @@ def _collection() -> Path | None:
 
 
 def _discs() -> list[Path]:
+    """Every disc image under the collection root, at any depth.
+
+    Recursive rather than one level deep, because a collection that grows
+    stops being flat: filing discs by state -- active, archive, blocked -- or
+    one directory per disc is the obvious way to organise a few hundred
+    gigabytes, and a shallow scan then finds nothing.
+
+    That failure is silent by construction. These tests skip when the variable
+    is unset, so a scan that matches no files is indistinguishable from a
+    contributor who has no discs: pytest reports skips either way and the suite
+    stays green while asserting nothing at all. ``test_the_collection_is_not
+    _silently_empty`` below is what makes it visible.
+    """
     root = _collection()
     if root is None:
         return []
-    return sorted(p for p in root.iterdir() if p.suffix.lower() in IMAGE_SUFFIXES)
+    return sorted(
+        path
+        for path in root.rglob("*")
+        if path.suffix.lower() in IMAGE_SUFFIXES
+        and path.is_file()
+        # Skip dotted directories -- a .git or a Spotlight index below the root
+        # is not a disc collection.
+        and not any(part.startswith(".") for part in path.relative_to(root).parts)
+    )
 
 
 pytestmark = pytest.mark.skipif(
@@ -52,8 +73,32 @@ pytestmark = pytest.mark.skipif(
 )
 
 
+def test_the_collection_is_not_silently_empty() -> None:
+    """A root that is set but yields no images is a mistake, not an empty shelf.
+
+    Every other test here skips when it finds nothing, which is right for a
+    contributor with no discs -- but it means pointing the variable at the
+    wrong directory produces a green run that asserted nothing. If someone went
+    to the trouble of setting it, finding zero images is worth failing over.
+    """
+    root = _collection()
+    assert root is not None
+    assert _discs(), (
+        f"SAMPLERDISC_TEST_DISCS={root} contains no disc images at any depth "
+        f"(looked for {', '.join(IMAGE_SUFFIXES)})"
+    )
+
+
 def _ids(paths: list[Path]) -> list[str]:
-    return [p.name for p in paths]
+    """Name a test by its path below the root, not by its filename.
+
+    Two discs in different directories can share a name -- the same library
+    filed under both ``active`` and ``archive``, say -- and pytest needs the
+    ids to be distinct or it silently appends a counter and you can no longer
+    tell which disc failed.
+    """
+    root = _collection()
+    return [str(p.relative_to(root)) if root else p.name for p in paths]
 
 
 @pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))
