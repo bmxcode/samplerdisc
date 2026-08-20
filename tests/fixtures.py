@@ -702,6 +702,9 @@ def emu3_disc(
     reserved: int = 2,
     nul_padded: bool = False,
     bank_header: bool = True,
+    eiv: bool = False,
+    duplicate_sample_dir: bool = False,
+    folder_flags: int | None = None,
     total_blocks: int = 4096,
 ) -> bytes:
     """Build a synthetic EMU3 image.
@@ -711,15 +714,34 @@ def emu3_disc(
     matters: reading only the directory the header points at loses every bank
     past the first folder.
 
-    ``bank_header`` False omits the ``EMULATOR`` header, which is the E-IV
-    case: the banks are listed from the directory and cannot be located, so no
-    samples come out.
+    ``bank_header`` False omits the ``EMULATOR`` header and writes nothing in
+    its place: banks are listed from the directory and no samples come out.
+
+    ``eiv`` True builds the Emulator IV shape instead -- no ``EMULATOR``
+    header, and each bank's samples reached through a chained ``E3S1`` sample
+    directory. The bank slot is 1 MiB, so the allocation unit the reader has to
+    recover is 2048 blocks.
+
+    ``duplicate_sample_dir`` writes the E-IV sample directory a second time,
+    which real discs do: two chains then resolve to one base, and listing both
+    reports each record twice.
+
+    ``folder_flags`` overrides the folder entries' flags word. ``studio`` writes
+    0x0013 and 0x0018 there rather than 0xFFFF, and requiring 0xFFFF loses
+    every folder on that disc.
     """
     from samplerdisc.fs.emu3 import (
         BANK_MAGIC,
         BLOCK,
+        EIV_CHAIN_STRIDE,
+        EIV_MAGIC,
+        EIV_RECORD_OFFSET,
         ENTRY_LEN,
         MAGIC,
+        OFF_EIV_INDEX,
+        OFF_EIV_LENGTH,
+        OFF_EIV_NAME,
+        OFF_EIV_POSITION,
         OFF_SAMPLE_HEADER_LEN,
         OFF_SAMPLE_RATE,
         OFF_SAMPLE_RECORD_LEN,
@@ -746,13 +768,18 @@ def emu3_disc(
         image.extend(b"\x00" * (data_at + slot * sum(len(b) for _, b in folders) - len(image)))
 
     folder_dir = bytearray()
+    # Every bank's sample directory, concatenated. Their order in the table
+    # carries no meaning: a bank is found through the chain, not through where
+    # its entries sit, which is what lets `studio` scatter them.
+    sample_dir = bytearray()
+    sample_dir_block = 32
     index = 0
     for f_index, (folder_name, banks) in enumerate(folders):
         dir_block = bank_block + f_index
         entry = bytearray(ENTRY_LEN)
         entry[:16] = name16(folder_name)
         struct.pack_into("<HH", entry, 18, dir_block, 0xFFFF)
-        struct.pack_into("<H", entry, 26, 0xFFFF)
+        struct.pack_into("<H", entry, 26, 0xFFFF if folder_flags is None else folder_flags)
         folder_dir += entry
 
         bank_dir = bytearray()
@@ -764,6 +791,36 @@ def emu3_disc(
             bank_dir += record
 
             at = data_at + slot * index
+            if eiv:
+                # The running offset counts from a base the reader has to
+                # recover; the records themselves are located only through it.
+                position = 64
+                for order, (sample_name, rate, frames) in enumerate(samples, start=1):
+                    pcm = stereo_audio_block(frames=frames // 2)[: frames * 2]
+                    length = SAMPLE_HEADER_LEN + len(pcm)
+
+                    entry32 = bytearray(ENTRY_LEN)
+                    entry32[0:4] = EIV_MAGIC
+                    struct.pack_into(">I", entry32, OFF_EIV_LENGTH, length)
+                    struct.pack_into(">I", entry32, OFF_EIV_POSITION, position)
+                    struct.pack_into(">H", entry32, OFF_EIV_INDEX, order)
+                    entry32[OFF_EIV_NAME : OFF_EIV_NAME + 16] = name16(sample_name)
+                    sample_dir += entry32
+
+                    # The base the running offsets count from is the slot plus
+                    # the tag width, so that base - EIV_RECORD_OFFSET is block
+                    # aligned exactly as it is on all three reference discs.
+                    record = at + EIV_RECORD_OFFSET + position
+                    image[record - EIV_RECORD_OFFSET : record - EIV_RECORD_OFFSET + 4] = EIV_MAGIC
+                    head = bytearray(SAMPLE_HEADER_LEN)
+                    head[2:18] = name16(sample_name)
+                    struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+                    struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+                    image[record : record + SAMPLE_HEADER_LEN] = head
+                    image[record + SAMPLE_HEADER_LEN : record + length] = pcm
+                    position += length + EIV_CHAIN_STRIDE
+                index += 1
+                continue
             if bank_header:
                 image[at : at + len(BANK_MAGIC)] = BANK_MAGIC
                 image[at + 16 : at + 32] = name16(bank_name)
@@ -783,4 +840,8 @@ def emu3_disc(
         image[dir_block * BLOCK : dir_block * BLOCK + len(bank_dir)] = bank_dir
 
     image[folder_block * BLOCK : folder_block * BLOCK + len(folder_dir)] = folder_dir
+    if sample_dir:
+        table = sample_dir * 2 if duplicate_sample_dir else sample_dir
+        base = sample_dir_block * BLOCK
+        image[base : base + len(table)] = table
     return bytes(image)

@@ -1,6 +1,6 @@
 # ADR-0015 · Locate E-mu banks by signature; list what cannot be read
 
-**Status:** accepted · 2026-08-19
+**Status:** superseded by [ADR-0020](0020-read-e-iv-through-its-sample-directory.md) · 2026-08-19
 
 ## Context
 

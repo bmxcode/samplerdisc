@@ -20,8 +20,9 @@ If you find yourself writing an ADR with no rejected alternative, you are writin
 | [0012](0012-a-probe-must-confirm-a-file.md) | A probe must confirm a file, not a plausible directory | A stricter header heuristic; scoring candidate offsets |
 | [0013](0013-cueless-audio-is-reported-not-guessed.md) | Cue-less audio is reported; extracted only on request | Silent refusal; automatic whole-disc WAV; splitting on silence |
 | [0014](0014-one-backend-per-on-disc-format.md) | One backend per on-disc format, named after the format | One per manufacturer; per marketing generation; per model |
-| [0015](0015-locate-banks-by-signature.md) | Locate E-mu banks by signature; list what cannot be read | Hunting for the allocation unit; guessing the E-IV interior |
+| [0015](0015-locate-banks-by-signature.md) | ~~Locate E-mu banks by signature; list what cannot be read~~ *superseded by 0020* | Hunting for the allocation unit; guessing the E-IV interior |
 | [0016](0016-the-s7xx-hierarchy-is-located-not-walked.md) | The S-7xx object hierarchy is located, not walked | Walking volume→…→sample to group; grouping by name prefix |
 | [0017](0017-the-stereo-side-marker-is-a-character-class.md) | The stereo side marker is a character class | A per-backend hook; renaming Roland to AKAI's spelling; an optional separator |
 | [0018](0018-the-s7xx-sample-rate-is-measured.md) | The S-7xx rate is 44 100 by measurement, not by a field | Refusing to extract; a `--rate` override; per-sample pitch inference |
 | [0019](0019-prefer-joliet-names.md) | Prefer Joliet names over the ISO 9660 short names | De-duplicating the short names; merging the two trees; Rock Ridge; naming from the payload |
+| [0020](0020-read-e-iv-through-its-sample-directory.md) | Read E-IV through its `E3S1` sample directory | Waiting for a fourth disc; arithmetic on `start`; a signature walk; an `EMU4` backend; a stereo channel count |

@@ -1,10 +1,10 @@
 # E-mu `EMU3`
 
-The filesystem E-mu wrote on CD-ROMs for the Emulator III, EIIIX, ESI-32, ESI-4000 and Emulator IV. The archives file these as separate generations; the disc does not. All five reference discs write `EMU3` at byte 0 and share one directory format.
+The filesystem E-mu wrote on CD-ROMs for the Emulator III, EIIIX, ESI-32, ESI-4000 and Emulator IV. The archives file these as separate generations; the disc does not. All seven reference discs write `EMU3` at byte 0 and share one directory format.
 
-The *bank interior* is not shared. EIII/ESI banks carry an `EMULATOR 3X` header and are read; E-IV banks carry no header and are listed only ([ADR-0015](../adr/0015-locate-banks-by-signature.md)).
+The *bank interior* is not shared. EIII/ESI banks carry an `EMULATOR 3X` header and are located by it. E-IV banks carry none at all — not one `EMULATOR` string on any of the three E-IV discs — and reach their samples through an `E3S1` sample directory instead ([ADR-0020](../adr/0020-read-e-iv-through-its-sample-directory.md)).
 
-Verified against five discs:
+Verified against seven discs:
 
 | Short name | File | Size |
 |---|---|---|
@@ -13,6 +13,10 @@ Verified against five discs:
 | `eiiix-1` | `E-MU - EIIIX Sound Library Vol. 1 – Emulator Standards (EIIIX CD-ROM).iso` | 304 128 000 |
 | `eiiix-2` | `E-MU - EIIIX Sound Library Vol. 2 – More Emulator Standards (EIIIX CD-ROM).iso` | 304 435 200 |
 | `eiv-analogia` | `Producer Series Vol. 6 – Analogia Project (CD 2) (E-MU E-IV CD-ROM).iso` | 293 912 576 |
+| `eiv-studio` | `Producer Series Vol. 1 – Studio Essentials (E-MU E-IV CD-ROM).iso` | 399 077 376 |
+| `eiv-vitous` | `Miroslav Vitous … String Ensembles (EMU E-IV CD-ROM).iso` | 532 443 136 |
+
+`eiv-analogia` and `eiv-studio` are both Producer Series and may share a mastering run; `eiv-vitous` is a different publisher and is the independence check. Where a constant holds on Producer Series and not on Vitous, Vitous is right.
 
 Addressing is in **512-byte blocks**, not the 2048-byte cooked sector.
 
@@ -32,14 +36,18 @@ Addressing is in **512-byte blocks**, not the 2048-byte cooked sector.
 | `esi32-gm`, `eiiix-1`, `eiiix-2` | 7 | 2 | 9 |
 | `protozoa` | 6 | 6 | 12 |
 | `eiv-analogia` | 6 | 7 | 13 |
+| `eiv-studio` | 9 | 6 | 15 |
+| `eiv-vitous` | 6 | 4 | 10 |
 
-The pointer at `0x10` takes four distinct values across five discs. **Read it; never assume 9.**
+The pointer at `0x10` takes **six distinct values across seven discs**. Read it; never assume 9.
 
 ## The trap at `0x08`
 
 `0x08` and `0x10` both point at 32-byte records with 16-character ASCII names, and reading the folder table as a bank directory produces a *shorter, entirely believable listing* rather than obvious garbage — on `eiv-analogia`, `Boom da Drumz`, `Symphoniks`, `Strung Out`, which look exactly like library names.
 
 **Only the flags word at `+26` separates them**: `0xFFFF` for a folder, `0x0080`/`0x0081` for a bank. Nothing in the names, the record length or the field positions does.
+
+**But the flags word is not a folder test.** `eiv-studio` writes `0x0013` and `0x0018` on its first two folder entries. Requiring `0xFFFF` aborts that walk on entry 0, finds no folder table at all, and falls back to the single bank directory at `0x10` — **77 banks of the 230 that disc has**, with no error. The folder table does not need the test: the header pointer already says what it is, and every disc terminates it with a zeroed entry. The flags word is still what tells a *bank* directory's entries apart from a folder table read by mistake.
 
 ## Directory records — 32 bytes
 
@@ -65,6 +73,14 @@ Each folder has its **own** bank directory, one block, at the folder record's st
 
 Four discs have a single folder — `Designed by S&M.`, `Default Folder` — which is why this is easy to miss.
 
+**Each folder's directory is bounded by the next folder's start block.** On `eiv-studio` the five folders sit at blocks 15, 20, 26, 28 and 30 — two to six blocks apart. An unbounded walk runs out of one directory and into the next, reporting the neighbour's banks a second time.
+
+| Disc | Folders | Folder blocks | Banks |
+|---|---|---|---|
+| `eiv-analogia` | 3 | 13, 14, 15 | 12 |
+| `eiv-studio` | 5 | 15, 20, 26, 28, 30 | 230 |
+| `eiv-vitous` | 6 | 10, 11, 12, 13, 14, 16 | 44 |
+
 ## Locating a bank
 
 **The directory's `start` field is not a usable byte address.** The implied allocation unit, measured as the gcd of consecutive bank-header offsets, is:
@@ -88,7 +104,7 @@ So banks are found by their own header instead, which is exact and self-checking
 
 A bank ends where the next located bank begins. Without that bound a bank's sample walk runs into its neighbour and reports the neighbour's samples as its own — which reads as a longer, plausible listing.
 
-`eiv-analogia` contains **no `EMULATOR` string at all** in 294 MB. Its banks are listed from the directory and not extracted.
+`eiv-analogia` contains **no `EMULATOR` string at all** in 294 MB, and neither do the other two E-IV discs. Those banks are located through the sample directory below instead.
 
 ## Sample records
 
@@ -101,11 +117,87 @@ A record starts **two bytes before its name**; those two bytes are `00 00` on ev
 | 2 | 16 | name, ASCII |
 | 18 | 4 | u32 LE checksum |
 | 22 | 4 | u32 LE **header length — 92 on every record measured** |
-| 34 | 4 | u32 LE record length, **two short** of the distance to the next |
+| 34 | 4 | u32 LE record length, **two short** of the distance to the next (EIII only) |
 | 54 | 4 | u32 LE **sample rate** |
 | 92 | … | sample data |
 
 The signature — header length exactly 92, a plausible rate, sixteen printable name bytes — is specific enough to scan megabytes of audio without false hits. On `esi32-gm`'s `8M GeneralMidi X` bank it yields **452 records with 452 distinct names** totalling 7.00 MiB inside a bank declaring 8 MiB.
+
+## E-IV: the `E3S1` sample directory
+
+E-IV banks have no header to locate them by, so their samples are reached through a directory instead. `E3S1` has **two distinct uses**, which is why the tag count runs at roughly twice the record count:
+
+| Disc | `E3S1` tags | sample records | `E4P1` (presets) | banks |
+|---|---|---|---|---|
+| `eiv-analogia` | 1 042 | 523 | 916 | 12 |
+| `eiv-studio` | 7 544 | 3 894 | 901 | 230 |
+| `eiv-vitous` | 1 840 | 935 | 284 | 44 |
+
+### The directory entry — 32 bytes
+
+**These fields are big-endian.** They are the only big-endian structure in the format; every EIII header field and the payload itself are little-endian. This is a trap in the opposite direction from the one below, and worth stating twice.
+
+| Offset | Size | Meaning |
+|---|---|---|
+| 0 | 4 | `"E3S1"` |
+| 4 | 4 | u32 **BE** record length |
+| 8 | 4 | u32 **BE** running offset of this sample within the bank |
+| 12 | 2 | u16 **BE** index, restarting at 1 in each bank |
+| 14 | 16 | name, ASCII |
+
+### The record sits eight bytes after its tag
+
+The other use of `E3S1` is the eight bytes immediately before a sample record. Cross-checked against an independent signature scan, the `+8` rule agrees 523/523 on `eiv-analogia` and 935/935 on `eiv-vitous`.
+
+### The chain is what bounds a bank
+
+Consecutive entries satisfy
+
+```
+position[i+1] == position[i] + length[i] + 10
+```
+
+— eight bytes for the next record's tag and two spare — and the index increments by one. **A break in either is a bank boundary.** Both halves are self-checking, which is what makes the split exact rather than a heuristic.
+
+**Do not segment by physical stride instead.** Runs of 32-byte-adjacent entries look like the obvious reading and give 24 runs for `eiv-analogia`'s 12 banks and **935 runs for `eiv-studio`'s banks**, because that disc scatters its entries rather than packing them into a table. The chain is a *declared* relation and survives the scattering; adjacency is not and does not. This is the same trap as the contiguity one above, one layer down.
+
+### Resolving a chain to an address
+
+A chain's running offsets count from a base the disc does not state. It is recovered by finding, for one entry, the record whose name matches, and taking `record − position`; a chain is kept only when **every** one of its entries then lands on a record with the right name. A chain that does not fully confirm is dropped rather than partly believed.
+
+`base − 8` is block-aligned on every confirmed chain, and the base then relates to the bank directory's `start` field as
+
+```
+base == 512 × (unit × start + bias) + 8
+```
+
+| Disc | unit (blocks) | bias |
+|---|---|---|
+| `eiv-analogia` | 2 048 (1 MiB) | −1 866 |
+| `eiv-studio` | 1 024 (512 KiB) | −817 |
+| `eiv-vitous` | 1 024 (512 KiB) | −890 |
+
+No header field predicts either, exactly as [ADR-0015](../adr/0015-locate-banks-by-signature.md) found for EIII. The fit is therefore measured per disc from the confirmed chains and used **only to confirm** a bank against a chain that was already located independently — a wrong fit binds nothing rather than binding wrongly.
+
+Two constraints keep the fit honest. It needs **at least two** agreeing chains, because a single `(base, start)` pair is satisfied by every candidate unit at some bias. And a fit that puts any bank at a **negative** address is rejected: the fit shifted by one whole unit explains just as many chains by pairing every base with its neighbour's `start`, and would hand each bank the samples of the bank before it.
+
+### A directory can be written twice
+
+Two chains can resolve to the same base — a bank whose directory is written twice, or split and recovered in halves. Listing both reports each record twice: on `eiv-analogia` that gave 509 samples at **449 distinct addresses**, and 60 byte-identical WAVs under names that read like a genuine stereo pair rather than like a bug. One record at one address is one sample.
+
+### The record's own length field is not usable
+
+The EIII rule — `+34` plus a bias of two equals the distance to the next record — matches on **0 of 522, 0 of 3893 and 0 of 934** consecutive pairs across the three E-IV discs. No other offset survives all three either: `+34` with a bias of four scores 93% on `eiv-vitous` but 18% on `eiv-studio`, and `+30` with a bias of four scores 74% on `eiv-studio` and **0%** on `eiv-vitous`. The directory's big-endian length matches every sample on all three discs, and is the authority.
+
+`OFF_SAMPLE_HEADER_LEN` is not usable as a validity test either. It reads 92 on most E-IV records and **0 on 547 of `eiv-studio`'s** — those carry 92 at `+26` instead. Requiring it drops a fifth of the disc. It is not needed: the directory already says where the record is and what it is called.
+
+## Everything is mono
+
+The 92-byte header carries two paired length fields — `+26`/`+30` against `+34`/`+50` — with `+34 == 2 × (+30) − 90` holding identically on `esi32-gm` and on E-IV. The obvious reading is a channel count, and it is wrong.
+
+Measured by comparing the mean absolute sample-to-sample delta of the payload read as mono against the same payload de-interleaved as stereo: de-interleaving roughly **doubles** the roughness (ratio ≈ 0.5), which is what taking every other sample of a smooth mono signal does. Interleaved stereo would come out smoother, not rougher. The known-good `esi32-gm` `Piano E0` — mono, verified byte-identical in the section below — scores 0.58, the same as the E-IV records. So ≈ 0.5 is the signature of mono, confirmed against the reference.
+
+There is no stereo record. E-IV discs do pair samples into stereo, and they do it the way the rest of the collection does: two mono records that [ADR-0017](../adr/0017-the-stereo-side-marker-is-a-character-class.md) joins by name.
 
 ## The payload is little-endian
 
@@ -139,7 +231,13 @@ Whole-disc listings:
 | `eiiix-1` | 46 | 1 189 |
 | `eiiix-2` | 46 | 1 333 |
 | `protozoa` | 16 | 6 788 |
-| `eiv-analogia` | 12 | 0 — listed only |
+| `eiv-analogia` | 12 | 449 |
+| `eiv-studio` | 230 | 2 822 |
+| `eiv-vitous` | 44 | 828 |
+
+The four EIII/ESI counts are the regression baseline: any change to the shared record parser is a bug if they move.
+
+On `eiv-studio`, 100 of the 230 banks have no confirmed sample directory and are listed with a note rather than guessed at. That disc carries 901 `E4P1` presets, and preset-only banks are the likely explanation — it is not established, so it is not claimed.
 
 ## Traps
 
@@ -149,3 +247,9 @@ Whole-disc listings:
 - The `start` field is not a byte address, and the allocation unit is not one value across discs.
 - Sample records are found, not chained; the chain has gaps.
 - The payload is little-endian. A sector-aligned measurement says otherwise and is wrong.
+- The E-IV **sample directory** is big-endian, alone in the format. The trap runs both ways.
+- The flags word is not a folder test. `eiv-studio` writes `0x0013` and `0x0018`, and requiring `0xFFFF` costs that disc 153 of its 230 banks.
+- Each folder's bank directory must be bounded by the next folder's start block; they sit two blocks apart on `eiv-studio`.
+- On E-IV the record's own length field is unusable and the directory's is authoritative. The EIII rule matches 0 of 5 349 consecutive pairs.
+- An E-IV sample directory can appear twice. Deduplicate by address or every one of its records is listed twice.
+- The paired length fields are not a channel count. Everything is mono, measured.
