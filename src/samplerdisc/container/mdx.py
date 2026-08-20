@@ -16,6 +16,15 @@ from samplerdisc.container.base import SECTOR_SIZE, _FileBacked
 
 MAGIC = b"MEDIA DESCRIPTOR"
 
+#: The magic is NOT unique to the merged form: a split .mds descriptor opens
+#: with the same 16 bytes. The major version at 0x10 is what separates them --
+#: 2 on every merged .mdx seen, 1 on the split .mds. Miss this and a .mds is
+#: handed to this parser, which reads a zero descriptor offset out of a header
+#: that is not one and rejects the file. See docs/formats/mdx.md.
+VERSION_OFFSET = 0x10
+MERGED_VERSION_MAJOR = 2
+SPLIT_VERSION_MAJOR = 1
+
 #: The block size most images use. It is NOT universal -- see _derive_block_size
 #: -- so this is only the fallback when the first block cannot be decoded.
 DEFAULT_BLOCK_SIZE = 32768
@@ -50,7 +59,19 @@ class Block(NamedTuple):
 
 
 def looks_mdx(head: bytes) -> bool:
-    return head.startswith(MAGIC)
+    """Merged MDX -- the magic plus a major version that is not the split form.
+
+    Phrased as "not 1" rather than "is 2" on purpose. An unrecognised version
+    is better sent here than left to the flat reader: this parser validates its
+    own header and says so when the file is not one, whereas ``flat`` would take
+    the descriptor for sectors and report an unreadable disc rather than an
+    error. ``head`` must reach past ``VERSION_OFFSET``.
+    """
+    return (
+        head.startswith(MAGIC)
+        and len(head) > VERSION_OFFSET
+        and head[VERSION_OFFSET] != SPLIT_VERSION_MAJOR
+    )
 
 
 def _inflate(raw: bytes) -> tuple[bytes, int] | None:

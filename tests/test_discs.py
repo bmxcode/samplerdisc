@@ -17,10 +17,14 @@ from pathlib import Path
 import pytest
 
 import samplerdisc.fs  # noqa: F401  (importing registers the backends)
-from samplerdisc.container.detect import open_image
+from samplerdisc.container.base import SECTOR_SIZE
+from samplerdisc.container.detect import open_image, sniff
+from samplerdisc.container.mdsmdf import find_mdf
 from samplerdisc.fs.probe import find_origin
 
-IMAGE_SUFFIXES = (".iso", ".img", ".mdx", ".nrg", ".bin", ".cdr", ".tao")
+#: ``.mds`` and not ``.mdf``: the pair is reached through the descriptor, the
+#: member that is actually opened, so listing both would open the disc twice.
+IMAGE_SUFFIXES = (".iso", ".img", ".mdx", ".nrg", ".bin", ".cdr", ".tao", ".mds")
 
 #: Discs known to carry a filesystem no backend reads. Naming them keeps the
 #: "claimed but empty" check below honest: without this, a backend that stopped
@@ -164,6 +168,36 @@ def test_known_unreadable_discs_are_not_claimed(stem: str) -> None:
     with open_image(matches[0]) as image:
         origin = find_origin(image)
     assert origin is None, f"{stem} was claimed by {origin.backend.name if origin else '?'}"
+
+
+def _mds_pairs() -> list[Path]:
+    return [p for p in _discs() if p.suffix.lower() == ".mds" and find_mdf(p) is not None]
+
+
+@pytest.mark.parametrize("path", _mds_pairs(), ids=_ids(_mds_pairs()))
+def test_a_split_mds_routes_to_its_mdf_and_not_to_the_mdx_parser(path: Path) -> None:
+    """The descriptor and the data file must describe the same disc.
+
+    The split .mds shares its 16-byte magic with the merged .mdx, and testing
+    that magic alone sent every real .mds to the MDX parser -- which read a
+    zero out of a field that is not a descriptor offset and refused the file.
+    The synthetic fixture pins the version byte; this pins the consequence, on
+    a real pair: opening the descriptor has to give the same stream as opening
+    the .mdf beside it, which is what the merged parser could never do.
+    """
+    assert sniff(path) == "mdsmdf"
+    mdf = find_mdf(path)
+    assert mdf is not None
+    with open_image(path) as through_descriptor, open_image(mdf) as direct:
+        assert through_descriptor.kind == "mdsmdf"
+        assert through_descriptor.size == direct.size
+        assert through_descriptor.size % SECTOR_SIZE == 0
+        # A spread rather than the head: the geometry sniff picks a stride, and
+        # a wrong one agrees at sector 0 and diverges everywhere after it.
+        sectors = through_descriptor.size // SECTOR_SIZE
+        for index in range(0, sectors, max(1, sectors // 40)):
+            at = index * SECTOR_SIZE
+            assert through_descriptor.read(at, SECTOR_SIZE) == direct.read(at, SECTOR_SIZE)
 
 
 #: Discs whose filesystem is pinned by name, with the backend that must claim

@@ -9,7 +9,16 @@ import pytest
 from samplerdisc.container.base import SECTOR_SIZE
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.container.flat import FlatImage
-from samplerdisc.container.mdx import DEFAULT_BLOCK_SIZE, MdxImage, _decode_block
+from samplerdisc.container.mdsmdf import looks_mds, open_mds
+from samplerdisc.container.mdx import (
+    DEFAULT_BLOCK_SIZE,
+    MERGED_VERSION_MAJOR,
+    SPLIT_VERSION_MAJOR,
+    VERSION_OFFSET,
+    MdxImage,
+    _decode_block,
+    looks_mdx,
+)
 from samplerdisc.container.nrg import NrgImage, parse_chunks
 from samplerdisc.container.rawcd import RawCdImage, parse_cue_sector_size
 from samplerdisc.export import export_iso
@@ -224,6 +233,80 @@ def test_sniff_uses_a_cue_when_there_is_no_signature(tmp_path):
     path = write(tmp_path, "disc.bin", cooked)
     (tmp_path / "disc.cue").write_text('FILE "DISC.BIN" BINARY\n  TRACK 01 MODE1/2048\n')
     assert sniff(path) == "flat"
+
+
+def test_a_split_mds_is_not_taken_for_a_merged_mdx(tmp_path):
+    """The two share a 16-byte magic; the version byte at 0x10 separates them.
+
+    Testing the magic alone routed every real .mds to the MDX parser, which
+    read 0 out of a field that is not a descriptor offset and rejected the
+    file -- so the .mds branch of ``sniff`` was dead for the input it exists
+    for. Asserting the predicates as well as the routing, because the bug was
+    that one predicate answered for both formats.
+    """
+    mds = fixtures.make_mds()
+    mdx, _ = fixtures.make_mdx([fixtures.compressible_block(0)])
+
+    # The magic really is shared -- that is the whole problem.
+    assert mds[:16] == mdx[:16]
+    # The bytes docs/formats/mdx.md records for the specimens of each form.
+    assert mds[VERSION_OFFSET] == SPLIT_VERSION_MAJOR
+    assert mdx[VERSION_OFFSET] == MERGED_VERSION_MAJOR
+
+    assert (looks_mds(mds), looks_mdx(mds)) == (True, False)
+    assert (looks_mds(mdx), looks_mdx(mdx)) == (False, True)
+
+    (tmp_path / "disc.mdf").write_bytes(fixtures.cooked_sectors(4))
+    assert sniff(write(tmp_path, "disc.mds", mds)) == "mdsmdf"
+
+    # And the parser it used to be handed to now says what is wrong with it,
+    # rather than "implausible descriptor offset 0" out of a field that is not
+    # a descriptor offset.
+    with pytest.raises(ValueError, match="not an MDX image"):
+        MdxImage(write(tmp_path, "wrong.mdx", mds))
+
+
+def test_a_split_mds_is_detected_by_signature_not_by_extension(tmp_path):
+    """Both directions, since the extension is the thing that must not decide.
+
+    ADR-0004: these files arrive named whatever someone typed. A .mds under
+    another name is still the split form, and an .mdx under a .mds name is
+    still merged.
+    """
+    (tmp_path / "renamed.mdf").write_bytes(fixtures.cooked_sectors(4))
+    assert sniff(write(tmp_path, "renamed.mds", fixtures.make_mds())) == "mdsmdf"
+
+    mdx, _ = fixtures.make_mdx([fixtures.compressible_block(0)])
+    assert sniff(write(tmp_path, "merged.mds", mdx)) == "mdx"
+
+
+def test_an_unsigned_mds_still_falls_back_to_its_extension(tmp_path):
+    """The tiebreak survives: a descriptor with no magic we know is still a .mds."""
+    (tmp_path / "odd.mdf").write_bytes(fixtures.cooked_sectors(4))
+    assert sniff(write(tmp_path, "odd.mds", b"\x00" * 486)) == "mdsmdf"
+
+
+def test_open_mds_reads_the_geometry_of_the_mdf_beside_it(tmp_path):
+    """Cooked or raw, chosen by looking at the .mdf -- the descriptor is not parsed."""
+    cooked = fixtures.cooked_sectors(4)
+    (tmp_path / "cooked.mdf").write_bytes(cooked)
+    (tmp_path / "cooked.mds").write_bytes(fixtures.make_mds())
+    image = open_image(tmp_path / "cooked.mds")
+    assert image.kind == "mdsmdf"
+    assert image.read(0, len(cooked)) == cooked
+
+    sectors = [cooked[i * SECTOR_SIZE : (i + 1) * SECTOR_SIZE] for i in range(4)]
+    (tmp_path / "raw.mdf").write_bytes(fixtures.make_rawcd(sectors))
+    (tmp_path / "raw.mds").write_bytes(fixtures.make_mds())
+    raw_image = open_image(tmp_path / "raw.mds")
+    assert raw_image.kind == "mdsmdf"
+    assert raw_image.read(0, len(cooked)) == cooked
+
+
+def test_open_mds_without_its_mdf_says_so(tmp_path):
+    (tmp_path / "lonely.mds").write_bytes(fixtures.make_mds())
+    with pytest.raises(ValueError, match=r"no matching \.mdf"):
+        open_mds(tmp_path / "lonely.mds")
 
 
 def test_open_image_dispatches(tmp_path):

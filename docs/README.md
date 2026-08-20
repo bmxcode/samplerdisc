@@ -60,6 +60,6 @@ Across the local collection: 39 of 49 discs, 28 712 samples, 2 864 stereo pairs,
 
 - **Roland S-550.** `Roland LCD1.iso`/`.nrg` opens `* ROLAND S-550 *` and is a different format from the S-7xx entirely ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md)). Neither archive holds a second specimen, so it stays deferred rather than being reverse-engineered from one disc.
 - **E-mu, Ensoniq and Kurzweil backends.** The archives are full of these discs and the containers already open them; each needs a module in `fs/` and nothing else ([ADR-0003](adr/0003-brand-neutral-pluggable-backends.md)).
-- **`.mds`/`.mdf` is unverified.** No reference pair was available, so geometry is sniffed from the `.mdf` rather than read from the descriptor. See [formats/mdx.md](formats/mdx.md) for the merged form, which *is* verified.
+- **The `.mds` track table is unread.** One real pair now reads end to end, but geometry is sniffed from the `.mdf` rather than taken from the descriptor, so a multi-track or offset image would be read from byte 0. What the one specimen's descriptor holds is written down in [formats/mdx.md](formats/mdx.md) without being relied on.
 - **CUES chunks in NRG.** Only `CUEX` is parsed; `CUES` encodes position as MSF and no disc using it was available to check the layout against.
 - **AIFF payloads on ISO 9660 discs are copied, not converted.** They come out as `.aiff`.
