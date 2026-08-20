@@ -2,10 +2,16 @@
 
 from __future__ import annotations
 
+import re
 import struct
 
 from samplerdisc.container.flat import FlatImage
-from samplerdisc.fs.emu3 import OFF_SAMPLE_HEADER_LEN, Emu3Backend, is_plausible_name
+from samplerdisc.fs.emu3 import (
+    BANK_MAGICS,
+    OFF_SAMPLE_HEADER_LEN,
+    Emu3Backend,
+    is_plausible_name,
+)
 from samplerdisc.fs.probe import find_origin
 from tests import fixtures
 
@@ -192,6 +198,107 @@ def test_an_unexplained_empty_bank_gets_no_note(tmp_path):
     volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "u.iso"), 0)}
     assert volumes["Full Arco String"].files == []
     assert not volumes["Full Arco String"].note
+
+
+#: Four banks, because the placement fit below needs three names it can trust
+#: before it will arbitrate a fourth that is written twice.
+FOUR_BANKS = [
+    (
+        "Default Folder",
+        [
+            ("Orbit Presets  X", [("Ahh2 SW", 15000, 512), ("Attack Rim", 30000, 256)]),
+            ("Orbit Presets 4k", [("Ahh2 SW", 15000, 512), ("Attack Rim", 30000, 256)]),
+            ("Orbit Instrmt  X", [("ARP3Cx4", 27996, 128)]),
+            ("Phatt Presets  X", [("Full Kik", 26000, 512)]),
+        ],
+    )
+]
+
+
+def test_a_formula_4000_bank_header_locates_its_bank(tmp_path):
+    """``EMU SI-32`` is a bank header too, and a bank nobody locates is worse
+    than a bank nobody reads.
+
+    `protozoa` writes it on ``Orbit Presets 4k`` and ``Phatt Presets 4K``.
+    Both are ordinary banks -- same header layout, same records -- and
+    recognising only ``EMULATOR`` left them with no header at all, which
+    handed each one's region to the bank in front of it: ``Orbit Presets  X``
+    reported 1 077 records where its own 8 MiB holds 539.
+    """
+    image = image_of(tmp_path, fixtures.emu3_disc(FOUR_BANKS, formula_4000=("Orbit Presets 4k",)))
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    assert [f.name for f in volumes["Orbit Presets 4k"].files] == ["Ahh2 SW", "Attack Rim"]
+    assert not volumes["Orbit Presets 4k"].note
+    # And the bank in front of it keeps to its own records rather than
+    # counting its neighbour's a second time.
+    assert [f.name for f in volumes["Orbit Presets  X"].files] == ["Ahh2 SW", "Attack Rim"]
+
+
+def test_a_bank_reports_only_the_records_its_own_header_declares(tmp_path):
+    """A bank's region holds more than the bank (ADR-0021).
+
+    Mastering writes a bank image into a fixed region and whatever was there
+    before survives past its end. On `protozoa` that leftover is 264 records
+    in ``Vintage+InstrmtX`` alone, every one of them another bank's record at
+    a constant offset -- and inside the region, so no bound drawn between
+    banks can exclude it. The bank's own ``0x34`` can.
+    """
+    image = image_of(
+        tmp_path,
+        fixtures.emu3_disc(FOUR_BANKS, stale_tail=(("Left Behind", 22000, 256),)),
+        "stale.iso",
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    for volume in volumes.values():
+        assert "Left Behind" not in [f.name for f in volume.files], volume.name
+    assert [f.name for f in volumes["Orbit Instrmt  X"].files] == ["ARP3Cx4"]
+
+
+def test_the_bank_a_directory_entry_means_is_the_one_it_placed(tmp_path):
+    """Two headers, one name: the directory's placement decides.
+
+    `esi32-gm` keeps an older revision of two banks in a region it allocates
+    to nobody, *below* the banks its directory points at, and `protozoa`
+    keeps a second ``Phatt Presets  X`` above them. Taking the first header
+    of each name reads the wrong copy on one disc, and taking the last reads
+    the wrong copy on the other. Neither is a rule; where the directory put
+    the bank is.
+    """
+    image = image_of(
+        tmp_path,
+        fixtures.emu3_disc(FOUR_BANKS, second_header="Phatt Presets  X"),
+        "twice.iso",
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    assert [f.name for f in volumes["Phatt Presets  X"].files] == ["Full Kik"]
+
+
+def test_a_bank_with_no_header_on_an_eiii_disc_says_which_structure_is_missing(tmp_path):
+    """The note names what was looked for, and the two discs look for
+    different things.
+
+    ``E3 Main Code`` on the three EIII/ESI reference discs is a bank slot
+    holding the sampler's operating system: it has no bank header, and it has
+    no E-IV sample directory either, because the disc has none anywhere. It
+    was being told it had no *sample directory*, which named a structure that
+    format does not use.
+    """
+    banks = [
+        ("Default Folder", [("E3 Main Code", []), ("Orbit Presets  X", [("Ahh2 SW", 15000, 512)])])
+    ]
+    data = bytearray(fixtures.emu3_disc(banks))
+    # Strip the code bank's header, which is what the real discs do -- the
+    # bank beside it keeps its own and so the disc is still an EIII one.
+    at = next(
+        m.start()
+        for m in re.finditer(re.escape(BANK_MAGICS[0]), data)
+        if data[m.start() + 16 : m.start() + 27] == b"E3 Main Cod"
+    )
+    data[at : at + 64] = b"\x00" * 64
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "code.iso"), 0)}
+    assert volumes["E3 Main Code"].files == []
+    assert volumes["E3 Main Code"].note == "no bank header found for this bank; listed only"
+    assert [f.name for f in volumes["Orbit Presets  X"].files] == ["Ahh2 SW"]
 
 
 def test_a_bank_with_neither_header_nor_directory_is_listed_with_a_note(tmp_path):

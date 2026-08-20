@@ -102,6 +102,7 @@ def _pinned_sizes() -> set[int]:
         *_EXPECT_NO_FILESYSTEM.values(),
         *(size for size, _ in _ROLAND_S7XX.values()),
         *(size for size, _, _ in _ISO9660.values()),
+        *(size for size, _, _ in _EMU3.values()),
     }
 
 
@@ -349,6 +350,76 @@ def test_iso9660_discs_list_every_file_under_a_distinct_path(label: str) -> None
         names = [f.name for f in volumes[0].files]
         assert len(names) == count
         assert len(set(names)) == count
+
+
+#: E-mu ``EMU3`` discs pinned by size, with the volumes and samples each must
+#: yield. docs/formats/emu3.md calls these the regression baseline for the
+#: shared record parser and until now nothing asserted them: the numbers lived
+#: in a table in the doc, which is a note, not a test. ADR-0021 moved four of
+#: the seven and there was no failing test to say so.
+#: Labelled by the short names docs/formats/emu3.md uses, which is what the
+#: measurements there are recorded against.
+#: ``label: (size in bytes, volumes, samples)``.
+_EMU3 = {
+    "esi32-gm": (93_077_504, 10, 2265),
+    "protozoa": (131_690_496, 16, 5852),
+    "eiiix-1": (304_128_000, 46, 1189),
+    "eiiix-2": (304_435_200, 46, 1333),
+    "eiv-analogia": (293_912_576, 12, 449),
+    "eiv-studio": (399_077_376, 230, 2822),
+    "eiv-vitous": (532_443_136, 44, 828),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EMU3))
+def test_emu3_discs_list_their_banks_and_samples(label: str) -> None:
+    """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
+    size, volumes_expected, samples_expected = _EMU3[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None, f"{label}: no filesystem found"
+        assert origin.backend.name == "emu3"
+        volumes = list(origin.backend.volumes(image, origin.offset))
+        assert len(volumes) == volumes_expected
+        assert sum(len(v.files) for v in volumes) == samples_expected
+        # A volume with no files must say why, on every disc, every time
+        # (ADR-0012). This is the same rule as the collection-wide check
+        # above, tightened from "some volume explains itself" to "each one
+        # does" -- which only a disc whose expected shape is known can ask.
+        assert all(v.files or v.note for v in volumes), [v.name for v in volumes if not v.files]
+
+
+def test_protozoa_gives_each_bank_its_own_records() -> None:
+    """The three banks of issue #15, and the two that were invisible.
+
+    ``Orbit Presets 4k`` and ``Phatt Presets 4K`` carry an ``EMU SI-32``
+    header rather than an ``EMULATOR`` one. Nothing located them, so the bank
+    in front of each swallowed its region and reported its records a second
+    time; ``Protozoa       X`` is the disc's index bank and was credited with
+    63 records of the Phatt banks' besides. See ADR-0021.
+    """
+    size = _EMU3["protozoa"][0]
+    with open_image(_pinned_disc("protozoa", size)) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        volumes = {v.name: v for v in origin.backend.volumes(image, origin.offset)}
+        assert len(volumes["Orbit Presets  X"].files) == 535
+        assert len(volumes["Orbit Presets 4k"].files) == 535
+        assert len(volumes["Phatt Presets  X"].files) == 470
+        assert len(volumes["Phatt Presets 4K"].files) == 239
+        # The index bank: empty because the disc made it empty, and saying so
+        # is what tells that apart from a bound that failed.
+        assert volumes["Protozoa       X"].files == []
+        assert volumes["Protozoa       X"].note
+        # No two volumes may claim one record. That is the tell the bug was
+        # found by, and it is what "a bank reports only its own" means.
+        seen: dict[int, str] = {}
+        for volume in volumes.values():
+            for entry in volume.files:
+                assert seen.setdefault(entry.start_block, volume.name) == volume.name, (
+                    f"{entry.name} at {entry.start_block} is listed by "
+                    f"{seen[entry.start_block]!r} and by {volume.name!r}"
+                )
 
 
 @pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))
