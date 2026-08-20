@@ -29,9 +29,9 @@ That is why `container/` may not contain a brand name, a sample-header check, or
 
 ## Layer 1 — containers
 
-`open_image(path)` returns a `SectorImage` exposing `read(offset, length)` over cooked 2048-byte sectors. Five implementations: `MdxImage`, `NrgImage`, `RawCdImage`, `FlatImage`, `MdsMdfImage`.
+`open_image(path)` returns a `SectorImage` exposing `read(offset, length)` over cooked 2048-byte sectors. Four implementations: `MdxImage`, `NrgImage`, `RawCdImage` and `FlatImage`. A `.mds`/`.mdf` pair is not a fifth class: `open_mds()` finds the `.mdf` beside the descriptor, sniffs its geometry the way a bare `.bin` is sniffed, and returns a `RawCdImage` or a `FlatImage` carrying `kind = "mdsmdf"`. The descriptor is read only far enough to identify it and is otherwise not parsed, so a multi-track or offset image would be read from byte 0 — correct for the single-track data discs these are, and confirmed on the one pair in hand.
 
-Dispatch is on **content signature**, not extension ([ADR-0004](adr/0004-detect-by-signature.md)). The head is checked for `MEDIA DESCRIPTOR` and the CD sync pattern, the tail for `NER5`/`NERO`.
+Dispatch is on **content signature**, not extension ([ADR-0004](adr/0004-detect-by-signature.md)). The head is checked for `MEDIA DESCRIPTOR` and the CD sync pattern, the tail for `NER5`/`NERO`. `MEDIA DESCRIPTOR` alone does not settle it: the merged `.mdx` and the split `.mds` share those 16 bytes and are separated by the major version at `0x10`, so the split form is tested first and at least 17 bytes are read before deciding ([mdx.md](formats/mdx.md)). The `.mds` extension survives only as a tiebreak for a descriptor written by something that does not use this magic; a cooked image with no cue sheet falls through to `FlatImage`.
 
 Only two containers do real work. `MdxImage` walks a chain of DEFLATE and stored blocks with no index ([mdx.md](formats/mdx.md), [ADR-0006](adr/0006-mdx-blocks-classified-by-decode-attempt.md)). `RawCdImage` de-interleaves 2352-byte sectors down to their 2048-byte payload ([rawcd.md](formats/rawcd.md)). `NrgImage` is mostly a footer parse, but it is the one that proved filesystems do not always start at byte 0 ([nrg.md](formats/nrg.md)).
 
