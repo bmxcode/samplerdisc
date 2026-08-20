@@ -96,13 +96,31 @@ So banks are found by their own header instead, which is exact and self-checking
 
 | Offset in bank | Size | Meaning |
 |---|---|---|
-| 0 | 16 | `"EMULATOR 3X    \0"` |
+| 0 | 16 | `"EMULATOR 3X    \0"` on EIIIX and ESI, `"EMULATOR THREE \0"` on EIII |
 | 16 | 16 | bank name, matching the directory entry |
 | 0x30 | 4 | u32 LE, bytes before the sample area |
-| 0x34 | 4 | u32 LE, bytes of sample data |
-| 0x38 | 4 | u32 LE, bank size — `0x30 + 0x34 == 0x38` |
+| 0x34 | 4 | u32 LE, **bytes of sample data** |
+| 0x38 | 4 | u32 LE, not identified |
+
+An earlier revision of this doc gave `0x38` as the bank size and claimed `0x30 + 0x34 == 0x38`. **That sum holds on 0 of the 112 located banks** across the four EIII/ESI discs, and nothing checked it. `0x38` reads a constant 8 388 608 on every `EMULATOR 3X` bank — including a 256 KiB one — which is the sampler's memory size and not a property of the bank; on `EMULATOR THREE` banks it reads 0, or a small number unrelated to the bank's extent. Do not use it for anything.
 
 A bank ends where the next located bank begins. Without that bound a bank's sample walk runs into its neighbour and reports the neighbour's samples as its own — which reads as a longer, plausible listing.
+
+### A bank may declare no sample area at all
+
+`0x34` reads **zero** on 4 of the 112 located banks of the four EIII/ESI discs. Three of the four are one bank each on `esi32-gm`, `eiiix-1` and `eiiix-2`:
+
+| Disc | Bank | `start` | `length` | Bytes to the next header | `0x34` |
+|---|---|---|---|---|---|
+| `esi32-gm` | `General Midi   X` | 3 | 1 | 262 144 | 0 |
+| `eiiix-1` | `E-mu Banks 1-44` | 17 | 1 | 262 144 | 0 |
+| `eiiix-2` | `Emu Banks 45-88` | 2 | 1 | 262 144 | 0 |
+
+Each is located by its own `EMULATOR` header, and the distance to the next located header is exactly the one allocation unit its directory entry claims — so the bank is placed right and bounded right, and the walk finds nothing because there is nothing to find. Two of the three say so in their names: they are the library's index, listing the banks on this disc and on its companion volumes.
+
+The fourth is `protozoa`'s `Protozoa       X`, and it is **not** an index bank in the reader's eyes: the walk currently reports 218 samples for it, because its bound is wrong. See the open question below. That is exactly why `0x34` is consulted only after the walk has already come back empty — as a reason for an emptiness already observed, never as a prediction that a bank will be empty.
+
+**This has to be stated rather than merely observed.** A bank with no files and no note is the signature of a probe that matched something it should not have ([ADR-0012](../adr/0012-a-probe-must-confirm-a-file.md)), and an index bank reads exactly like a mis-bounded one unless the reader says which it is. `0x34` is what lets it say so, and it says only what the bank declares. A bank that declares sample data and yields none gets **no** note, because there the emptiness is genuinely unexplained and must stay visible as such.
 
 `eiv-analogia` contains **no `EMULATOR` string at all** in 294 MB, and neither do the other two E-IV discs. Those banks are located through the sample directory below instead.
 
@@ -220,7 +238,7 @@ Beware the near-miss: comparing "LE from *n*" against "BE from *n+1*" cannot dis
 | Sample records | 452 |
 | Distinct names | 452 |
 | Total record bytes | 7 345 200 (7.00 MiB) |
-| Bank declares (`0x38`) | 8 388 608 (8 MiB) |
+| Bank declares (`0x34`) | 8 248 316 bytes of sample data |
 | First record | `Piano E0`, rate 12 000, 146 852 bytes of PCM |
 
 Whole-disc listings:
@@ -235,9 +253,9 @@ Whole-disc listings:
 | `eiv-studio` | 230 | 2 822 |
 | `eiv-vitous` | 44 | 828 |
 
-The four EIII/ESI counts are the regression baseline: any change to the shared record parser is a bug if they move.
+The four EIII/ESI counts are the regression baseline: any change to the shared record parser is a bug if they move. `protozoa`'s is a baseline of current behaviour and not of correct behaviour — see the open question at the end of this doc.
 
-On `eiv-studio`, 100 of the 230 banks have no confirmed sample directory and are listed with a note rather than guessed at. That disc carries 901 `E4P1` presets, and preset-only banks are the likely explanation — it is not established, so it is not claimed.
+`esi32-gm`, `eiiix-1` and `eiiix-2` each list one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract. On `eiv-studio`, 100 of the 230 banks have no confirmed sample directory and are listed with a note rather than guessed at. That disc carries 901 `E4P1` presets, and preset-only banks are the likely explanation — it is not established, so it is not claimed.
 
 ## Traps
 
@@ -253,3 +271,13 @@ On `eiv-studio`, 100 of the 230 banks have no confirmed sample directory and are
 - On E-IV the record's own length field is unusable and the directory's is authoritative. The EIII rule matches 0 of 5 349 consecutive pairs.
 - An E-IV sample directory can appear twice. Deduplicate by address or every one of its records is listed twice.
 - The paired length fields are not a channel count. Everything is mono, measured.
+
+## Open question: three `protozoa` banks report samples that are not theirs
+
+Found while working out why the index banks above come back empty; recorded here rather than fixed, because it is a different failure on a different disc and the other six reference discs are unaffected.
+
+A bank is bounded by the next *located* bank header, and two things stop a header from being located. `_bank_offsets` keys on the bank name and keeps the first occurrence of each, so `protozoa`'s **second** `EMULATOR 3X` header named `Phatt Presets  X`, at 0x7a14c00, is discarded — leaving no boundary between 0x7814c00 and the end of the image. `Protozoa       X` starts at 0x7814c00, declares a zero-length sample area and a single allocation unit, and is nonetheless credited with 218 records, 156 of them beyond its own 1 MiB extent.
+
+The other way is a bank the directory lists that carries no header at all. `Orbit Presets 4k` and `Phatt Presets 4K` are both in the directory and neither has an `EMULATOR` header, so the `…  X` bank before each swallows its region: `Orbit Presets  X` reports 1 077 records where 8 MiB of bank can hold 539, with **541 duplicated names**, and `Phatt Presets  X` reports 298 more than its extent allows. Duplicated names across a bank boundary are the tell, and they are the same tell as the twice-written E-IV directory above.
+
+So `protozoa`'s entry in the whole-disc listing table above — 16 volumes, 6 788 samples — is **not** a clean baseline; roughly a thousand of those records are a neighbour's, counted twice. The three other EIII/ESI counts are unaffected and remain the regression baseline.
