@@ -41,6 +41,15 @@ JOLIET_ESCAPES = (b"%/@", b"%/C", b"%/E")
 #: Directory record flag bit 1 marks a subdirectory.
 FLAG_DIRECTORY = 0x02
 
+#: Bit 2 marks an *associated file*: a second record carrying the same name as
+#: a real file and pointing somewhere else. Apple-mastered discs use it for the
+#: resource fork, and several in the collection are full of them -- 1 388 of
+#: ProSamples vol. 43's 4 189 records. Listing them gives every affected file
+#: two identical paths, and extracting one writes a few KB of fork metadata out
+#: under an audio extension: a file that opens, plays as noise, and reports
+#: nothing wrong.
+FLAG_ASSOCIATED = 0x04
+
 #: Where the root directory record is embedded in a volume descriptor.
 ROOT_RECORD_OFFSET = 156
 ROOT_RECORD_SIZE = 34
@@ -84,42 +93,58 @@ class Iso9660Backend:
                 return
             yield sector
 
-    def _tree(self, image: SectorImage, offset: int) -> _Tree | None:
-        """The name space to walk: Joliet where present, primary otherwise.
+    def _trees(self, image: SectorImage, offset: int) -> list[_Tree]:
+        """Every name space on the disc, most preferred first.
 
-        Both describe the same extents, so this is a choice of names and
-        nothing else -- no file appears in one and not the other.
+        Joliet before primary. On a healthy disc both describe the same
+        extents, so this is a choice of names and nothing else -- but returning
+        both rather than committing to one is what lets a damaged Joliet
+        descriptor fall back instead of taking the disc down with it.
         """
         primary: _Tree | None = None
+        joliet: _Tree | None = None
         for sector in self._descriptors(image, offset):
-            joliet = sector[0] == TYPE_SUPPLEMENTARY and (
+            wide = sector[0] == TYPE_SUPPLEMENTARY and (
                 sector[ESCAPE_OFFSET : ESCAPE_OFFSET + 3] in JOLIET_ESCAPES
             )
-            if sector[0] != TYPE_PRIMARY and not joliet:
+            if sector[0] != TYPE_PRIMARY and not wide:
                 continue
             root = sector[ROOT_RECORD_OFFSET : ROOT_RECORD_OFFSET + ROOT_RECORD_SIZE]
-            if len(root) < ROOT_RECORD_SIZE:
-                continue
             tree = _Tree(
-                label=_label(sector[40:72], joliet),
+                label=_label(sector[40:72], wide),
                 extent=_both_endian32(root, 2),
                 length=_both_endian32(root, 10),
-                joliet=joliet,
+                joliet=wide,
             )
-            if joliet:
-                return tree
-            if primary is None:
-                primary = tree
-        return primary
+            if wide:
+                joliet = joliet or tree
+            else:
+                primary = primary or tree
+        return [tree for tree in (joliet, primary) if tree is not None]
 
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
-        tree = self._tree(image, offset)
-        if tree is None:
+        """Walk the preferred name space, falling back if it yields nothing.
+
+        Preferring Joliet is a decision about *names* (ADR-0019) and must not
+        become a decision about whether the disc reads at all. A supplementary
+        descriptor whose root extent is damaged -- these are rips, and tail
+        damage is normal -- would otherwise discard a perfectly good primary
+        tree and report an empty disc, which is the failure ADR-0012 exists to
+        reject rather than something a user could diagnose.
+        """
+        trees = self._trees(image, offset)
+        if not trees:
             return
-        volume = Volume(name=tree.label or "ISO9660", start_block=tree.extent)
-        volume.files = list(
-            self._walk(image, offset, tree.extent, tree.length, "", 0, joliet=tree.joliet)
-        )
+        chosen, files = trees[0], []
+        for tree in trees:
+            files = list(
+                self._walk(image, offset, tree.extent, tree.length, "", 0, joliet=tree.joliet)
+            )
+            if files:
+                chosen = tree
+                break
+        volume = Volume(name=chosen.label or "ISO9660", start_block=chosen.extent)
+        volume.files = files
         yield volume
 
     def _walk(
@@ -156,6 +181,11 @@ class Iso9660Backend:
 
             if name_len == 1 and raw_name in (b"\x00", b"\x01"):
                 continue  # . and ..
+            if flags & FLAG_ASSOCIATED:
+                # A resource fork wearing the data file's name. Skipping it is
+                # not a preference: keeping it puts two different extents under
+                # one path, and writes the fork out as audio.
+                continue
             name = _decode(raw_name, joliet)
             name = name.split(";", 1)[0]  # strip the version suffix
             full = f"{prefix}{name}"
