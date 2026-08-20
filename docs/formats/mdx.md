@@ -4,12 +4,33 @@
 
 Verified against `s3000-lib1` (264 088 447 bytes).
 
+## The magic does not identify the format
+
+**`"MEDIA DESCRIPTOR"` is shared with the split `.mds`.** The merged image and the standalone descriptor of a `.mds`/`.mdf` pair open with the same 16 bytes, so the magic answers "DAEMON Tools wrote this" and nothing more. **The major version at `0x10` is the discriminator:**
+
+| | Bytes at `0x00` | `0x10` | `0x11` |
+|---|---|---|---|
+| Merged `.mdx` | `MEDIA DESCRIPTOR` | `02` | `00` or `01` |
+| Split `.mds` | `MEDIA DESCRIPTOR` | `01` | `04` |
+
+Three merged images (`s3000-lib1`, `vince-clarke`, `clearmountain`) read `02`; the one split pair in hand, `Back In Time Records Korg Universe vol.1 1CD AKAI`, reads `01 04`.
+
+This was got wrong, and the failure is worth recording because it looks nothing like its cause. Detection tested the magic first and fell through to the `.mds` extension only afterwards, so **the extension branch was unreachable for any genuine `.mds`** and every one went to the MDX parser. That parser then read the u64 at `0x30` — which in a split descriptor is not a descriptor offset and not anything — got `0`, and reported:
+
+```
+samplerdisc: ...: implausible descriptor offset 0
+```
+
+A file the tool supports, refused by the parser for a different format, with a message that describes neither. Detection is by signature (ADR-0004), so the fix is the version byte rather than the extension: the split form is tested first, the extension survives only as a tiebreak for a descriptor written by something that does not use this magic.
+
+Read at least 17 bytes before deciding. A 16-byte read is exactly the magic and one byte short of the answer.
+
 ## Header
 
 | Offset | Size | Meaning |
 |---|---|---|
-| `0x00` | 16 | `"MEDIA DESCRIPTOR"` |
-| `0x10` | 2 | version |
+| `0x00` | 16 | `"MEDIA DESCRIPTOR"` — **shared with `.mds`, see above** |
+| `0x10` | 2 | version; `0x10` is the major and is what separates merged from split |
 | `0x12` | 26 | copyright notice |
 | `0x30` | 8 | u64 LE, offset of the trailing MDS descriptor |
 | `0x38` | 8 | u64 LE, **not** the payload offset |
@@ -118,6 +139,26 @@ The final chunk is 17 337 bytes and does not inflate, so it is taken as stored. 
 
 This is a known, accepted loose end. Those trailing bytes fall outside any block the filesystem's allocation table marks in use, so no sample data is lost. **Trim the output to a whole sector count; do not fail on it.** A stricter decoder that refuses non-sector-aligned totals would reject a disc that extracts perfectly.
 
+## The split form: `.mds` + `.mdf`
+
+Same writer, two files: the descriptor in the `.mds` and the payload, uncompressed, in the `.mdf` beside it. One pair has been seen — `Back In Time Records Korg Universe vol.1 1CD AKAI   .mds` (486 bytes; the three spaces before the extension are part of the name) with a 612 195 024-byte `.mdf`.
+
+**The descriptor is not parsed, and for a single-track data disc it does not need to be.** Geometry is sniffed off the `.mdf` exactly as a bare `.bin` is: a sync pattern at byte 0 means raw 2352-byte sectors, otherwise cooked 2048. On this pair the `.mdf` is raw, and 612 195 024 / 2352 = **260 287 sectors** exactly, which then carries an AKAI filesystem at offset 0 — five volumes, 159 files. Opening the `.mds` and opening the `.mdf` directly give the same stream, sector for sector.
+
+What the descriptor holds, observed on this specimen and *not* relied on by any code:
+
+| Offset | Value | Reading |
+|---|---|---|
+| `0x10` | `01 04` | version 1.4 |
+| `0x58` | `6a ff ff ff` | −150, a session starting before the pregap |
+| `0x5C` | `bf f8 03 00` | 260 287 — the `.mdf`'s sector count, independently |
+| `0x1D0` | `e0 01 00 00` | offset of the filename below |
+| `0x1E0` | `2a 2e 6d 64 66 00` | `"*.mdf"` — the data file, by pattern rather than by name |
+
+`0x5C` agreeing with the arithmetic on the `.mdf` is the useful part: it is a second, independent statement of the same geometry, and it says the sniff is right on this disc rather than merely self-consistent. It is recorded here and not read, because one specimen is enough to check an answer against and not enough to commit a struct layout to.
+
+The track table is the thing that is still unread, and it is what a multi-track or offset image would need — such an image is currently read from byte 0. There is a run of 0x50-byte blocks from `0x70` carrying what look like the `A0`/`A1`/`A2` lead-in entries and then a track, but the field meanings were not confirmed and are deliberately not written down here. If you have a disc that needs them, work them out against it and add them.
+
 ## Traps
 
 - The payload offset is `0x40`, not the value at `0x38` — `192` on a 2011 image, `2560` on a 2015 one, and neither is it.
@@ -125,3 +166,4 @@ This is a known, accepted loose end. Those trailing bytes fall outside any block
 - The block size varies between images. Measure it; do not assume 32768.
 - No block index exists. Do not go looking for one; the 640-byte descriptor is too small to hold ~16 500 entries and does not decode.
 - The consumed-length guard is load-bearing. Dropping it is undetectable until a disc silently extracts noise.
+- The magic is not the format. A split `.mds` opens with the same 16 bytes; check the byte at `0x10` before routing, and read past 16 bytes so it is there to check.

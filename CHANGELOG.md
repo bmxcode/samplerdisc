@@ -15,9 +15,14 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 ### Known limits
 
 - **A Roland disc comes out as one flat volume.** Its samples are grouped through a volume → performance → patch → partial chain; the middle two record formats are undecoded, and guessing them would misfile samples with nothing reporting it. Every sample is listed under the disc's own `ID<n>:` label instead. ([ADR-0016](docs/adr/0016-the-s7xx-hierarchy-is-located-not-walked.md))
+- **The `.mds` track table is still unread.** Geometry is sniffed from the `.mdf` — sync pattern means raw sectors, otherwise cooked — which is correct for the single-track data discs these are, and confirmed against the one pair in hand. A multi-track or offset image would be read from byte 0 and come out wrong.
 - **Roland sample rates are written as 44 100 rather than read.** No rate field has been identified, and measuring pitch cannot separate 44 100 from 22 050 because they differ by exactly one octave — the interval pitch estimation resolves worst and an original key can itself be wrong by. All nine reference discs measure 44 100. A 22.05 kHz disc would come out an octave high, uniformly, with nothing reporting it. ([ADR-0018](docs/adr/0018-the-s7xx-sample-rate-is-measured.md))
 
 ### Fixed
+
+- **A `.mds`/`.mdf` pair was refused.** The split `.mds` descriptor opens with the same `MEDIA DESCRIPTOR` magic as a merged `.mdx`, and detection tested that magic before it tested anything else — so every real `.mds` went to the MDX parser and came back as `implausible descriptor offset 0`, and the `.mds` branch of the detector was unreachable for the input it exists for. The major version at `0x10` tells the two apart — `01` split, `02` merged — and is now what routes them, by signature rather than by extension ([ADR-0004](docs/adr/0004-detect-by-signature.md), [docs/formats/mdx.md](docs/formats/mdx.md)).
+
+  The first pair to be tried on it, `Back In Time Records Korg Universe vol.1`, reads as 260 287 sectors carrying an AKAI filesystem — five volumes, 159 files. If you have a `.mds`/`.mdf` disc that this tool refused, try it again.
 
 - `--no-stereo` described the pairing as "-L/-R" in `extract` and `batch`, which is now only half the story.
 

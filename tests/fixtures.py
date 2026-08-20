@@ -10,7 +10,13 @@ import itertools
 import struct
 import zlib
 
-from samplerdisc.container.mdx import DEFAULT_BLOCK_SIZE, MAGIC, PAYLOAD_OFFSET
+from samplerdisc.container.mdx import (
+    DEFAULT_BLOCK_SIZE,
+    MAGIC,
+    PAYLOAD_OFFSET,
+    SPLIT_VERSION_MAJOR,
+    VERSION_OFFSET,
+)
 from samplerdisc.container.rawcd import RAW_SECTOR_SIZE, SYNC, USER_DATA_OFFSET
 
 
@@ -68,6 +74,26 @@ def make_mdx(
     struct.pack_into("<Q", header, 0x38, 2560 if disc_soft else 192)
     descriptor = b"\x00" * 640
     return bytes(header) + bytes(payload) + descriptor, bytes(expected)
+
+
+def make_mds(sector_count: int = 260287, minor: int = 4) -> bytes:
+    """A split .mds descriptor: the MDX magic with the split major version.
+
+    Sized and shaped after the one specimen in hand -- 486 bytes, version
+    ``01 04``, the sector count as a u32 at 0x5C, and a ``*.mdf`` filename at
+    the tail. Only the first 17 bytes are load-bearing for detection; the rest
+    is here so a fixture that gets handed to the MDX parser by mistake fails
+    the way a real one did rather than trivially.
+    """
+    out = bytearray(0x1E6)
+    out[0 : len(MAGIC)] = MAGIC
+    out[VERSION_OFFSET] = SPLIT_VERSION_MAJOR
+    out[VERSION_OFFSET + 1] = minor
+    struct.pack_into("<i", out, 0x58, -150)  # session start, before the pregap
+    struct.pack_into("<I", out, 0x5C, sector_count)
+    struct.pack_into("<I", out, 0x1D0, 0x1E0)  # offset of the filename below
+    out[0x1E0:0x1E6] = b"*.mdf\x00"
+    return bytes(out)
 
 
 def make_rawcd(sectors: list[bytes]) -> bytes:
