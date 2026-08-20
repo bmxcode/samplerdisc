@@ -29,9 +29,9 @@ That is why `container/` may not contain a brand name, a sample-header check, or
 
 ## Layer 1 — containers
 
-`open_image(path)` returns a `SectorImage` exposing `read(offset, length)` over cooked 2048-byte sectors. Five implementations: `MdxImage`, `NrgImage`, `RawCdImage`, `FlatImage`, `MdsMdfImage`.
+`open_image(path)` returns a `SectorImage` exposing `read(offset, length)` over cooked 2048-byte sectors. Four implementations: `MdxImage`, `NrgImage`, `RawCdImage` and `FlatImage`. A `.mds`/`.mdf` pair is not a fifth class: `open_mds()` finds the `.mdf` beside the descriptor, sniffs its geometry the way a bare `.bin` is sniffed, and returns a `RawCdImage` or a `FlatImage` carrying `kind = "mdsmdf"`. The descriptor itself is never parsed and no such pair has been run through this, so a multi-track or offset image would be read from byte 0.
 
-Dispatch is on **content signature**, not extension ([ADR-0004](adr/0004-detect-by-signature.md)). The head is checked for `MEDIA DESCRIPTOR` and the CD sync pattern, the tail for `NER5`/`NERO`.
+Dispatch is on **content signature**, not extension ([ADR-0004](adr/0004-detect-by-signature.md)). The head is checked for `MEDIA DESCRIPTOR` and the CD sync pattern, the tail for `NER5`/`NERO`. The `.mds` descriptor is the one exception, because it carries no signature we read; a cooked image with no cue sheet falls through to `FlatImage`.
 
 Only two containers do real work. `MdxImage` walks a chain of DEFLATE and stored blocks with no index ([mdx.md](formats/mdx.md), [ADR-0006](adr/0006-mdx-blocks-classified-by-decode-attempt.md)). `RawCdImage` de-interleaves 2352-byte sectors down to their 2048-byte payload ([rawcd.md](formats/rawcd.md)). `NrgImage` is mostly a footer parse, but it is the one that proved filesystems do not always start at byte 0 ([nrg.md](formats/nrg.md)).
 
