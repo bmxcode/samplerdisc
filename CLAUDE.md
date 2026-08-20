@@ -38,7 +38,13 @@ A disc image is three independent problems stacked, and keeping them independent
 
 ## Working
 
-One deliverable per branch (`d1-containers`, `d2-akai-fs`), one GitHub issue per deliverable — the issue is the spec. PR body says `Closes #<issue>`. Don't push to `main`.
+One deliverable per branch (`d1-containers`, `d2-akai-fs`), merged into `main` through a pull request, **squashed** — one commit on `main` per deliverable, with the PR body as its message. Never push to `main` directly; branch protection enforces both.
+
+**The PR body is the record.** It is the durable, public account of what the deliverable did, what the discs corrected along the way, and what it deliberately does not claim. Write it as carefully as an ADR.
+
+**Open an issue for what is deferred, not for what is planned.** Something found in passing and not being worked on now — a format spotted on a disc nobody has, a test that proves less than its name suggests — is exactly what an issue is for. A spec issue for work about to start is not: this is a single-maintainer project, so an issue opened, assigned and closed the same day is bookkeeping. The spec lives in the plan, and the durable record lives in the PR, the ADRs and `docs/formats/`.
+
+The branch is where CI runs, and that is the point of the PR rather than a merge commit. `main` requires the `verify` check to pass and requires it to be up to date; it does not require an approving review, because a sole maintainer cannot give one and a rule that can only ever be bypassed teaches you to bypass rules.
 
 ## Verify
 

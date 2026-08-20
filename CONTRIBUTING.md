@@ -36,10 +36,11 @@ uv tool install --editable . && samplerdisc --version
 
 ## Workflow
 
-- One deliverable per branch (`d1-containers`, `d2-akai-fs`), one GitHub issue per deliverable — the issue is the spec.
-- Branch off `main`; don't push to `main` directly.
-- Open a pull request with `Closes #<issue>` in the body.
-- Keep the PR green: CI must pass before merge.
+- **Open an issue before writing anything substantial.** Not a formality — a lot of what looks like a missing feature here is a deliberate decision with an ADR behind it, and a lot of what looks like a bug is a disc doing something strange. Ten minutes in an issue can save an afternoon.
+- One change per branch, branched off `main`. Don't push to `main` directly; branch protection will stop you.
+- Open a pull request. Link the issue with `Closes #<issue>` where there is one.
+- **Say how you verified it.** A format claim needs a named disc and the measurement behind it, and constants must match what `docs/formats/` says — the tests assert the same numbers so the two cannot drift apart quietly. "Works on my disc" is a starting point, not a verification.
+- Keep the PR green: CI must pass before merge. Branches merge squashed, so the PR body becomes the commit message on `main` — write it as the record of the change.
 
 ## Reporting a disc that won't read
 
