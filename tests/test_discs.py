@@ -103,6 +103,7 @@ def _pinned_sizes() -> set[int]:
         *(size for size, _ in _ROLAND_S7XX.values()),
         *(size for size, _, _ in _ISO9660.values()),
         *(size for size, _, _ in _EMU3.values()),
+        *(size for size, _, _, _ in _AKAI.values()),
     }
 
 
@@ -165,14 +166,23 @@ def _ids(paths: list[Path]) -> list[str]:
 
 
 @pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))
-def test_a_claimed_disc_yields_at_least_one_file(path: Path) -> None:
-    """No backend may claim a disc and then produce nothing.
+def test_every_claimed_volume_yields_a_file_or_says_why(path: Path) -> None:
+    """No backend may claim a **volume** and then produce nothing from it.
 
     Resolving to None is a legitimate outcome -- the container was understood
     and the filesystem inside it was not, which is what ``export-iso`` is for
-    (ADR-0009). Claiming a disc and walking out with zero files in every volume
+    (ADR-0009). Claiming a disc and walking out with zero files and no reason
     is not: it is a probe that matched arbitrary data, and it reports as an
     empty disc rather than as an error (ADR-0005, ADR-0012).
+
+    **Per volume, not per disc**, and that is the whole strength of it. The
+    per-disc form lets one volume that extracts cover for every volume that
+    does not, which is exactly how the EMU3 index banks of issue #15 stayed
+    invisible for as long as they did: those discs always had *some* bank with
+    records in it. Of the 79 images measured, three failed the per-volume form
+    and none failed the per-disc one -- the six AKAI volumes of issues #16 and
+    #17, plus the four on `Kickin' Lunatic Beats 2 CD1` whose blocks the disc
+    itself says are volume directories.
 
     This is deliberately an invariant rather than a table of expected offsets,
     so it holds against whatever collection a contributor has.
@@ -182,16 +192,19 @@ def test_a_claimed_disc_yields_at_least_one_file(path: Path) -> None:
         if origin is None:
             return
         volumes = list(origin.backend.volumes(image, origin.offset))
-        files = sum(len(volume.files) for volume in volumes)
-        if files:
-            return
-        # No files is allowed only when a backend says why -- a variant it
-        # recognises and deliberately does not extract. Unexplained emptiness
-        # is the ADR-0012 signature.
-        explained = [v for v in volumes if v.note]
-        assert volumes and explained, (
+        assert volumes, (
             f"{path.name}: {origin.backend.name} claimed offset {origin.offset} "
-            f"but returned {len(volumes)} volumes, no files and no explanation"
+            f"but returned no volumes at all"
+        )
+        # No files is allowed only where the backend says why -- a variant it
+        # recognises and deliberately does not extract, or a block the disc's
+        # own bookkeeping accounts for. Unexplained emptiness is the ADR-0012
+        # signature, and one silent volume is enough to hide a wrong answer.
+        unexplained = [v.name for v in volumes if not v.files and not v.note]
+        assert not unexplained, (
+            f"{path.name}: {origin.backend.name} claimed offset {origin.offset} "
+            f"but {len(unexplained)} of {len(volumes)} volumes hold no files and "
+            f"give no reason: {unexplained[:5]}"
         )
 
 
@@ -420,6 +433,171 @@ def test_protozoa_gives_each_bank_its_own_records() -> None:
                     f"{entry.name} at {entry.start_block} is listed by "
                     f"{seen[entry.start_block]!r} and by {volume.name!r}"
                 )
+
+
+#: AKAI discs pinned by size, with the volumes, files and *noted* volumes each
+#: must yield. The noted count is pinned as tightly as the file count on
+#: purpose: a note is what separates an emptiness the disc accounts for from
+#: the ADR-0012 signature, so a note appearing where none was measured is a
+#: backend explaining away something nobody looked at, and one disappearing is
+#: the invariant above losing its teeth. The eight are the discs of issues #16
+#: and #17 together with the four counter-examples -- volumes whose type byte
+#: is 0 and whose blocks the allocation map calls free, which carry 63 files
+#: between them and must keep every one.
+#: ``label: (size in bytes, volumes, files, volumes carrying a note)``.
+_AKAI = {
+    "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 18, 464, 4),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 18, 669, 5),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (371_768_845, 20, 1346, 0),
+    "OMI Universe Of Sounds Vol.1 (Roland S-770,S-750)": (295_837_696, 28, 900, 1),
+    "Back in Time Records - Big Bang": (269_979_648, 8, 380, 0),
+    "Best Service ProSamples vol.01 - Hip Hop and R&B Drumloops": (314_882_048, 7, 82, 0),
+    "Best Service ProSamples vol.19 - Pop Brass": (484_558_848, 3, 139, 0),
+    "Best Service ProSamples vol.24 - Breakbeat": (505_772_032, 15, 113, 0),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_AKAI))
+def test_akai_discs_list_their_volumes_and_files(label: str) -> None:
+    """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
+    size, volumes_expected, files_expected, noted_expected = _AKAI[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None, f"{label}: no filesystem found"
+        assert origin.backend.name == "akai"
+        assert origin.offset == 0
+        volumes = list(origin.backend.volumes(image, origin.offset))
+        assert len(volumes) == volumes_expected
+        assert sum(len(v.files) for v in volumes) == files_expected
+        assert sum(1 for v in volumes if v.note) == noted_expected
+        # The same rule as the collection-wide check above, tightened from
+        # "the collection has no silent volume" to "this disc has none", which
+        # only a disc whose expected shape is known can ask (ADR-0012).
+        assert all(v.files or v.note for v in volumes), [v.name for v in volumes if not v.files]
+
+
+def test_akai_unused_slots_are_explained_by_the_allocation_map() -> None:
+    """The six volumes of issue #16 and the four of #17, and what tells them apart.
+
+    All ten look identical from the volume entry alone: a name, a start block
+    inside the image, and nothing at that block a file walk will take. What
+    separates them is the partition's own allocation map, and each of the three
+    answers below is a different fact about the disc rather than a different
+    guess about it (ADR-0022).
+
+    `Advance Orchestra` and the OMI disc keep a start block left over from
+    formatting that now points into a file's extent -- the map says those
+    blocks hold file data, so no directory was ever there. `Kickin' Lunatic
+    Beats 2 CD1` is the other way round: the map says all four blocks *are*
+    volume directories, and the image has none at them, because the image is
+    short of the disc by four 32 KB blocks. Its `VOLUME 018` is a third case
+    again, and the map declines to choose between them.
+    """
+    expect = {
+        "AKAI Advance Orchestra Upgrade 97 Vol.1": {
+            "VOLUME 015": "file data",
+            "VOLUME 016": "file data",
+            "VOLUME 017": "file data",
+            "VOLUME 018": "file data",
+        },
+        "OMI Universe Of Sounds Vol.1 (Roland S-770,S-750)": {"VOLUME 028": "file data"},
+        "AMG - Kickin' Lunatic Beats 2 AKAI CD1": {
+            "14-TRK06 MF1": "a volume directory",
+            "15-TRK06 MF2": "a volume directory",
+            "16-TRACK 07": "a volume directory",
+            "17-TRK07 MF": "a volume directory",
+            "VOLUME 018": "is free",
+        },
+    }
+    for label, wanted in expect.items():
+        with open_image(_pinned_disc(label, _AKAI[label][0])) as image:
+            origin = find_origin(image)
+            assert origin is not None
+            volumes = {v.name: v for v in origin.backend.volumes(image, origin.offset)}
+            for name, fragment in wanted.items():
+                volume = volumes[name]
+                assert not volume.files, f"{label}: {name} unexpectedly lists files"
+                assert fragment in volume.note, f"{label}: {name}: {volume.note!r}"
+
+
+def test_akai_keeps_the_files_of_a_volume_the_allocation_map_calls_free() -> None:
+    """A free block under a volume that *does* list files is not grounds to drop it.
+
+    Four volumes across three discs have a type byte of 0 and sit on blocks the
+    allocation map marks free, and every one holds a real directory: these are
+    volumes that were deleted, on read-only media that never reused the blocks.
+    They carry 63 files between them, so the one-line fix of rejecting type 0 --
+    or of trusting the map as an allocation flag rather than reading it as an
+    explanation -- costs real audio. This is the test that says so.
+    """
+    expect = {
+        "Back in Time Records - Big Bang": ("VOLUME 008", 14),
+        "Best Service ProSamples vol.01 - Hip Hop and R&B Drumloops": ("VOLUME 007", 10),
+        "Best Service ProSamples vol.19 - Pop Brass": ("VOLUME 003", 37),
+        "Best Service ProSamples vol.24 - Breakbeat": ("VOLUME 015", 2),
+    }
+    from samplerdisc.fs.akai import FAT_FREE, allocation_map
+
+    total = 0
+    for label, (name, count) in expect.items():
+        with open_image(_pinned_disc(label, _AKAI[label][0])) as image:
+            origin = find_origin(image)
+            assert origin is not None
+            allocation = allocation_map(image, origin.offset)
+            volume = {v.name: v for v in origin.backend.volumes(image, origin.offset)}[name]
+            assert allocation[volume.start_block] == FAT_FREE, label
+            assert len(volume.files) == count, label
+            assert not volume.note
+            total += len(volume.files)
+    assert total == 63
+
+
+@pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))
+def test_an_akai_file_chain_is_as_long_as_its_declared_size(path: Path) -> None:
+    """The allocation map has to agree with the directory about every file.
+
+    This is what makes the map evidence rather than a hopeful reading of the
+    bytes that follow the volume directory: walk each file's chain of blocks
+    and it must be exactly as long as the size the directory declares, which
+    the map and the directory state independently of one another. Across the
+    44 AKAI discs measured it holds for **14 607 of 14 607** files, exactly,
+    with no disc disagreeing anywhere.
+
+    Volumes the map calls free are excluded, and that exclusion is a finding
+    rather than a fudge: those five are deleted volumes, so their blocks were
+    returned to the free list and their chains genuinely no longer describe
+    the audio still sitting in them. Their 63 files are the reason the
+    exclusion has to be by what the map says and not by a tolerance -- on
+    `ProSamples vol.19` they are 37 of 139 files, so any rate loose enough to
+    pass there would be loose enough to hide a real fault on a larger disc.
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE, FAT_FREE, FAT_VOLUME_DIR, allocation_map
+
+    with open_image(path) as image:
+        origin = find_origin(image)
+        if origin is None or origin.backend.name != "akai":
+            return
+        allocation = allocation_map(image, origin.offset)
+        assert allocation, f"{path.name}: no allocation map"
+        disagreed = []
+        for volume in origin.backend.volumes(image, origin.offset):
+            if volume.start_block < len(allocation) and allocation[volume.start_block] == FAT_FREE:
+                continue
+            for entry in volume.files:
+                want = -(-entry.size // BLOCK_SIZE)
+                block, length, seen = entry.start_block, 0, set()
+                while 0 <= block < len(allocation) and block not in seen and length <= want:
+                    seen.add(block)
+                    length += 1
+                    if allocation[block] >= FAT_VOLUME_DIR:
+                        break
+                    block = allocation[block]
+                if length != want:
+                    disagreed.append(f"{volume.name}/{entry.name}: {length} blocks, wanted {want}")
+        assert not disagreed, (
+            f"{path.name}: {len(disagreed)} files whose chain is not as long as the "
+            f"size their directory declares, first: {disagreed[:3]}"
+        )
 
 
 @pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))

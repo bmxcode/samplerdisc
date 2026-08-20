@@ -166,38 +166,89 @@ def akai_name(text: str) -> bytes:
     return bytes(CHARSET.index(c) if c in CHARSET else CHARSET.index(" ") for c in text)
 
 
-def akai_partition(volumes, blocks_total: int = 512) -> bytes:
+def akai_partition(
+    volumes,
+    blocks_total: int = 512,
+    *,
+    stale_slots=(),
+    phantom_directories=(),
+    allocation_map: bool = True,
+    volume_type: int = 1,
+) -> bytes:
     """Build an AKAI partition image.
 
     ``volumes`` is a list of ``(name, [(file_name, type_byte, size, payload)])``.
     Returns a byte image whose block 0 is the partition header.
+
+    The header carries the partition's block count and a **block allocation
+    map**, both of which a real one has and neither of which this fixture had
+    while the volume walk ignored them. The map is built to match what is
+    written: a live volume's directory block reads ``FAT_VOLUME_DIR``, a file's
+    blocks chain to ``FAT_CHAIN_END``, everything else stays free.
+
+    The three keyword arguments model the three ways a real disc departs from
+    that, one per situation measured on the shelf:
+
+    ``stale_slots``
+        ``(name, start_block)`` pairs written into the volume directory with a
+        type byte of 0 -- a slot AKAI pre-formatted, whose start block was left
+        pointing wherever formatting left it. Point one at a file's block to
+        reproduce `Advance Orchestra`, or at an unused one to reproduce
+        `Kickin' Lunatic Beats 2 CD1`'s `VOLUME 018`.
+    ``phantom_directories``
+        blocks marked ``FAT_VOLUME_DIR`` in the map with no directory written
+        at them -- what an image short of the disc it came from looks like from
+        inside the filesystem.
+    ``allocation_map``
+        False leaves the map area zeroed and the block count unwritten, for the
+        case where the disc declares nothing usable and no note may be drawn.
     """
     from samplerdisc.fs.akai import (
         BLOCK_SIZE,
+        FAT_CHAIN_END,
+        FAT_OFFSET,
+        FAT_VOLUME_DIR,
         FILE_ENTRY_LEN,
         NAME_LEN,
+        PARTITION_BLOCKS_OFFSET,
         VOLUME_DIR_OFFSET,
         VOLUME_ENTRY_LEN,
+        VOLUME_START_OFFSET,
+        VOLUME_TYPE_INACTIVE,
+        VOLUME_TYPE_OFFSET,
     )
 
     image = bytearray(blocks_total * BLOCK_SIZE)
     next_block = 1
     header = bytearray(BLOCK_SIZE)
+    allocation = [0] * blocks_total
+
+    def slot(index: int, name: str, type_byte: int, start: int) -> None:
+        entry = bytearray(VOLUME_ENTRY_LEN)
+        entry[:NAME_LEN] = akai_name(name)
+        entry[VOLUME_TYPE_OFFSET] = type_byte
+        struct.pack_into("<H", entry, VOLUME_START_OFFSET, start)
+        base = VOLUME_DIR_OFFSET + index * VOLUME_ENTRY_LEN
+        header[base : base + VOLUME_ENTRY_LEN] = entry
 
     for index, (volume_name, files) in enumerate(volumes):
         volume_block = next_block
         next_block += 1
-        entry = bytearray(VOLUME_ENTRY_LEN)
-        entry[:NAME_LEN] = akai_name(volume_name)
-        struct.pack_into("<HH", entry, NAME_LEN, 1, volume_block)
-        base = VOLUME_DIR_OFFSET + index * VOLUME_ENTRY_LEN
-        header[base : base + VOLUME_ENTRY_LEN] = entry
+        slot(index, volume_name, volume_type, volume_block)
+        allocation[volume_block] = FAT_VOLUME_DIR
 
         directory = bytearray(BLOCK_SIZE)
-        for slot, (file_name, type_byte, size, payload) in enumerate(files):
+        for position, (file_name, type_byte, size, payload) in enumerate(files):
             file_block = next_block
-            next_block += (len(payload) + BLOCK_SIZE - 1) // BLOCK_SIZE or 1
+            span = (len(payload) + BLOCK_SIZE - 1) // BLOCK_SIZE or 1
+            next_block += span
             image[file_block * BLOCK_SIZE : file_block * BLOCK_SIZE + len(payload)] = payload
+            # Chain the extent the way the disc does, so a file's blocks are
+            # walkable from the map alone and end where its size says.
+            for step in range(span):
+                allocation[file_block + step] = (
+                    FAT_CHAIN_END if step == span - 1 else file_block + step + 1
+                )
             record = bytearray(FILE_ENTRY_LEN)
             record[:NAME_LEN] = akai_name(file_name)
             record[NAME_LEN : NAME_LEN + 4] = b"\x20\x20\x20\x20"
@@ -206,8 +257,24 @@ def akai_partition(volumes, blocks_total: int = 512) -> bytes:
             record[18] = (size >> 8) & 0xFF
             record[19] = (size >> 16) & 0xFF
             struct.pack_into("<H", record, 20, file_block)
-            directory[slot * FILE_ENTRY_LEN : (slot + 1) * FILE_ENTRY_LEN] = record
+            directory[position * FILE_ENTRY_LEN : (position + 1) * FILE_ENTRY_LEN] = record
         image[volume_block * BLOCK_SIZE : (volume_block + 1) * BLOCK_SIZE] = directory
+
+    for offset, (name, start) in enumerate(stale_slots):
+        slot(len(volumes) + offset, name, VOLUME_TYPE_INACTIVE, start)
+    for block in phantom_directories:
+        allocation[block] = FAT_VOLUME_DIR
+
+    if allocation_map:
+        # The map has to fit the header block, as it does on a real partition.
+        # A slice assignment past the end would grow the bytearray rather than
+        # complain, which moves block 1 and reads as a corrupt filesystem.
+        assert FAT_OFFSET + blocks_total * 2 <= BLOCK_SIZE, (
+            f"an allocation map for {blocks_total} blocks does not fit the header block"
+        )
+        struct.pack_into("<H", header, PARTITION_BLOCKS_OFFSET, blocks_total)
+        packed = struct.pack(f"<{blocks_total}H", *allocation)
+        header[FAT_OFFSET : FAT_OFFSET + len(packed)] = packed
 
     image[0:BLOCK_SIZE] = header
     return bytes(image)
