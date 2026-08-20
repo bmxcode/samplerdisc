@@ -24,3 +24,4 @@ If you find yourself writing an ADR with no rejected alternative, you are writin
 | [0016](0016-the-s7xx-hierarchy-is-located-not-walked.md) | The S-7xx object hierarchy is located, not walked | Walking volume→…→sample to group; grouping by name prefix |
 | [0017](0017-the-stereo-side-marker-is-a-character-class.md) | The stereo side marker is a character class | A per-backend hook; renaming Roland to AKAI's spelling; an optional separator |
 | [0018](0018-the-s7xx-sample-rate-is-measured.md) | The S-7xx rate is 44 100 by measurement, not by a field | Refusing to extract; a `--rate` override; per-sample pitch inference |
+| [0019](0019-prefer-joliet-names.md) | Prefer Joliet names over the ISO 9660 short names | De-duplicating the short names; merging the two trees; Rock Ridge; naming from the payload |

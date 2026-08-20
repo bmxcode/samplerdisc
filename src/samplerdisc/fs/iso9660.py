@@ -5,12 +5,16 @@ libraries converted to Kontakt or plain audio and burned back to an image. They
 mount on a modern machine, but they still arrive wrapped in a .nrg or a
 compressed .mdx that nothing else opens -- so reading them here costs little
 and saves the user a second tool.
+
+Names come from the Joliet supplementary descriptor where the disc carries one,
+because the primary descriptor's 8.3 names are lossy and on at least one real
+disc are not even unique (ADR-0019). See docs/formats/iso9660.md.
 """
 
 from __future__ import annotations
 
 import struct
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, NamedTuple
 
 from samplerdisc.container.base import SECTOR_SIZE
 from samplerdisc.fs.base import File, Volume, register
@@ -26,10 +30,20 @@ MAGIC = b"CD001"
 PVD_SECTOR = 16
 PVD_MAGIC_OFFSET = 1
 TYPE_PRIMARY = 1
+TYPE_SUPPLEMENTARY = 2
 TYPE_TERMINATOR = 255
+
+#: Byte 88 of a supplementary descriptor holds its escape sequences. Joliet
+#: uses three, one per UCS-2 level; all three mean the same thing to us.
+ESCAPE_OFFSET = 88
+JOLIET_ESCAPES = (b"%/@", b"%/C", b"%/E")
 
 #: Directory record flag bit 1 marks a subdirectory.
 FLAG_DIRECTORY = 0x02
+
+#: Where the root directory record is embedded in a volume descriptor.
+ROOT_RECORD_OFFSET = 156
+ROOT_RECORD_SIZE = 34
 
 _MAX_DESCRIPTORS = 16
 _MAX_DEPTH = 8
@@ -38,6 +52,15 @@ _MAX_DEPTH = 8
 def _both_endian32(data: bytes, offset: int) -> int:
     """ISO 9660 stores 32-bit values twice; the little-endian half is first."""
     return struct.unpack_from("<I", data, offset)[0]
+
+
+class _Tree(NamedTuple):
+    """One name space on the disc: primary, or Joliet."""
+
+    label: str
+    extent: int
+    length: int
+    joliet: bool
 
 
 class Iso9660Backend:
@@ -52,29 +75,51 @@ class Iso9660Backend:
             and sector[0] in (TYPE_PRIMARY, 0, 2)
         )
 
-    def _primary(self, image: SectorImage, offset: int) -> bytes | None:
+    def _descriptors(self, image: SectorImage, offset: int) -> Iterator[bytes]:
         for index in range(_MAX_DESCRIPTORS):
             sector = image.read(offset + (PVD_SECTOR + index) * SECTOR_SIZE, SECTOR_SIZE)
             if len(sector) < SECTOR_SIZE or sector[1:6] != MAGIC:
-                return None
-            if sector[0] == TYPE_PRIMARY:
-                return sector
+                return
             if sector[0] == TYPE_TERMINATOR:
-                return None
-        return None
+                return
+            yield sector
+
+    def _tree(self, image: SectorImage, offset: int) -> _Tree | None:
+        """The name space to walk: Joliet where present, primary otherwise.
+
+        Both describe the same extents, so this is a choice of names and
+        nothing else -- no file appears in one and not the other.
+        """
+        primary: _Tree | None = None
+        for sector in self._descriptors(image, offset):
+            joliet = sector[0] == TYPE_SUPPLEMENTARY and (
+                sector[ESCAPE_OFFSET : ESCAPE_OFFSET + 3] in JOLIET_ESCAPES
+            )
+            if sector[0] != TYPE_PRIMARY and not joliet:
+                continue
+            root = sector[ROOT_RECORD_OFFSET : ROOT_RECORD_OFFSET + ROOT_RECORD_SIZE]
+            if len(root) < ROOT_RECORD_SIZE:
+                continue
+            tree = _Tree(
+                label=_label(sector[40:72], joliet),
+                extent=_both_endian32(root, 2),
+                length=_both_endian32(root, 10),
+                joliet=joliet,
+            )
+            if joliet:
+                return tree
+            if primary is None:
+                primary = tree
+        return primary
 
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
-        pvd = self._primary(image, offset)
-        if pvd is None:
+        tree = self._tree(image, offset)
+        if tree is None:
             return
-        label = pvd[40:72].decode("ascii", "replace").strip() or "ISO9660"
-        # The root directory record is embedded in the PVD at byte 156.
-        root = pvd[156:190]
-        root_extent = _both_endian32(root, 2)
-        root_length = _both_endian32(root, 10)
-
-        volume = Volume(name=label, start_block=root_extent)
-        volume.files = list(self._walk(image, offset, root_extent, root_length, prefix="", depth=0))
+        volume = Volume(name=tree.label or "ISO9660", start_block=tree.extent)
+        volume.files = list(
+            self._walk(image, offset, tree.extent, tree.length, "", 0, joliet=tree.joliet)
+        )
         yield volume
 
     def _walk(
@@ -85,6 +130,7 @@ class Iso9660Backend:
         length: int,
         prefix: str,
         depth: int,
+        joliet: bool,
     ) -> Iterator[File]:
         if depth > _MAX_DEPTH:
             return
@@ -110,13 +156,13 @@ class Iso9660Backend:
 
             if name_len == 1 and raw_name in (b"\x00", b"\x01"):
                 continue  # . and ..
-            name = raw_name.decode("ascii", "replace")
+            name = _decode(raw_name, joliet)
             name = name.split(";", 1)[0]  # strip the version suffix
             full = f"{prefix}{name}"
 
             if flags & FLAG_DIRECTORY:
                 yield from self._walk(
-                    image, origin, child_extent, child_length, f"{full}/", depth + 1
+                    image, origin, child_extent, child_length, f"{full}/", depth + 1, joliet
                 )
             else:
                 yield File(
@@ -128,6 +174,31 @@ class Iso9660Backend:
 
     def read_file(self, image: SectorImage, origin: int, entry: File) -> bytes:
         return image.read(origin + entry.start_block * SECTOR_SIZE, entry.size)
+
+
+def _decode(raw: bytes, joliet: bool) -> str:
+    """A directory record's name, from whichever name space it came.
+
+    Joliet is UCS-2 big-endian. An odd length cannot be UCS-2, so the trailing
+    byte is dropped rather than allowed to shift every character after it: a
+    malformed record costs one name, not the rest of the directory.
+    """
+    if not joliet:
+        return raw.decode("ascii", "replace")
+    return raw[: len(raw) - len(raw) % 2].decode("utf-16-be", "replace")
+
+
+def _label(raw: bytes, joliet: bool) -> str:
+    """The volume identifier, up to the first NUL.
+
+    The field is meant to be space-padded, but MagicISO NUL-terminates it and
+    leaves whatever was in the buffer behind: Vintage Pro's reads
+    ``VintagePro\\x0057``, the ``57`` a fragment of the volume set identifier
+    ``20101002_0257``. Reading past the NUL invented a volume named
+    "VintagePro 57" that is nowhere on the disc.
+    """
+    text = _decode(raw, joliet)
+    return text.split("\x00", 1)[0].strip()
 
 
 def _classify(name: str) -> str:
