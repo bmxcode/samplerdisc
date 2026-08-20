@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import struct
+
 from samplerdisc.container.flat import FlatImage
-from samplerdisc.fs.emu3 import Emu3Backend, is_plausible_name
+from samplerdisc.fs.emu3 import OFF_SAMPLE_HEADER_LEN, Emu3Backend, is_plausible_name
 from samplerdisc.fs.probe import find_origin
 from tests import fixtures
 
@@ -146,14 +148,152 @@ def test_payload_is_returned_verbatim(tmp_path):
     assert payload == image.read(entry.start_block, entry.size)
 
 
-def test_a_bank_with_no_header_lists_but_yields_no_samples(tmp_path):
-    """The E-IV case.
+def test_a_bank_with_neither_header_nor_directory_is_listed_with_a_note(tmp_path):
+    """A bank whose interior yields nothing must say so.
 
-    Those banks are real and their names are right, but their interior is a
-    format this project has one specimen of, so they are listed and not
-    guessed at. See ADR-0015.
+    E-IV banks are read now (ADR-0020), but a bank with no ``EMULATOR`` header
+    *and* no ``E3S1`` sample directory still cannot be opened. It is listed
+    with its real name and an explanation. The note is load-bearing: a volume
+    with no files and no note is indistinguishable from a probe that matched
+    garbage (ADR-0012), and the disc-backed suite asserts exactly that.
     """
     image = image_of(tmp_path, fixtures.emu3_disc(THREE_FOLDERS, bank_header=False), "noheader.iso")
     volumes = list(BACKEND.volumes(image, 0))
     assert len(volumes) == 3
     assert all(v.files == [] for v in volumes)
+    assert all(v.note for v in volumes)
+
+
+# --- E-IV ---------------------------------------------------------------
+
+
+#: Two banks carry more than one sample, which is the minimum that pins the
+#: allocation unit down -- a single corroborated chain fits any unit at some
+#: bias. The third has one sample, and must still bind off the others' fit.
+EIV_FOLDERS = [
+    (
+        "Boom da Drumz",
+        [
+            ("Scroggins Secret", [("Stage Door", 44100, 512), ("All Nines", 44100, 256)]),
+            ("TribebunillDrumd", [("Tribebunill J.75", 24000, 300), ("Rattle Traps", 44100, 128)]),
+        ],
+    ),
+    ("Symphoniks", [("Orchestralcolorz", [("Strings", 22000, 512)])]),
+]
+
+
+def test_eiv_banks_extract_their_samples(tmp_path):
+    """E-IV banks carry no ``EMULATOR`` header and are still read.
+
+    They are reached through a chained ``E3S1`` sample directory instead --
+    the finding that made ADR-0015's conditional position expire.
+    """
+    image = image_of(tmp_path, fixtures.emu3_disc(EIV_FOLDERS, eiv=True), "eiv.iso")
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    assert set(volumes) == {"Scroggins Secret", "TribebunillDrumd", "Orchestralcolorz"}
+    assert [f.name for f in volumes["Scroggins Secret"].files] == ["Stage Door", "All Nines"]
+    assert [f.raw_type for f in volumes["Scroggins Secret"].files] == [44100, 44100]
+    assert not any(v.note for v in volumes.values())
+
+
+def test_an_eiv_bank_reports_only_its_own_samples(tmp_path):
+    """The chain bounds a bank; a neighbour's samples are not adopted.
+
+    Without a bound this reads as a longer, entirely believable listing rather
+    than as an error -- the failure ADR-0015 was written against.
+    """
+    image = image_of(tmp_path, fixtures.emu3_disc(EIV_FOLDERS, eiv=True), "eiv.iso")
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    assert [f.name for f in volumes["TribebunillDrumd"].files] == [
+        "Tribebunill J.75",
+        "Rattle Traps",
+    ]
+    assert [f.name for f in volumes["Orchestralcolorz"].files] == ["Strings"]
+
+
+def test_a_single_sample_eiv_bank_still_binds(tmp_path):
+    """A lone directory entry has no chain invariant, and is not lost for it.
+
+    It cannot vote on the allocation unit -- only corroborated chains do that
+    -- but once that fit is settled it must land exactly where the fit says.
+    """
+    image = image_of(tmp_path, fixtures.emu3_disc(EIV_FOLDERS, eiv=True), "eiv.iso")
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    assert len(volumes["Orchestralcolorz"].files) == 1
+
+
+def test_the_eiv_directory_is_big_endian(tmp_path):
+    """The sample directory is the one big-endian structure in the format.
+
+    Everything else -- every EIII header field and the payload itself -- is
+    little-endian, and docs/formats/emu3.md records how convincingly that got
+    read the wrong way round once. Byte-swapping a length must break the
+    chain, not quietly resize a sample.
+    """
+    data = bytearray(fixtures.emu3_disc(EIV_FOLDERS, eiv=True))
+    at = data.find(b"E3S1", 32 * 512)
+    length = struct.unpack_from(">I", data, at + 4)[0]
+    struct.pack_into("<I", data, at + 4, length)  # same bytes, wrong way round
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "swap.iso"), 0)}
+    assert volumes["Scroggins Secret"].files == []
+    assert volumes["Scroggins Secret"].note
+
+
+def test_the_directory_sizes_the_sample_not_the_record(tmp_path):
+    """The record's own length field is not usable on E-IV.
+
+    ``+34`` plus the EIII bias of two matches the distance to the next record
+    on 0 of 522, 0 of 3893 and 0 of 934 consecutive pairs across the three
+    reference discs. The directory's big-endian length matches on every one.
+    """
+    image = image_of(tmp_path, fixtures.emu3_disc(EIV_FOLDERS, eiv=True), "eiv.iso")
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    first = volumes["Scroggins Secret"].files[0]
+    assert first.size == 1024
+    assert len(BACKEND.read_file(image, 0, first)) == first.size
+
+
+def test_an_eiv_record_declaring_no_header_length_still_reads(tmp_path):
+    """``OFF_SAMPLE_HEADER_LEN`` reads 0 on 547 of `studio`'s records.
+
+    Requiring it to equal 92, as the EIII walk does, drops a fifth of that
+    disc. The directory already says where the record is and what it is
+    called, so the field is not needed to confirm one.
+    """
+    data = bytearray(fixtures.emu3_disc(EIV_FOLDERS, eiv=True))
+    at = data.find(b"Stage Door", 64 * 512)
+    struct.pack_into("<I", data, at - 2 + OFF_SAMPLE_HEADER_LEN, 0)
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "hdr0.iso"), 0)}
+    assert [f.name for f in volumes["Scroggins Secret"].files] == ["Stage Door", "All Nines"]
+
+
+def test_a_directory_written_twice_yields_each_sample_once(tmp_path):
+    """Two chains can resolve to one base, and must not list the record twice.
+
+    On `analogia` concatenating them gave 509 samples at 449 distinct
+    addresses -- 60 byte-identical WAVs, under names that looked like a
+    genuine stereo pair rather than like a bug.
+    """
+    image = image_of(
+        tmp_path,
+        fixtures.emu3_disc(EIV_FOLDERS, eiv=True, duplicate_sample_dir=True),
+        "twice.iso",
+    )
+    files = [f for v in BACKEND.volumes(image, 0) for f in v.files]
+    assert len(files) == 5
+    assert len({f.start_block for f in files}) == 5
+
+
+def test_folder_entries_need_not_carry_the_0xffff_flags(tmp_path):
+    """`studio` writes 0x0013 and 0x0018 on its first two folders.
+
+    Requiring 0xFFFF aborts the folder walk on entry 0, finds no folders at
+    all, and silently falls back to the single directory the header points at
+    -- 77 banks of the 230 that disc has.
+    """
+    image = image_of(
+        tmp_path,
+        fixtures.emu3_disc(EIV_FOLDERS, eiv=True, folder_flags=0x0013),
+        "flags.iso",
+    )
+    assert len(list(BACKEND.volumes(image, 0))) == 3

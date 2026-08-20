@@ -2,6 +2,27 @@
 
 Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](docs/formats/); decisions and their rejected alternatives live in [docs/adr/](docs/adr/). This file records what changed for someone using the tool.
 
+## Unreleased
+
+### Added
+
+- **Emulator IV discs extract their samples.** All three E-IV discs in the reference collection previously listed their banks with correct names and yielded nothing; they now give **449, 2 822 and 828 samples**. E-IV banks carry no `EMULATOR` header — not one occurrence across 1.2 GB — and are reached through a chained `E3S1` sample directory instead, whose big-endian length is what sizes each sample. ([docs/formats/emu3.md](docs/formats/emu3.md), [ADR-0020](docs/adr/0020-read-e-iv-through-its-sample-directory.md))
+
+  [ADR-0015](docs/adr/0015-locate-banks-by-signature.md) held this back deliberately and conditionally, on the grounds that one specimen cannot distinguish a format from that disc's quirks. Three discs from two publishers met the condition, and the third earned its place: two constants that hold perfectly on the two Producer Series discs fail outright on the Miroslav Vitous one, and a two-disc study would have written one of them down as fact.
+
+  The four EIII/ESI discs are byte-for-byte unchanged — 2 424, 1 189, 1 333 and 6 788 samples — which is the check that the shared record parser was not disturbed.
+
+### Fixed
+
+- **A folder table whose entries do not say `0xFFFF` is no longer discarded.** `Producer Series Vol. 1 – Studio Essentials` writes flags `0x0013` and `0x0018` on its first two folder entries. The walk required `0xFFFF`, aborted on entry 0, found no folders at all and silently fell back to the single bank directory the header points at — **77 banks of the 230 that disc has**, with no error and a listing that looked complete. The folder table does not need the test: the header pointer already says what it is.
+- **Each folder's bank directory is bounded by the next folder's start block.** They sit two to six blocks apart on that disc, so an unbounded walk ran out of one directory and into the next, reporting the neighbour's banks a second time.
+
+### Known limits
+
+- **100 of `Studio Essentials`'s 230 banks list without extracting.** They have no confirmed sample directory, and carry a note saying so rather than being guessed at. That disc holds 901 `E4P1` presets and preset-only banks are the likely explanation — likely is not established, so it is not claimed.
+- **Loop points and root key are still absent from E-mu WAVs.** Eight fields in the 92-byte sample header are undecoded and some are very likely those. Decoding them changes the *shared* record parser and would alter every E-mu sample already extracted, so it is its own piece of work rather than a rider on this one.
+- **The E-mu sample record has no channel count.** The paired length fields at `+26`/`+30` and `+34`/`+50` look exactly like one — `+34 == 2 × (+30) − 90` on both EIII and E-IV — and measurement says otherwise: de-interleaving any of these payloads as stereo roughly doubles its sample-to-sample delta, the known-good `Piano E0` included. Everything is mono, and stereo pairs are joined by name as on every other format.
+
 ## 0.3.0 — 2026-08-20
 
 ### Added

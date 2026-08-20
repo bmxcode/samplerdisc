@@ -51,15 +51,18 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D9 | Red Book audio CD tracks → WAV | done |
 | D10 | A probe must confirm a file ([ADR-0012](adr/0012-a-probe-must-confirm-a-file.md)) | done |
 | D11 | MDX generations, the all-stored case, cue-less audio ([ADR-0013](adr/0013-cueless-audio-is-reported-not-guessed.md)) | done |
-| D12 | E-mu `EMU3` backend ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md), [ADR-0015](adr/0015-locate-banks-by-signature.md)) | done; E-IV lists only |
+| D12 | E-mu `EMU3` backend ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md), [ADR-0015](adr/0015-locate-banks-by-signature.md)) | done |
 | D13 | Roland `S770 MR25A` backend ([ADR-0016](adr/0016-the-s7xx-hierarchy-is-located-not-walked.md), [ADR-0017](adr/0017-the-stereo-side-marker-is-a-character-class.md), [ADR-0018](adr/0018-the-s7xx-sample-rate-is-measured.md)) | done |
+| D14 | E-mu Emulator IV bank extraction ([ADR-0020](adr/0020-read-e-iv-through-its-sample-directory.md)) | done |
 
 Across the local collection: 39 of 49 discs, 28 712 samples, 2 864 stereo pairs, 161 audio tracks, 20 skipped entries, 30 s.
 
 ## What is not done
 
 - **Roland S-550.** `Roland LCD1.iso`/`.nrg` opens `* ROLAND S-550 *` and is a different format from the S-7xx entirely ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md)). Neither archive holds a second specimen, so it stays deferred rather than being reverse-engineered from one disc.
-- **E-mu, Ensoniq and Kurzweil backends.** The archives are full of these discs and the containers already open them; each needs a module in `fs/` and nothing else ([ADR-0003](adr/0003-brand-neutral-pluggable-backends.md)).
+- **Ensoniq and Kurzweil backends.** The archives are full of these discs and the containers already open them; each needs a module in `fs/` and nothing else ([ADR-0003](adr/0003-brand-neutral-pluggable-backends.md)).
+- **Loop points and root key for E-mu.** The 92-byte sample header has eight undecoded fields (`+18`, `+24`, `+28`, `+32`, `+36`, `+40`, `+44`, `+48`); some are very likely loop points and root key. [ADR-0011](adr/0011-the-deliverable-is-daw-ready-wav.md) wants them in the WAV `smpl` chunk and the E-mu path writes none. Deferred rather than done because it changes the *shared* record parser and would alter every E-mu sample already extracted.
+- **`E4P1` presets are not read.** The three E-IV discs carry 916, 901 and 284 of them. On `eiv-studio` 100 of 230 banks have no sample directory and are listed with a note; preset-only banks are the likely explanation, and it is not established.
 - **The `.mds` track table is unread.** One real pair now reads end to end, but geometry is sniffed from the `.mdf` rather than taken from the descriptor, so a multi-track or offset image would be read from byte 0. What the one specimen's descriptor holds is written down in [formats/mdx.md](formats/mdx.md) without being relied on.
 - **CUES chunks in NRG.** Only `CUEX` is parsed; `CUES` encodes position as MSF and no disc using it was available to check the layout against.
 - **AIFF payloads on ISO 9660 discs are copied, not converted.** They come out as `.aiff`.
