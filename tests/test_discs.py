@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import struct
+from functools import lru_cache
 from pathlib import Path
 
 import pytest
@@ -29,10 +30,12 @@ IMAGE_SUFFIXES = (".iso", ".img", ".mdx", ".nrg", ".bin", ".cdr", ".tao", ".mds"
 #: Discs known to carry a filesystem no backend reads. Naming them keeps the
 #: "claimed but empty" check below honest: without this, a backend that stopped
 #: recognising everything would pass it trivially.
-_EXPECT_NO_FILESYSTEM = (
-    "OMI Universe of Sounds Sonic Images Vol. 1 (SampleCell)",
-    "OMI Universe of Sounds Sonic Images Vol. 2 (SampleCell)",
-)
+#: Keyed by **size in bytes**. The name is a label for the test id; nothing
+#: looks a disc up by it. See _pinned_disc() for why.
+_EXPECT_NO_FILESYSTEM = {
+    "OMI Universe of Sounds Sonic Images Vol. 1 (SampleCell)": 295_833_600,
+    "OMI Universe of Sounds Sonic Images Vol. 2 (SampleCell)": 295_731_200,
+}
 
 
 def _collection() -> Path | None:
@@ -91,6 +94,61 @@ def test_the_collection_is_not_silently_empty() -> None:
         f"SAMPLERDISC_TEST_DISCS={root} contains no disc images at any depth "
         f"(looked for {', '.join(IMAGE_SUFFIXES)})"
     )
+
+
+def _pinned_sizes() -> set[int]:
+    """Every size any test below pins, across all three tables."""
+    return {
+        *_EXPECT_NO_FILESYSTEM.values(),
+        *(size for size, _ in _ROLAND_S7XX.values()),
+        *(size for size, _, _ in _ISO9660.values()),
+    }
+
+
+@lru_cache(maxsize=1)
+def _by_size() -> dict[int, tuple[Path, ...]]:
+    """The collection indexed by file size, built once per run."""
+    found: dict[int, list[Path]] = {}
+    for path in _discs():
+        found.setdefault(path.stat().st_size, []).append(path)
+    return {size: tuple(paths) for size, paths in found.items()}
+
+
+def _pinned_disc(label: str, size: int) -> Path:
+    """One pinned disc, found by size, or the right one of skip and fail.
+
+    **Size, not filename.** A filename is a label someone types and can retype;
+    a size is a property of the disc. These discs come off archive.org and
+    personal FTPs and get renamed on the shelf -- `BSBSSD2.bin` became
+    `Best Service - Brass Super Section (CD2).bin`, and because the lookup was
+    by stem its ISO 9660 test skipped from that moment on. That is half the
+    regression coverage for ADR-0019, silently off, in a green suite. It is the
+    same reasoning as ADR-0004 one layer out: identify a disc by what it *is*,
+    not by what someone called it.
+
+    **Skip and fail are different failures and must not be confused.** A
+    contributor with no discs has to skip -- their shelf is not ours, and that
+    is the whole premise of this module. A collection that resolves other
+    pinned discs but not this one is not that: it is a pin that has gone stale,
+    or a disc that was moved away, and skipping there is how the rename above
+    stayed invisible. So the test skips only when *nothing* pinned resolves.
+    """
+    matches = _by_size().get(size, ())
+    if len(matches) > 1:
+        # Sizes are distinct across all 79 images measured. Two files of
+        # exactly one size are far more likely a disc filed twice than a
+        # coincidence, and picking either would make the run order-dependent.
+        listed = ", ".join(str(p.name) for p in matches)
+        pytest.fail(f"{label}: {len(matches)} images are exactly {size} bytes: {listed}")
+    if matches:
+        return matches[0]
+    if _by_size().keys() & _pinned_sizes():
+        pytest.fail(
+            f"{label}: no image of exactly {size} bytes in this collection, but other "
+            f"pinned discs are here -- the disc was moved away, or it was re-ripped and "
+            f"the pin needs remeasuring. Skipping this would hide it."
+        )
+    pytest.skip(f"{label} not in this collection")
 
 
 def _ids(paths: list[Path]) -> list[str]:
@@ -152,22 +210,18 @@ def test_origin_resolution_is_deterministic(path: Path) -> None:
         assert (first.offset, first.backend.name) == (second.offset, second.backend.name)
 
 
-@pytest.mark.parametrize("stem", _EXPECT_NO_FILESYSTEM)
-def test_known_unreadable_discs_are_not_claimed(stem: str) -> None:
+@pytest.mark.parametrize("label", sorted(_EXPECT_NO_FILESYSTEM))
+def test_known_unreadable_discs_are_not_claimed(label: str) -> None:
     """The discs that provoked ADR-0012, pinned by name where they are present.
 
     Both carry a filesystem this project does not read -- ``EMU3`` and
     Digidesign SampleCell's ``ER`` -- and both were reported as AKAI at a
     confident, wrong offset before the probe asked whether a volume held a file.
     """
-    root = _collection()
-    assert root is not None
-    matches = [p for p in _discs() if p.stem == stem]
-    if not matches:
-        pytest.skip(f"{stem} not in this collection")
-    with open_image(matches[0]) as image:
+    path = _pinned_disc(label, _EXPECT_NO_FILESYSTEM[label])
+    with open_image(path) as image:
         origin = find_origin(image)
-    assert origin is None, f"{stem} was claimed by {origin.backend.name if origin else '?'}"
+    assert origin is None, f"{label} was claimed by {origin.backend.name if origin else '?'}"
 
 
 def _mds_pairs() -> list[Path]:
@@ -206,24 +260,23 @@ def test_a_split_mds_routes_to_its_mdf_and_not_to_the_mdx_parser(path: Path) -> 
 #: and the counts are the strongest available check on the walk: they are read
 #: from the header, so a backend that stops early or runs long disagrees with
 #: the disc's own arithmetic rather than with a number someone wrote down.
+#: ``label: (size in bytes, samples)``.
 _ROLAND_S7XX = {
-    "Roland - LCDP05 Solo Strings": 890,
-    "Edirol - Brass Section vol.1 - Solos (Roland Sxx CD-ROM)": 1016,
-    "NorthStar - Global Instruments - Volume 1 (S7xx)": 1284,
-    "AMG - Now CD-ROM (Roland)": 1230,
-    "Roland - L-CDX-01 - Rhythm Section Instruments (Roland Sxx CD-ROM)": 1972,
+    "Roland - LCDP05 Solo Strings": (130_344_960, 890),
+    "Edirol - Brass Section vol.1 - Solos (Roland Sxx CD-ROM)": (162_271_232, 1016),
+    "NorthStar - Global Instruments - Volume 1 (S7xx)": (296_032_256, 1284),
+    "AMG - Now CD-ROM (Roland)": (681_140_224, 1230),
+    "Roland - L-CDX-01 - Rhythm Section Instruments (Roland Sxx CD-ROM)": (629_149_696, 1972),
 }
 
 
-@pytest.mark.parametrize("stem", sorted(_ROLAND_S7XX))
-def test_roland_s7xx_discs_resolve_and_list_their_declared_samples(stem: str) -> None:
-    """Pinned where present, skipped where not -- a contributor's shelf is not ours."""
-    matches = [p for p in _discs() if p.stem == stem]
-    if not matches:
-        pytest.skip(f"{stem} not in this collection")
-    with open_image(matches[0]) as image:
+@pytest.mark.parametrize("label", sorted(_ROLAND_S7XX))
+def test_roland_s7xx_discs_resolve_and_list_their_declared_samples(label: str) -> None:
+    """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
+    size, expected = _ROLAND_S7XX[label]
+    with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
-        assert origin is not None, f"{stem}: no filesystem found"
+        assert origin is not None, f"{label}: no filesystem found"
         assert origin.backend.name == "roland_s7xx"
         assert origin.offset == 0
         volumes = list(origin.backend.volumes(image, origin.offset))
@@ -231,11 +284,11 @@ def test_roland_s7xx_discs_resolve_and_list_their_declared_samples(stem: str) ->
         assert len(volumes) == 1
         assert volumes[0].name.startswith("ID")
         samples = [f for f in volumes[0].files if f.kind == "sample"]
-        assert len(samples) == _ROLAND_S7XX[stem]
+        assert len(samples) == expected
 
 
-@pytest.mark.parametrize("stem", sorted(_ROLAND_S7XX))
-def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(stem: str) -> None:
+@pytest.mark.parametrize("label", sorted(_ROLAND_S7XX))
+def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(label: str) -> None:
     """The WAV data chunk is a copy, so the bytes must survive the round trip.
 
     Checked against a second, independent walk of the allocation table rather
@@ -243,12 +296,10 @@ def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(stem: str) -> None:
     than its first few entries -- the samples that broke during development
     were in the middle.
     """
-    matches = [p for p in _discs() if p.stem == stem]
-    if not matches:
-        pytest.skip(f"{stem} not in this collection")
+    path = _pinned_disc(label, _ROLAND_S7XX[label][0])
     from samplerdisc.fs import roland_s7xx as fs
 
-    with open_image(matches[0]) as image:
+    with open_image(path) as image:
         origin = find_origin(image)
         assert origin is not None
         volume = next(iter(origin.backend.volumes(image, origin.offset)))
@@ -273,30 +324,28 @@ def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(stem: str) -> None:
 #: ISO 9660 discs pinned by name, with the volume label and file count each
 #: must yield. Both carry Joliet, and Vintage Pro is why the backend now reads
 #: it (ADR-0019): its primary tree masters 1 061 files under 1 001 8.3 names.
+#: ``label: (size in bytes, volume label, files)``.
 _ISO9660 = {
-    "Digital Sound Factory - E-MU Vintage Pro": ("VintagePro", 1062),
-    "Best Service - Brass Super Section (CD2)": ("BSBSS", 2059),
+    "Digital Sound Factory - E-MU Vintage Pro": (45_558_240, "VintagePro", 1062),
+    "Best Service - Brass Super Section (CD2)": (539_584_080, "BSBSS", 2059),
 }
 
 
-@pytest.mark.parametrize("stem", sorted(_ISO9660))
-def test_iso9660_discs_list_every_file_under_a_distinct_path(stem: str) -> None:
+@pytest.mark.parametrize("label", sorted(_ISO9660))
+def test_iso9660_discs_list_every_file_under_a_distinct_path(label: str) -> None:
     """Distinctness is the assertion, not the count.
 
     A count alone passed throughout the bug: the walk always found all 1 062 of
     Vintage Pro's files, and 60 of them arrived wearing another file's name.
     """
-    matches = [p for p in _discs() if p.stem == stem]
-    if not matches:
-        pytest.skip(f"{stem} not in this collection")
-    label, count = _ISO9660[stem]
-    with open_image(matches[0]) as image:
+    size, volume_label, count = _ISO9660[label]
+    with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
-        assert origin is not None, f"{stem}: no filesystem found"
+        assert origin is not None, f"{label}: no filesystem found"
         assert origin.backend.name == "iso9660"
         volumes = list(origin.backend.volumes(image, origin.offset))
         assert len(volumes) == 1
-        assert volumes[0].name == label
+        assert volumes[0].name == volume_label
         names = [f.name for f in volumes[0].files]
         assert len(names) == count
         assert len(set(names)) == count
