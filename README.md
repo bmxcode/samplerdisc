@@ -69,16 +69,16 @@ Compressed `.mdx` is the piece no other open-source tool reads today. The format
 
 ## Tested against
 
-49 disc images from two archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds) and [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds). Seventeen compressed `.mdx`, twenty flat `.iso`/`.bin`, five raw CD images, three `.nrg`, two audio CDs.
+79 disc images from two archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds) and [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds). Fifty-two flat `.iso`/`.bin`, seventeen compressed `.mdx`, five raw CD images, two `.nrg`, one `.mds`/`.mdf` pair, two audio CDs.
 
 | | |
 |---|---|
-| Discs converted | 39 of 49 |
-| Samples | 28 712 |
-| Stereo pairs rejoined | 2 864 |
+| Discs converted | 69 of 79 |
+| Samples | 47 742 |
+| Stereo pairs rejoined | 4 422 |
 | Audio CD tracks | 161 |
 | Entries skipped (damage) | 20 |
-| Time | 30 s |
+| Time | 31 s |
 
 Every extracted WAV was checked against the bytes on the disc it came from — **all 22 320 are byte-identical**, none unreadable, none zero-length. Ten are silent for their whole length and are meant to be: they are named `Dead Air`, on a Proteus library that ships silence as a sample.
 
@@ -86,7 +86,9 @@ Sample rates run from 6 000 to 48 000 Hz across 908 distinct values. The odd one
 
 The ten that do not convert are accounted for: one S-550 disc present as both `.iso` and `.nrg` — a different format from the S-7xx and not yet read ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)) — two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, three Emulator IV discs that list their banks but do not extract them, and one ISO 9660 disc holding E-mu `.EBL` banks rather than audio.
 
-The five Roland S-7xx discs contribute **6 392 samples and 1 341 stereo pairs, with nothing skipped**. Every one of those payloads was checked against the bytes on its disc by content rather than by filename, and all 6 392 match.
+Every WAV was checked against the disc it came from — **67 of 67 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 40 244 payloads, zero mismatches.
+
+The five Roland S-7xx discs contribute **6 392 samples and 1 341 stereo pairs, with nothing skipped**.
 
 ## What doesn't work yet
 
