@@ -1,22 +1,28 @@
 """Disc in, WAV files out.
 
-The deliverable is uncompressed WAV that works anywhere (ADR-0011): audio is
-copied, never converted, and what the disc knows about a sample -- root key,
+The deliverable is uncompressed WAV that works anywhere (ADR-0011): sample
+values are never altered, and what the disc knows about a sample -- root key,
 tuning -- rides along in the WAV's own smpl chunk.
+
+Sampler payloads are copied into the data chunk unchanged. AIFF is the single
+exception, and only in byte order: its samples are big-endian and a WAV's are
+little-endian, so the bytes within each sample are reversed and the values are
+left alone (ADR-0024).
 """
 
 from __future__ import annotations
 
+import hashlib
 import os
 import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from samplerdisc.fs.base import original_suffix
-from samplerdisc.sample import NotASample
+from samplerdisc.sample import NotASample, aiff
 from samplerdisc.sample.akai import parse
 from samplerdisc.stereo import find_pairs, interleave
-from samplerdisc.wav import Loop, write_wav
+from samplerdisc.wav import LOOP_FORWARD, Loop, read_header, write_wav
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -41,9 +47,6 @@ class _Pairable(Protocol):
 
 
 _UNSAFE = re.compile(r"[^A-Za-z0-9 ._+#-]")
-
-#: Kinds that are already audio files and need copying, not decoding.
-_AUDIO_FILE_KINDS = frozenset({"wav", "aiff"})
 
 #: Kinds --keep-originals writes out verbatim. Programs are here because they
 #: carry the key ranges and envelopes, which the WAVs cannot: dropping them
@@ -97,6 +100,11 @@ class Skipped:
     name: str
     reason: str
     partition: int = 0
+    #: True where the entry was read and understood and deliberately not
+    #: written -- its audio is already out under another name. Damage and a
+    #: duplicate are both "skipped" and they are not the same news, so the
+    #: summary must be able to tell them apart (ADR-0024).
+    duplicate: bool = False
 
 
 @dataclass
@@ -139,6 +147,11 @@ def extract_volume(
     made = False
     originals_made = False
     parsed: dict[str, _Pairable] = {}
+    #: sha256 of each WAV payload written, against the name it was written
+    #: from and whether it carried a smpl chunk, so a duplicate can say which
+    #: file already holds the audio and whether it holds the metadata too.
+    written_audio: dict[bytes, tuple[str, bool]] = {}
+    deferred: list[File] = []
     for entry in volume.files:
         if keep_originals and entry.kind in _KEEP_KINDS:
             payload = backend.read_file(image, origin, entry)
@@ -148,8 +161,7 @@ def extract_volume(
                     originals_made = True
                 kept_path = unique_path(
                     os.path.join(out_dir, ORIGINALS_DIR),
-                    safe_name(entry.name),
-                    original_suffix(backend, entry),
+                    *_original_name(backend, entry),
                 )
                 with open(kept_path, "wb") as out:
                     out.write(payload)
@@ -160,13 +172,23 @@ def extract_volume(
                     kind=entry.kind,
                     partition=volume.partition,
                 )
-        if entry.kind in _AUDIO_FILE_KINDS:
-            # Already an audio file -- an ISO 9660 disc whose payload is plain
-            # WAV or AIFF. Copy it out untouched; there is nothing to decode.
+        if entry.kind == "aiff":
+            # Held back until the WAVs of this volume have been written, so a
+            # twin can be recognised. Not stylistic: the AIFF tree sorts ahead
+            # of the WAV tree on every ProSamples disc, so a forward pass meets
+            # the AIFF with nothing yet to compare it against (ADR-0024).
+            deferred.append(entry)
+            continue
+        if entry.kind == "wav":
+            # Already a WAV -- an ISO 9660 disc whose payload is plain audio.
+            # Copied untouched: it is the publisher's own file and carries the
+            # smpl, acid and LIST chunks we would otherwise have to rebuild.
             if not made:
                 os.makedirs(out_dir, exist_ok=True)
                 made = True
-            result = _copy_audio(image, backend, origin, volume, entry, out_dir)
+            result, digest, has_smpl = _copy_wav(image, backend, origin, volume, entry, out_dir)
+            if digest is not None:
+                written_audio.setdefault(digest, (entry.name, has_smpl))
             yield result
             continue
         if entry.kind != "sample":
@@ -214,6 +236,12 @@ def extract_volume(
             pitch=pitch if pitch is not None else 0,
             partition=volume.partition,
         )
+
+    for entry in deferred:
+        if not made:
+            os.makedirs(out_dir, exist_ok=True)
+            made = True
+        yield _convert_aiff(image, backend, origin, volume, entry, out_dir, written_audio)
 
     if join_stereo:
         yield from _join_pairs(volume, parsed, out_dir)
@@ -283,31 +311,138 @@ def _wav_loops(sample) -> list[Loop]:
     A sample format with no loop information yields none, rather than an
     invented one.
     """
-    return [Loop(start=loop.start, end=loop.end - 1) for loop in getattr(sample, "loops", ())]
+    return [
+        Loop(
+            start=loop.start,
+            end=loop.end - 1,
+            loop_type=getattr(loop, "loop_type", LOOP_FORWARD),
+        )
+        for loop in getattr(sample, "loops", ())
+    ]
 
 
-def _copy_audio(
+def _original_name(backend: Backend, entry: File) -> tuple[str, str]:
+    """Stem and suffix for one file kept verbatim.
+
+    A sampler filesystem has names and a type byte, so the suffix is supplied
+    and appended. ISO 9660 has real filenames that already carry it, and
+    appending it again gives ``BONGOS M.exs.exs``.
+    """
+    suffix = original_suffix(backend, entry)
+    name = entry.name
+    if suffix and name.lower().endswith(suffix.lower()):
+        name = name[: -len(suffix)]
+    return safe_name(name), suffix
+
+
+def _copy_wav(
     image: SectorImage,
     backend: Backend,
     origin: int,
     volume: Volume,
     entry: File,
     out_dir: str,
-) -> Extracted | Skipped:
+) -> tuple[Extracted | Skipped, bytes | None, bool]:
+    """Write one already-WAV payload out untouched.
+
+    Returns the record and a digest of the audio it holds, so the AIFF pass can
+    recognise the same sound arriving a second time. The digest covers the data
+    chunk alone, not the file: the two trees of a ProSamples disc differ in
+    their metadata chunks and agree on every audio byte.
+    """
     payload = backend.read_file(image, origin, entry)
     if not payload:
-        return Skipped(volume.name, entry.name, "no data on disc", volume.partition)
+        return Skipped(volume.name, entry.name, "no data on disc", volume.partition), None, False
     stem, suffix = os.path.splitext(os.path.basename(entry.name))
     path = unique_path(out_dir, safe_name(stem), suffix.lower() or ".wav")
     with open(path, "wb") as out:
         out.write(payload)
+    header = read_header(payload)
+    digest = None
+    if header is not None:
+        digest = hashlib.sha256(payload[header.offset : header.offset + header.length]).digest()
+    return (
+        Extracted(
+            volume=volume.name,
+            name=entry.name,
+            path=path,
+            # A payload whose header will not parse is still written -- it is
+            # the disc's own bytes -- but it cannot be described, and zero is
+            # the honest answer rather than a guess.
+            rate=header.rate if header else 0,
+            frames=header.frames if header else 0,
+            pitch=0,
+            partition=volume.partition,
+        ),
+        digest,
+        bool(header and header.has_smpl),
+    )
+
+
+def _convert_aiff(
+    image: SectorImage,
+    backend: Backend,
+    origin: int,
+    volume: Volume,
+    entry: File,
+    out_dir: str,
+    written_audio: dict[bytes, str],
+) -> Extracted | Skipped:
+    """Write one AIFF payload as a WAV, unless its audio is already out.
+
+    Best Service mastered these discs with a full AIFF tree beside a full WAV
+    tree of the same sounds, so converting both writes every sample twice for
+    no extra audio. The twin is recognised by its PCM and not by its name:
+    vol.43 carries pairs that share a name and differ by eleven frames, and
+    those are two different sounds (ADR-0024).
+    """
+    payload = backend.read_file(image, origin, entry)
+    if not payload:
+        return Skipped(volume.name, entry.name, "no data on disc", volume.partition)
+    try:
+        sample = aiff.parse(payload, fallback_name=os.path.basename(entry.name))
+    except NotASample as exc:
+        return Skipped(volume.name, entry.name, str(exc), volume.partition)
+    if sample.frames == 0:
+        return Skipped(volume.name, entry.name, "zero-length sample", volume.partition)
+
+    twin = written_audio.get(hashlib.sha256(sample.pcm).digest())
+    if twin is not None:
+        twin_name, twin_has_smpl = twin
+        # Same audio is not the same file. On 314 of these pairs the AIFF
+        # carries a root key and a loop the WAV has nowhere to put, so
+        # dropping it for having identical audio would drop the metadata with
+        # it -- and where both carry it they agree exactly, checked on 173
+        # pairs against the publisher's own smpl chunk (ADR-0024).
+        if twin_has_smpl or (sample.pitch is None and not sample.loops):
+            return Skipped(
+                volume.name,
+                entry.name,
+                f"same audio as {twin_name}, already written",
+                volume.partition,
+                duplicate=True,
+            )
+
+    stem, _ = os.path.splitext(os.path.basename(entry.name))
+    path = unique_path(out_dir, safe_name(stem))
+    write_wav(
+        path,
+        sample.pcm,
+        rate=sample.rate,
+        channels=sample.channels,
+        sample_width=sample.width,
+        midi_note=sample.pitch,
+        cents=sample.cents,
+        loops=_wav_loops(sample),
+        name=sample.name,
+    )
     return Extracted(
         volume=volume.name,
         name=entry.name,
         path=path,
-        rate=0,
-        frames=0,
-        pitch=0,
+        rate=sample.rate,
+        frames=sample.frames,
+        pitch=sample.pitch if sample.pitch is not None else 0,
         partition=volume.partition,
     )
 

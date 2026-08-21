@@ -55,6 +55,7 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D13 | Roland `S770 MR25A` backend ([ADR-0016](adr/0016-the-s7xx-hierarchy-is-located-not-walked.md), [ADR-0017](adr/0017-the-stereo-side-marker-is-a-character-class.md), [ADR-0018](adr/0018-the-s7xx-sample-rate-is-measured.md)) | done |
 | D14 | E-mu Emulator IV bank extraction ([ADR-0020](adr/0020-read-e-iv-through-its-sample-directory.md)) | done |
 | D15 | Every partition of an AKAI disc, from the table it declares ([ADR-0023](adr/0023-partitions-come-from-the-table-the-disc-declares.md)) | done |
+| D16 | AIFF payloads converted, deduplicated against their WAV twin, and EXS24/HALion instruments kept ([ADR-0024](adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)) | done |
 
 Across the local collection, by listing: 71 of 79 images claimed, 2 578 volumes, 110 989 files, 77 620 of them samples. The AKAI discs are 44 of those images and 68 997 of those files, read across 276 partitions — before D15 they were 14 670 files, because only the partition at the origin was read.
 
@@ -66,4 +67,6 @@ Across the local collection, by listing: 71 of 79 images claimed, 2 578 volumes,
 - **`E4P1` presets are not read.** The three E-IV discs carry 916, 901 and 284 of them. On `eiv-studio` 100 of 230 banks have no sample directory and are listed with a note; preset-only banks are the likely explanation, and it is not established.
 - **The `.mds` track table is unread.** One real pair now reads end to end, but geometry is sniffed from the `.mdf` rather than taken from the descriptor, so a multi-track or offset image would be read from byte 0. What the one specimen's descriptor holds is written down in [formats/mdx.md](formats/mdx.md) without being relied on.
 - **CUES chunks in NRG.** Only `CUEX` is parsed; `CUES` encodes position as MSF and no disc using it was available to check the layout against.
-- **AIFF payloads on ISO 9660 discs are copied, not converted.** They come out as `.aiff`.
+- **EXS24 and HALion instruments are kept, not read.** `--keep-originals` writes the `.exs` and `.fxp` files out byte for byte, because they hold the key ranges and envelopes a WAV cannot. Nothing parses them, and nothing should: turning them into a playable instrument is [ConvertWithMoss](https://github.com/git-moss/ConvertWithMoss)'s job ([ADR-0011](adr/0011-the-deliverable-is-daw-ready-wav.md)).
+- **AIFF-C is refused rather than read.** Its payload may be compressed, and compressed data written out as PCM opens, plays as noise and reports nothing wrong. No disc in the collection has one, so there is nothing to check a reader against ([ADR-0024](adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)).
+- **8-bit AIFF is refused.** AIFF stores 8-bit signed and WAV unsigned, so carrying one to the other changes every sample value rather than reordering its bytes. That is the line ADR-0024 draws; nothing in the collection is other than 16-bit.

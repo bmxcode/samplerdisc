@@ -65,6 +65,8 @@ The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM a
 
 **Filesystems** — AKAI S1000/S3000 family, E-mu `EMU3` (EIIIX, ESI-32/4000, Emulator IV), Roland `S770 MR25A` (S-770, S-750, S-760), and plain ISO 9660 for discs whose payload is already WAV or AIFF.
 
+**Audio payloads** — a WAV inside an ISO 9660 disc is copied out untouched. An AIFF is carried to WAV: its samples are big-endian and a WAV's are little-endian, so the bytes within each value are reversed and the values are left alone. Root key, tuning and loop points come across from the AIFF's `INST` and `MARK` chunks into the WAV's `smpl`.
+
 Compressed `.mdx` is the piece no other open-source tool reads today. The format is documented byte by byte in [docs/formats/mdx.md](docs/formats/mdx.md), along with [`.nrg`](docs/formats/nrg.md), [raw CD sectors](docs/formats/rawcd.md), the [AKAI](docs/formats/akai-fs.md), [E-mu](docs/formats/emu3.md) and [Roland S-7xx](docs/formats/roland-s7xx.md) filesystems, and [audio CDs](docs/formats/audio-cd.md).
 
 ## Tested against
@@ -90,6 +92,25 @@ Every WAV was checked against the disc it came from — **67 of 67 discs match e
 
 The five Roland S-7xx discs contribute **6 392 samples and 1 341 stereo pairs, with nothing skipped**.
 
+### Best Service ProSamples
+
+A third collection, [29 discs](https://archive.org/details/best-service-pro-samples-vol.-12-dance-vocals-akai-1-cd), added after the two above and measured separately. Sixteen are AKAI and thirteen are ISO 9660 discs holding plain audio.
+
+| | |
+|---|---|
+| Discs converted | 29 of 29 |
+| Samples | 21 435 |
+| Stereo pairs rejoined | 4 930 |
+| WAV files written | 26 365 |
+| Duplicate AIFF suppressed | 5 719 |
+| Entries skipped (damage) | 0 |
+
+Every one of the 26 365 files written back reads as a valid WAV with audio in it. The single entry not written that was not a duplicate is a stereo pair on `vol.20` whose two halves declare different rates — 44 033 against 44 100 — so the joiner refuses to fuse them and both mono halves are written instead.
+
+The thirteen ISO 9660 discs ship each sound twice, once as AIFF and once as WAV. 6 033 of the 7 498 AIFF hold audio that is already coming out as a WAV, and those are written once; the other 1 779 are converted, along with 314 whose AIFF carries a root key or a loop that its WAV twin does not. `vol.43` is the reason the check is on the audio and not the filename: its 1 386 AIFF all share a name with a WAV and **none of them share its audio**, being mastered a few frames longer ([ADR-0024](docs/adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)).
+
+These discs are also the only place in this project where the correct output is known independently. Where a sound exists as both, the publisher's own WAV says what the AIFF conversion should produce — including the loop convention the AIFF spec leaves open, settled on 195 pairs out of 195.
+
 ## What doesn't work yet
 
 - **Roland S-550, Ensoniq and Kurzweil filesystems.** `Roland LCD1.iso` opens `* ROLAND S-550 *`, which shares nothing with the S-7xx format ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)); neither archive holds a second specimen to check a backend against. The container layer opens all of these, so `export-iso` gets you the sectors meanwhile. Each backend is a self-contained module ([ADR-0003](docs/adr/0003-brand-neutral-pluggable-backends.md)), so adding one touches nothing else.
@@ -99,7 +120,8 @@ The five Roland S-7xx discs contribute **6 392 samples and 1 341 stereo pairs, w
 - **A `.mds`/`.mdf` pair is read, but its descriptor is not parsed.** One pair has now been through it end to end, and it reads the `.mdf` and sniffs its geometry rather than parsing the `.mds` — correct for a single-track data disc, which is what these are. A multi-track or offset image would be read from byte 0 and come out wrong; the track table is unread. Please open an issue if you have such a disc.
 - **`CUES` chunks in NRG** are not parsed; only `CUEX`. No disc using the older form was to hand to check the layout against.
 - **An audio CD with no cue sheet cannot be split into tracks.** `samplerdisc info` tells you when a disc's content looks like Red Book audio, and `extract --assume-audio-cd` writes the whole stream as one WAV, but the track boundaries live in a cue, not in the bytes.
-- **AIFF payloads on ISO 9660 discs are copied, not converted** — they come out as `.aiff`.
+- **AIFF-C, and 8-bit AIFF, are refused rather than read.** AIFF-C may be compressed, and compressed data written out as PCM plays as noise while reporting nothing wrong. 8-bit AIFF is signed where 8-bit WAV is unsigned, so carrying it would change every sample value rather than reorder its bytes — which is the one thing this tool does not do ([ADR-0024](docs/adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)).
+- **EXS24 and HALion instruments are kept, not read.** `--keep-originals` writes the `.exs` and `.fxp` files out byte for byte; turning them into a playable instrument is ConvertWithMoss's job.
 - **AKAI S900, floppy images and the DD partition.** Use [akaiutil](https://sourceforge.net/projects/akaiutil/).
 
 ## If a disc doesn't work

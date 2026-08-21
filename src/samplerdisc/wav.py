@@ -18,8 +18,9 @@ if TYPE_CHECKING:
 
 WAVE_FORMAT_PCM = 1
 
-#: smpl loop types (RIFF spec). 0 is a plain forward loop.
+#: smpl loop types (RIFF spec). 0 is a plain forward loop, 1 alternates.
 LOOP_FORWARD = 0
+LOOP_ALTERNATING = 1
 
 
 @dataclass(frozen=True)
@@ -27,6 +28,63 @@ class Loop:
     start: int  # in frames
     end: int  # in frames, inclusive per the RIFF spec
     loop_type: int = LOOP_FORWARD
+
+
+@dataclass(frozen=True)
+class Header:
+    """What a WAV declares about its audio, and where the audio sits."""
+
+    channels: int
+    rate: int
+    width: int  # bytes per sample
+    offset: int  # of the data chunk body, within the payload
+    length: int  # of the data chunk body, in bytes
+    #: Whether the file carries a smpl chunk -- root key and loop points. Used
+    #: to tell a WAV that already knows what the disc knows from one that does
+    #: not, when an AIFF of the same audio turns up (ADR-0024).
+    has_smpl: bool = False
+
+    @property
+    def frames(self) -> int:
+        block = self.channels * self.width
+        return self.length // block if block else 0
+
+
+def read_header(payload: bytes) -> Header | None:
+    """Read a WAV's fmt, data and smpl chunks, or None if it is not a WAV.
+
+    Needed because a WAV copied off an ISO 9660 disc is passed through
+    untouched, and a run that cannot say what rate it wrote is a run that
+    reported nothing. The chunks are walked rather than assumed at fixed
+    offsets: ten of the ProSamples WAVs put LIST or PAD ahead of data.
+
+    The walk runs to the end rather than stopping at ``data``, because smpl is
+    written after the audio as often as before it and stopping early would
+    report half the collection as carrying no root key.
+    """
+    if len(payload) < 12 or payload[:4] != b"RIFF" or payload[8:12] != b"WAVE":
+        return None
+    channels = rate = width = 0
+    data: tuple[int, int] | None = None
+    has_smpl = False
+    pos = 12
+    while pos + 8 <= len(payload):
+        tag = payload[pos : pos + 4]
+        size = struct.unpack_from("<I", payload, pos + 4)[0]
+        body_at = pos + 8
+        if tag == b"fmt " and size >= 16:
+            _, channels, rate, _, _, bits = struct.unpack_from("<HHIIHH", payload, body_at)
+            width = (bits + 7) // 8
+        elif tag == b"smpl":
+            has_smpl = True
+        elif tag == b"data" and data is None:
+            # Trust the disc over the header: a truncated rip declares the
+            # length it was mastered with and carries less.
+            data = (body_at, min(size, len(payload) - body_at))
+        pos = body_at + size + (size & 1)
+    if data is None or not channels or not width:
+        return None
+    return Header(channels, rate, width, data[0], data[1], has_smpl)
 
 
 def _chunk(tag: bytes, body: bytes) -> bytes:

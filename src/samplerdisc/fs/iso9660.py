@@ -13,11 +13,12 @@ disc are not even unique (ADR-0019). See docs/formats/iso9660.md.
 
 from __future__ import annotations
 
+import os
 import struct
 from typing import TYPE_CHECKING, NamedTuple
 
 from samplerdisc.container.base import SECTOR_SIZE
-from samplerdisc.fs.base import File, Volume, register
+from samplerdisc.fs.base import DEFAULT_ORIGINAL_SUFFIX, File, Volume, register
 
 if TYPE_CHECKING:
     from collections.abc import Iterator
@@ -205,6 +206,26 @@ class Iso9660Backend:
     def read_file(self, image: SectorImage, origin: int, entry: File) -> bytes:
         return image.read(origin + entry.start_block * SECTOR_SIZE, entry.size)
 
+    def original_suffix(self, entry: File) -> str:
+        """The file's own extension.
+
+        Unlike a sampler filesystem, this one has real filenames, so the
+        suffix is not inferred from a type byte -- it is already there. Without
+        this the default applies and every kept .exs lands in original/ named
+        .bin: the bytes survive and nothing will open them.
+        """
+        _, suffix = os.path.splitext(entry.name)
+        return suffix.lower() or DEFAULT_ORIGINAL_SUFFIX
+
+
+#: Instrument definitions: Logic's EXS24 (.exs) and Steinberg's HALion (.fxp,
+#: with .fxb for a whole bank). They are to one of these discs what a program
+#: is to an AKAI one -- the key ranges and envelopes, which a WAV cannot carry
+#: -- so they are kept for the same reason (ADR-0011), and they are the shape
+#: ConvertWithMoss reads. Calling them "program" puts them in a vocabulary
+#: --keep-originals already understands.
+_PROGRAM_SUFFIXES = (".exs", ".fxp", ".fxb")
+
 
 def _decode(raw: bytes, joliet: bool) -> str:
     """A directory record's name, from whichever name space it came.
@@ -237,6 +258,8 @@ def _classify(name: str) -> str:
         return "wav"
     if lower.endswith((".aif", ".aiff")):
         return "aiff"
+    if lower.endswith(_PROGRAM_SUFFIXES):
+        return "program"
     return "file"
 
 

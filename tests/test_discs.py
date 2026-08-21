@@ -22,6 +22,8 @@ from samplerdisc.container.base import SECTOR_SIZE
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.container.mdsmdf import find_mdf
 from samplerdisc.fs.probe import find_origin
+from samplerdisc.sample import aiff
+from samplerdisc.wav import read_header
 
 #: ``.mds`` and not ``.mdf``: the pair is reached through the descriptor, the
 #: member that is actually opened, so listing both would open the disc twice.
@@ -342,7 +344,25 @@ def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(label: str) -> None
 _ISO9660 = {
     "Digital Sound Factory - E-MU Vintage Pro": (45_558_240, "VintagePro", 1062),
     "Best Service - Brass Super Section (CD2)": (539_584_080, "BSBSS", 2059),
+    "Best Service ProSamples vol.42 - Session Instruments": (263_153_664, "PS_42", 1347),
+    "Best Service ProSamples vol.43 - Real Drum Kits": (414_228_480, "PS_43", 2801),
 }
+
+#: ProSamples discs carrying a full AIFF tree beside a full WAV tree of the
+#: same sounds. They are the only ground truth in this project for what a
+#: conversion should produce: the publisher shipped the answer (ADR-0024).
+#: ``label: (size in bytes, twins, pairs whose AIFF names a root key, pairs
+#: that carry a loop on both sides)``.
+_AIFF_TWINS = {
+    "Best Service ProSamples vol.42 - Session Instruments": (263_153_664, 423, 178, 175),
+    "Best Service ProSamples vol.45 - Techno ID": (433_889_280, 850, 20, 20),
+}
+
+#: The disc that says the twin trees are not always the same audio. vol.43
+#: ships 1 386 AIFF and 1 386 WAV under matching names and **not one pair
+#: shares its audio** -- the AIFF are mastered a few frames longer. Pinned
+#: because it is what makes deduplicating by name wrong (ADR-0024).
+_NO_TWINS = ("Best Service ProSamples vol.43 - Real Drum Kits", 414_228_480, 1386)
 
 
 @pytest.mark.parametrize("label", sorted(_ISO9660))
@@ -363,6 +383,140 @@ def test_iso9660_discs_list_every_file_under_a_distinct_path(label: str) -> None
         names = [f.name for f in volumes[0].files]
         assert len(names) == count
         assert len(set(names)) == count
+
+
+def _audio_index(backend, image, offset, files) -> tuple[dict, dict]:
+    """Every WAV on the disc indexed by its audio, split by whether it carries
+    a smpl chunk. Matching on audio and not on name is the point: the two trees
+    do not agree on their directory names."""
+    plain: dict[bytes, str] = {}
+    rich: dict[bytes, bytes] = {}
+    for entry in (f for f in files if f.kind == "wav"):
+        payload = backend.read_file(image, offset, entry)
+        header = read_header(payload)
+        if header is None:
+            continue
+        pcm = payload[header.offset : header.offset + header.length]
+        if header.has_smpl:
+            rich[pcm] = payload
+        else:
+            plain[pcm] = entry.name
+    return plain, rich
+
+
+@pytest.mark.parametrize("label", sorted(_AIFF_TWINS))
+def test_a_converted_aiff_matches_the_publishers_own_wav_of_the_same_sound(label: str) -> None:
+    """The disc is its own oracle.
+
+    Every other sample format here is checked against the bytes it came from,
+    which proves the payload was copied and says nothing about whether it was
+    understood. These discs carry each sound twice -- once as AIFF, once as WAV
+    -- so the publisher's WAV is an independent statement of what the AIFF
+    conversion should produce, down to the byte. Nothing else in this project
+    has that.
+    """
+    size, twins, _, _ = _AIFF_TWINS[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None, f"{label}: no filesystem found"
+        backend, offset = origin.backend, origin.offset
+        files = [f for v in backend.volumes(image, offset) for f in v.files]
+        plain, rich = _audio_index(backend, image, offset, files)
+
+        matched = 0
+        for entry in (f for f in files if f.kind == "aiff"):
+            sample = aiff.parse(backend.read_file(image, offset, entry))
+            if sample.pcm in plain or sample.pcm in rich:
+                matched += 1
+        assert matched == twins
+
+
+@pytest.mark.parametrize("label", sorted(_AIFF_TWINS))
+def test_an_aiff_agrees_with_the_smpl_chunk_of_its_wav_twin(label: str) -> None:
+    """What settled the loop-end convention, kept so it cannot drift.
+
+    An AIFF marks its loop with two MARK positions and the spec does not say
+    whether the frame at the second one is played. The WAV twin's smpl chunk
+    does say, and ours is right only if the end marker is exclusive -- which is
+    the convention ``SampleLoop`` already used everywhere else.
+
+    Asserted only where each side has something to say. Most of these AIFF
+    carry no INST at all, and a file with no root key must not be read as
+    claiming one (ADR-0011) -- so the count of pairs that *do* agree is pinned
+    too, or an INST that stopped parsing would pass this vacuously.
+    """
+    size, _, notes, loop_pairs = _AIFF_TWINS[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        backend, offset = origin.backend, origin.offset
+        files = [f for v in backend.volumes(image, offset) for f in v.files]
+        _, rich = _audio_index(backend, image, offset, files)
+
+        notes_seen = loops_seen = 0
+        for entry in (f for f in files if f.kind == "aiff"):
+            sample = aiff.parse(backend.read_file(image, offset, entry))
+            twin = rich.get(sample.pcm)
+            if twin is None:
+                continue
+            note, loops = _smpl(twin)
+            if sample.pitch is not None:
+                assert sample.pitch == note, entry.name
+                notes_seen += 1
+            if sample.loops and loops:
+                # The disc's own answer to the question the AIFF spec leaves
+                # open: our exclusive end, minus one, is the WAV's end.
+                assert (sample.loops[0].start, sample.loops[0].end - 1) == loops[0], entry.name
+                loops_seen += 1
+        assert (notes_seen, loops_seen) == (notes, loop_pairs)
+
+
+def test_a_disc_whose_twins_are_not_the_same_audio_keeps_both() -> None:
+    """vol.43's two trees agree on every name and on no single sound.
+
+    The AIFF are mastered a few frames longer than the WAVs -- 17 638 bytes
+    against 17 616 on ``43e-01chh01``. Deduplicating on the name would drop
+    1 386 files that are not duplicates of anything, which is why the dedupe
+    hashes the audio (ADR-0024).
+    """
+    label, size, aiff_count = _NO_TWINS
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        backend, offset = origin.backend, origin.offset
+        files = [f for v in backend.volumes(image, offset) for f in v.files]
+        plain, rich = _audio_index(backend, image, offset, files)
+
+        aiffs = [f for f in files if f.kind == "aiff"]
+        assert len(aiffs) == aiff_count
+        by_name = {f.name.rsplit("/", 1)[-1].rsplit(".", 1)[0] for f in aiffs}
+        wav_names = {f.name.rsplit("/", 1)[-1].rsplit(".", 1)[0] for f in files if f.kind == "wav"}
+        # Every AIFF has a same-named WAV ...
+        assert by_name <= wav_names
+        # ... and not one of them holds the same audio.
+        for entry in aiffs:
+            sample = aiff.parse(backend.read_file(image, offset, entry))
+            assert sample.pcm not in plain and sample.pcm not in rich, entry.name
+
+
+def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
+    """Root key and loop points from a WAV's own smpl chunk."""
+    pos = 12
+    while pos + 8 <= len(payload):
+        tag = payload[pos : pos + 4]
+        size = struct.unpack_from("<I", payload, pos + 4)[0]
+        if tag == b"smpl":
+            body = payload[pos + 8 : pos + 8 + size]
+            note = struct.unpack_from("<I", body, 12)[0]
+            count = struct.unpack_from("<I", body, 28)[0]
+            loops = [
+                struct.unpack_from("<II", body, 36 + index * 24 + 8)
+                for index in range(count)
+                if 36 + index * 24 + 24 <= len(body)
+            ]
+            return note, loops
+        pos += 8 + size + (size & 1)
+    return 0, []
 
 
 #: E-mu ``EMU3`` discs pinned by size, with the volumes and samples each must
