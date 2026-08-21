@@ -57,7 +57,7 @@ def test_originals_are_off_by_default(tmp_path):
     out = tmp_path / "out"
     results = list(extract_disc(disc(tmp_path, files), BACKEND, 0, str(out)))
     assert not any(isinstance(r, Kept) for r in results)
-    assert not (out / "VOL 1" / ORIGINALS_DIR).exists()
+    assert not (out / "partition-1" / "VOL 1" / ORIGINALS_DIR).exists()
 
 
 def test_samples_and_programs_are_both_kept(tmp_path):
@@ -68,7 +68,7 @@ def test_samples_and_programs_are_both_kept(tmp_path):
     kept = {r.name: r.kind for r in results if isinstance(r, Kept)}
     assert kept == {"KICK 1": "sample", "A PROGRAM": "program"}
 
-    originals = out / "VOL 1" / ORIGINALS_DIR
+    originals = out / "partition-1" / "VOL 1" / ORIGINALS_DIR
     assert (originals / "KICK 1.s1s").read_bytes() == sample
     assert (originals / "A PROGRAM.s1p").read_bytes() == program
 
@@ -77,7 +77,7 @@ def test_originals_sit_beside_the_wavs_not_among_them(tmp_path):
     files, _, _ = mixed()
     out = tmp_path / "out"
     list(extract_disc(disc(tmp_path, files), BACKEND, 0, str(out), keep_originals=True))
-    volume = out / "VOL 1"
+    volume = out / "partition-1" / "VOL 1"
     assert sorted(p.name for p in volume.iterdir()) == ["KICK 1.wav", ORIGINALS_DIR]
 
 
@@ -99,7 +99,7 @@ def test_a_kept_sample_still_parses(tmp_path):
     files, sample, _ = mixed()
     out = tmp_path / "out"
     list(extract_disc(disc(tmp_path, files), BACKEND, 0, str(out), keep_originals=True))
-    raw = (out / "VOL 1" / ORIGINALS_DIR / "KICK 1.s1s").read_bytes()
+    raw = (out / "partition-1" / "VOL 1" / ORIGINALS_DIR / "KICK 1.s1s").read_bytes()
     assert parse(raw).pcm == parse(sample).pcm
 
 
@@ -107,5 +107,5 @@ def test_s3000_type_bytes_produce_s3_suffixes(tmp_path):
     files, _, _ = mixed(sample_type=0xF3, program_type=0xF0)
     out = tmp_path / "out"
     list(extract_disc(disc(tmp_path, files), BACKEND, 0, str(out), keep_originals=True))
-    originals = out / "VOL 1" / ORIGINALS_DIR
+    originals = out / "partition-1" / "VOL 1" / ORIGINALS_DIR
     assert sorted(p.name for p in originals.iterdir()) == ["A PROGRAM.s3p", "KICK 1.s3s"]

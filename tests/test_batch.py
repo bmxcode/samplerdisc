@@ -46,7 +46,7 @@ def test_converts_a_disc_and_reports_what_it_did(tmp_path):
     assert report.filesystem == "akai"
     assert report.samples == 2
     assert {v["name"] for v in report.volumes} == {"VOL 1", "VOL 2"}
-    assert (tmp_path / "out" / "disc" / "VOL 1" / "KICK 1.wav").exists()
+    assert (tmp_path / "out" / "disc" / "partition-1" / "VOL 1" / "KICK 1.wav").exists()
 
 
 def test_an_unreadable_disc_becomes_a_report_not_an_exception(tmp_path):
@@ -72,8 +72,8 @@ def test_discs_land_in_separate_directories(tmp_path):
     (tmp_path / "two.iso").write_bytes(sample_disc_bytes())
     list(convert_tree(str(tmp_path), str(tmp_path / "out")))
     out = tmp_path / "out"
-    assert (out / "one" / "VOL 1" / "KICK 1.wav").exists()
-    assert (out / "two" / "VOL 1" / "KICK 1.wav").exists()
+    assert (out / "one" / "partition-1" / "VOL 1" / "KICK 1.wav").exists()
+    assert (out / "two" / "partition-1" / "VOL 1" / "KICK 1.wav").exists()
 
 
 def test_manifest_records_totals_and_failures(tmp_path):
@@ -103,4 +103,4 @@ def test_batch_can_keep_originals(tmp_path):
     (tmp_path / "d.iso").write_bytes(sample_disc_bytes())
     reports = list(convert_tree(str(tmp_path), str(tmp_path / "out"), keep_originals=True))
     assert reports[0].originals == 2
-    assert (tmp_path / "out" / "d" / "VOL 1" / "original" / "KICK 1.s1s").exists()
+    assert (tmp_path / "out" / "d" / "partition-1" / "VOL 1" / "original" / "KICK 1.s1s").exists()

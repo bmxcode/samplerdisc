@@ -33,20 +33,40 @@ def cmd_list(args: argparse.Namespace) -> int:
         if origin is None:
             print("no recognised filesystem -- try `samplerdisc export-iso`", file=sys.stderr)
             return 1
+        # How the disc is laid out, where the backend has something to say --
+        # for AKAI, how many partitions the disk declares against how many this
+        # image holds, which is how a short rip stops being a silent absence.
+        describe = getattr(origin.backend, "layout", None)
+        described = describe(image, origin.offset) if describe is not None else ""
+        if described:
+            print(described)
         volumes = 0
+        partitions = 0
         kinds: Counter[str] = Counter()
+        current = 0
         for volume in origin.backend.volumes(image, origin.offset):
             volumes += 1
+            if volume.partition and volume.partition != current:
+                current = volume.partition
+                partitions += 1
+                print(f"\npartition {volume.partition}")
+            # Volumes sit under their partition where there is one, because
+            # their names repeat across partitions (ADR-0023).
+            indent = "  " if volume.partition else ""
             note = f" -- {volume.note}" if volume.note else ""
-            print(f"{volume.name}  (block {volume.start_block}, {len(volume.files)} files){note}")
+            print(
+                f"{indent}{volume.name}  (block {volume.start_block}, "
+                f"{len(volume.files)} files){note}"
+            )
             for entry in volume.files:
                 kinds[entry.kind] += 1
                 if not args.volumes_only:
-                    print(f"    {entry.name:<14} {entry.kind:<8} {entry.size:>9} bytes")
+                    print(f"{indent}    {entry.name:<14} {entry.kind:<8} {entry.size:>9} bytes")
         # Kinds are the backend's vocabulary, not ours: AKAI says sample and
         # program, ISO 9660 says wav and aiff.
         breakdown = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
-        print(f"\n{volumes} volumes" + (f", {breakdown}" if breakdown else ""))
+        across = f" across {partitions} partitions" if partitions > 1 else ""
+        print(f"\n{volumes} volumes{across}" + (f", {breakdown}" if breakdown else ""))
     return 0
 
 

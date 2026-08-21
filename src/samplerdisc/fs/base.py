@@ -27,6 +27,16 @@ class File:
     #: The filesystem's own type byte, kept so a backend can name the original
     #: faithfully. 0 where the filesystem has no such concept.
     raw_type: int = 0
+    #: Byte offset, relative to the backend's origin, that ``start_block``
+    #: counts from. 0 where the filesystem has one block numbering for the
+    #: whole disc, which is every backend but AKAI.
+    #:
+    #: An AKAI disc is a *disk* of several partitions and a file's start block
+    #: is relative to the partition it lives in, so the same number means a
+    #: different place in each one. Keeping the number the directory declares
+    #: and carrying its base beside it is what lets a note or a chain check
+    #: still speak in the disc's own terms (ADR-0023).
+    origin: int = 0
     #: Whatever else the directory knew about this file, as ``(key, value)``
     #: pairs -- a tuple rather than a dict so ``File`` stays frozen and
     #: hashable.
@@ -53,6 +63,14 @@ class Volume:
     name: str
     start_block: int
     files: list[File] = field(default_factory=list)
+    #: Byte offset, relative to the backend's origin, that ``start_block``
+    #: counts from -- see ``File.origin``.
+    origin: int = 0
+    #: Which partition of the disc this volume came from, numbered from 1. 0
+    #: where the filesystem has no partitions. Volume names repeat across an
+    #: AKAI disc's partitions -- nearly every one has a ``VOLUME 001`` -- so
+    #: this is what keeps two of them apart in a listing and on disk.
+    partition: int = 0
     #: Why this volume has no files, when that is expected rather than wrong.
     #: A volume with no files and no note is the signature of a probe that
     #: matched something it should not have (ADR-0012), so the two cases must
@@ -92,6 +110,15 @@ class Backend(Protocol):
 
         Optional; ``DEFAULT_ORIGINAL_SUFFIX`` is used when a backend has no
         opinion.
+        """
+        ...
+
+    def layout(self, image: SectorImage, offset: int) -> str:
+        """One line describing how the disc is divided, or "".
+
+        Optional. A backend whose filesystem has structure above the volume --
+        AKAI's partitions -- says so here, so ``list`` can report it without
+        knowing what a partition is.
         """
         ...
 

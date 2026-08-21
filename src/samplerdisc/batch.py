@@ -88,14 +88,20 @@ def convert_disc(
             report.origin = origin.offset
 
             out_dir = os.path.join(out_root, safe_name(os.path.splitext(os.path.basename(path))[0]))
-            volumes: dict[str, dict[str, Any]] = {}
+            # Keyed by partition *and* name: nearly every partition of an AKAI
+            # disc has a "VOLUME 001", and keying by name alone reported nine
+            # volumes' samples as one entry (ADR-0023).
+            volumes: dict[tuple[int, str], dict[str, Any]] = {}
             results = extract_disc(
                 image, origin.backend, origin.offset, out_dir, join_stereo, keep_originals
             )
             for result in results:
                 if isinstance(result, Extracted):
                     report.samples += 1
-                    entry = volumes.setdefault(result.volume, {"name": result.volume, "samples": 0})
+                    entry = volumes.setdefault(
+                        (result.partition, result.volume),
+                        {"name": result.volume, "partition": result.partition, "samples": 0},
+                    )
                     entry["samples"] += 1
                 elif isinstance(result, Joined):
                     report.stereo_pairs += 1
@@ -103,7 +109,12 @@ def convert_disc(
                     report.originals += 1
                 elif isinstance(result, Skipped):
                     report.skipped.append(
-                        {"volume": result.volume, "name": result.name, "reason": result.reason}
+                        {
+                            "volume": result.volume,
+                            "partition": result.partition,
+                            "name": result.name,
+                            "reason": result.reason,
+                        }
                     )
             report.volumes = list(volumes.values())
     except (OSError, ValueError) as exc:

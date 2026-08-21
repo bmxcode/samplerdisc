@@ -54,8 +54,9 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D12 | E-mu `EMU3` backend ([ADR-0014](adr/0014-one-backend-per-on-disc-format.md), [ADR-0015](adr/0015-locate-banks-by-signature.md)) | done |
 | D13 | Roland `S770 MR25A` backend ([ADR-0016](adr/0016-the-s7xx-hierarchy-is-located-not-walked.md), [ADR-0017](adr/0017-the-stereo-side-marker-is-a-character-class.md), [ADR-0018](adr/0018-the-s7xx-sample-rate-is-measured.md)) | done |
 | D14 | E-mu Emulator IV bank extraction ([ADR-0020](adr/0020-read-e-iv-through-its-sample-directory.md)) | done |
+| D15 | Every partition of an AKAI disc, from the table it declares ([ADR-0023](adr/0023-partitions-come-from-the-table-the-disc-declares.md)) | done |
 
-Across the local collection: 39 of 49 discs, 28 712 samples, 2 864 stereo pairs, 161 audio tracks, 20 skipped entries, 30 s.
+Across the local collection, by listing: 71 of 79 images claimed, 2 578 volumes, 110 989 files, 77 620 of them samples. The AKAI discs are 44 of those images and 68 997 of those files, read across 276 partitions — before D15 they were 14 670 files, because only the partition at the origin was read.
 
 ## What is not done
 

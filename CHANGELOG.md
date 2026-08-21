@@ -6,6 +6,14 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 
 ### Added
 
+- **Every partition of an AKAI disc is read, not just the first.** An AKAI disc is a disk image — several partitions laid end to end — and the walk stopped at the one the origin resolved to. Across the 44 AKAI discs on the shelf that is the difference between **448 volumes and 14 670 files** and **2 154 volumes and 68 997 files**; the collection goes from 872 volumes and 56 662 files to **2 578 and 110 989**. `Loop Soup` alone goes from 7 volumes to 60. ([docs/formats/akai-fs.md](docs/formats/akai-fs.md), [ADR-0023](docs/adr/0023-partitions-come-from-the-table-the-disc-declares.md), [#22](https://github.com/bmxcode/samplerdisc/issues/22))
+
+  The partitions are not guessed at. The disk declares them, in a table at `0x4500` of the first partition: a count, that many sizes in blocks, then the disk's total. All 44 discs carry one and on all 44 the sizes sum to the total. A partition is read only where a header sits at the position the table gives and restates the size the table gave it.
+
+  Of the 44 174 samples this adds, **44 101 (99.83 %)** carry a payload header whose name matches the directory entry that placed them — the same rate as the partitions already being read. Partition 1's numbers do not move on any disc, and are pinned per disc so they cannot.
+
+- **`list` says how many partitions the disc declares and how many the image holds.** `Kickin' Lunatic Beats 2 CD1` declares eleven and holds one: that image is short of the disc it was made from, and the ten missing partitions were previously an absence with nothing to see. ([ADR-0023](docs/adr/0023-partitions-come-from-the-table-the-disc-declares.md))
+
 - **Emulator IV discs extract their samples.** All three E-IV discs in the reference collection previously listed their banks with correct names and yielded nothing; they now give **449, 2 822 and 828 samples**. E-IV banks carry no `EMULATOR` header — not one occurrence across 1.2 GB — and are reached through a chained `E3S1` sample directory instead, whose big-endian length is what sizes each sample. ([docs/formats/emu3.md](docs/formats/emu3.md), [ADR-0020](docs/adr/0020-read-e-iv-through-its-sample-directory.md))
 
   [ADR-0015](docs/adr/0015-locate-banks-by-signature.md) held this back deliberately and conditionally, on the grounds that one specimen cannot distinguish a format from that disc's quirks. Three discs from two publishers met the condition, and the third earned its place: two constants that hold perfectly on the two Producer Series discs fail outright on the Miroslav Vitous one, and a two-disc study would have written one of them down as fact.
@@ -15,6 +23,10 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 - **`protozoa`'s two Formula 4000 banks extract.** `Orbit Presets 4k` and `Phatt Presets 4K` open with `EMU SI-32 v3` where every other bank on that disc opens with `EMULATOR 3X`. Nothing recognised the signature, so neither was located — and an unlocated bank is not merely unread, it is also not a boundary, so the bank in front of each was handed its region too. They now give **535 and 239 samples** under their own names. ([docs/formats/emu3.md](docs/formats/emu3.md), [ADR-0021](docs/adr/0021-a-bank-owns-the-run-its-header-declares.md))
 
 - **The AKAI partition's block allocation map is read.** At `0x70A`, one u16 per block, as many as the partition declares at `0x00`. It is the disc's own record of what every block holds, and it is verified rather than merely plausible: a file's chain length and the size its directory entry declares come from two different structures, and across all 44 AKAI discs they agree for **14 607 of 14 607 files**, exactly. `tests/test_discs.py` asserts that per disc, so an AKAI image that starts decoding wrongly now has something to fail against instead of presenting as a disc with less on it. ([docs/formats/akai-fs.md](docs/formats/akai-fs.md), [ADR-0022](docs/adr/0022-a-volume-is-explained-by-the-allocation-map.md))
+
+### Changed
+
+- **AKAI samples extract under their partition**: `out/partition-1/VOLUME 001/…` where it was `out/VOLUME 001/…`, on every AKAI disc including single-partition ones. Volume names repeat across a disc's partitions — nearly every one has a `VOLUME 001` — so a flat layout put two libraries' audio in one directory under `_2` suffixes with nothing saying which was which. The batch manifest keys volumes by partition and name for the same reason. ([ADR-0023](docs/adr/0023-partitions-come-from-the-table-the-disc-declares.md))
 
 ### Fixed
 

@@ -23,11 +23,18 @@ Getting index 10 wrong is the classic failure and it is not obvious: `KICKIN B0-
 | Offset | Contents |
 |---|---|
 | `0x00` | u16 LE, **partition size in blocks** — 3840 to 7680 across the 44 discs measured |
-| `0x02` | 100 u16, one per volume slot; every disc holds the same ramp of 3333 per entry and nothing reads it |
+| `0x02` | 196 bytes of constant, `3333 × i` as u16 LE for i = 0…97. Byte-identical on every disc and every partition; nothing is known to read it |
+| `0xC6` | u16 LE, **the size at `0x00` plus 47573** — the header restating its own size |
+| `0xC8` | u16 LE, 47 on every header measured. Unexplained |
 | `0xCA` | **volume directory** — 100 entries of 16 bytes |
 | `0x70A` | **block allocation map** — one u16 per block, as many as `0x00` declares |
+| `0x4500` | **partition table** — the disk's own list of its partitions, in the first partition only |
 
-The size at `0x00` is what bounds the allocation map, and it is much smaller than the disc: a partition of 7680 blocks is 62.9 MB inside an image of 500 MB or more. A large disc carries **several partitions**, laid end to end — see *More than one partition* below.
+`0x02`, `0xC6` and `0xC8` all hold on all **276 partitions** of the 44 AKAI discs, and together they are what identifies a partition header. The two size fields matter most: a block count with no echo behind it is not a partition's, which is a firmer test than anything about the image's length.
+
+**The pattern at `0x02` is a rising sawtooth, and sample data reproduces it.** As 16-bit PCM, `3333 × i` is a saw wave, so audio does match it — 374 blocks of one disc's free space carry a complete header prefix, every one in a block the allocation map calls free. That is why a partition header is *confirmed* where the table says one is, and never scanned for ([ADR-0023](../adr/0023-partitions-come-from-the-table-the-disc-declares.md)).
+
+The size at `0x00` is what bounds the allocation map, and it is much smaller than the disc: a partition of 7680 blocks is 62.9 MB inside an image of 500 MB or more. A disc carries **several partitions** — see *More than one partition* below.
 
 Volume entry, 16 bytes:
 
@@ -67,7 +74,9 @@ At `0x70A`, immediately after the volume directory's hundred slots: **one u16 pe
 | `0x8000` | seen 14 times on one disc, never under a volume; unidentified |
 | `0xC000` | last block of a chain |
 
-A file's extent is the chain from its start block to `0xC000`. **That is what verifies the map rather than merely making it plausible**: the chain length and the file size are stated by two different structures, and across all 44 AKAI discs they agree for **14 607 of 14 607 files** — exactly, with no disc disagreeing anywhere.
+A file's extent is the chain from its start block to `0xC000`. **That is what verifies the map rather than merely making it plausible**: the chain length and the file size are stated by two different structures, and across all 44 AKAI discs they agree for **14 607 of 14 607 files** in the first partitions — exactly, with no disc disagreeing anywhere.
+
+Read across all 276 partitions the figure is **68 267 of 68 284**, and the seventeen exceptions are one thing rather than a scatter: every one is a `MULTI FILE` — type `m`, all on `AKAI.S3000.Sound.Library.1` — whose chain runs exactly one block past what its size needs. A multi appears to be allocated a spare block. It is the only kind that disagrees anywhere.
 
 The exclusion behind that figure is itself the finding. Five volumes sit on blocks the map calls free, and their files' chains are gone with them; four of those five hold 63 files that read perfectly. These are **deleted volumes**: the blocks went back to the free list, and because the medium is a mastered CD-ROM nothing ever reused them, so the directory and the audio are still there to be read. They are listed with their files like any other volume.
 
@@ -91,11 +100,26 @@ Note the asymmetry: a chain link is positive evidence that the slot was never us
 
 ## More than one partition
 
-Partitions are laid **end to end at multiples of the size declared at `0x00`**, and they hold real content. At block `size` on `Advance Orchestra` there is a second partition header — same 3333 ramp, its own volume directory, first volume `01 VA SUS F` — and another at `2 × size`. This holds across nearly every disc measured.
+An AKAI disc is a **disk image**: a disk of several partitions laid end to end, mastered onto a CD. `Advance Orchestra` declares 7680 blocks of an image of 66 616, and the rest is eight more partitions.
 
-**Only the first partition is read today**, so most of these discs list a fraction of what they hold. That is [issue #22](https://github.com/bmxcode/samplerdisc/issues/22) and not a small one: `Advance Orchestra` declares 7680 blocks of an image of 66 616.
+**The disk declares them.** At `0x4500` of the first partition — block 2, past the largest allocation map that fits in front of it — is the partition table:
 
-The tiling is also a usable integrity check on the image, and it is how the damage below was confirmed independently of anything inside partition 1.
+| Offset | Contents |
+|---|---|
+| `+0x00` | u8, the **number of partitions** |
+| `+0x01` | u8, 0 on 37 discs and 1 on the other 7. Unexplained |
+| `+0x02` | that many u16 LE **partition sizes**, in blocks, in order |
+| `+2n+2` | u16 LE, the **total blocks on the disk** |
+
+All 44 AKAI discs carry one, and on all 44 the sizes sum to the total. `Loop Soup` reads `09 00 | 1e00 ×8 | 0fff | ffff`: nine partitions, eight of 7680 blocks and a last one of 4095, totalling 65 535.
+
+That last entry is why the table is worth reading rather than multiplying the first size out. **The sizes are not all equal**: the final partition is a remainder, and the total never exceeded **65 535 blocks** — 512 MB, the ceiling u16 block numbers imply — across every disc measured. Tiling agrees with the table wherever both can be applied, but on `AKAI.S3000.Sound.Library.1` it invents a fourteenth partition at block 65 535 that the table does not declare and that holds nothing.
+
+A partition's own blocks are numbered from **its** start, so the same block number means a different place in each one, and a file read with the partition term dropped returns another partition's audio rather than an error.
+
+Where the image holds no header at a position the table declares, it is **skipped and not searched for**. On the discs where that happens the header turns up displaced by a whole number of the container's 32 KB blocks — the image is short of the disc it was made from, which is the fault below and not a filesystem to go hunting through.
+
+Across the 44 discs the table places 276 partitions holding **2 154 volumes and 68 997 files**, against the 448 volumes and 14 670 files of the first partitions alone.
 
 ## An image can be short
 
@@ -107,6 +131,26 @@ Two structures agree on the displacement and neither knows about the other:
 - **partition 2's header sits at block `size − 16`** rather than at `size`.
 
 131 072 bytes is exactly four MDX blocks, which is a quantity of the *container* and one the AKAI filesystem knows nothing about — that is what identifies the layer at fault. `CD2` of the same pair is short by one such block (its partition 2 is at `size − 4`), and its partition 1 happens to survive it intact.
+
+**The partition table turns that into a measurement anyone can repeat**, and it explains the three discs that looked like a different layout. Where a declared partition has no header at its declared position, searching the image finds one *earlier*, always by a whole number of 32 KB container blocks:
+
+| Disc | Declared | Present | Displacement, first to last |
+|---|---|---|---|
+| `AMG - Kickin' Lunatic Beats 2 CD2` | 9 | 1 | 4 blocks, on all eight |
+| `Best Service - Alpha Dance I` | 5 | 4 | 4 |
+| `AKAI.S3000.Sound.Library.5` | 9 | 3 | 8 … 36 |
+| `AMG - Global Trance Mission 2` | 9 | 4 | 8 … 32 |
+| `Audio Factory - Classical Wild Takes` | 11 | 6 | 16, on all five |
+| `AMG - Kickin' Lunatic Beats 2 CD1` | 11 | 1 | 16 … 336 |
+| `AKAI.S3000.Sound.Library.6` | 9 | 1 | 60 … 68 |
+| `Back In Time Rrcords - Elektra Vox` | 13 | 1 | 424 … 2888 |
+| `AKAI.S3000.Sound.Library.7` | 11 | 1 | 1456 … 7288 |
+
+Every displacement is a multiple of 4 blocks — 32 768 bytes, one MDX block — and every one of these images is `.mdx`. They also **accumulate**: `Elektra Vox` slips by 424 blocks, then another 64, then 156, and so on down the disc, which is what a rip losing blocks here and there looks like from inside the filesystem. These are not discs laid out differently; they are incomplete rips. Recovering their partitions would mean locating headers by search, which [ADR-0023](../adr/0023-partitions-come-from-the-table-the-disc-declares.md) declines to do and [issue #25](https://github.com/bmxcode/samplerdisc/issues/25) records.
+
+A missing partition is not always damage, and the two are distinguishable: on the ProSamples discs the declared partitions that are absent have **no header anywhere near** them, because the CD carries only the front of a larger disk or the mastering never wrote them. Displacement is the tell, not absence.
+
+A short image also shows up in the table's arithmetic alone: `Kickin' Lunatic Beats 2 CD1` declares eleven partitions where the image holds one, and `ProSamples vol.54` declares nine of a 63 488-block disk on a CD of 30 720 blocks — the second of those is not damage, it is a CD carrying only the front of a larger disk. Declared against present is worth printing for that reason: it names the gap without diagnosing it.
 
 The visible consequence inside partition 1 is not only the four empty volumes. **Nine files in `13-TRACK 06` extract audio that is not theirs**: their payload header no longer matches the name the directory gives them, because everything past the first gap has slid. A payload whose header disagrees with its directory entry is a cheap check that would catch this and is not made anywhere yet — [issue #23](https://github.com/bmxcode/samplerdisc/issues/23).
 
@@ -130,7 +174,7 @@ Three pieces of evidence settle it on the table above:
 
 An early hand decode of `black2black` using the other table produced `KICKIN B0-F1` — a full step out on every key range, and entirely believable. If a name looks *almost* right, suspect this table before suspecting the offsets.
 
-A partition caps at 512 MB, so a large disc carries several. Walk the partition table rather than assuming one partition at the origin.
+**512 MB is the disk, not the partition.** Block numbers are u16, so a disk cannot exceed 65 536 blocks, and none of the 44 discs declares a total above 65 535. A single *partition* runs 3840 to 7680 blocks, 31 to 63 MB, and cannot grow much past that while the table stays at its fixed `0x4500`: the allocation map of a 7680-block partition already ends at `0x430A`, 502 bytes short of it.
 
 ## What a probe must confirm
 

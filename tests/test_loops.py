@@ -78,7 +78,7 @@ def test_loop_is_written_to_the_smpl_chunk(tmp_path):
     image = disc_with(tmp_path, fixtures.akai_sample("PAD", words=1000, loop=(600, 950)))
     out = tmp_path / "out"
     list(extract_disc(image, BACKEND, 0, str(out)))
-    smpl = read_smpl(out / "VOL 1" / "PAD.wav")
+    smpl = read_smpl(out / "partition-1" / "VOL 1" / "PAD.wav")
     assert smpl is not None
     # RIFF loop ends are inclusive, AKAI's are exclusive.
     assert smpl["loops"] == [(600, 949)]
@@ -89,7 +89,7 @@ def test_loop_end_stays_inside_the_audio(tmp_path):
     image = disc_with(tmp_path, fixtures.akai_sample("PAD", words=500, loop=(100, 500)))
     out = tmp_path / "out"
     list(extract_disc(image, BACKEND, 0, str(out)))
-    path = out / "VOL 1" / "PAD.wav"
+    path = out / "partition-1" / "VOL 1" / "PAD.wav"
     with wave.open(str(path)) as w:
         frames = w.getnframes()
     start, end = read_smpl(path)["loops"][0]
@@ -108,13 +108,13 @@ def test_stereo_files_keep_the_loop(tmp_path):
     )
     out = tmp_path / "out"
     list(extract_disc(FlatImage(path), BACKEND, 0, str(out)))
-    assert read_smpl(out / "VOL 1" / "stereo" / "PAD.wav")["loops"] == [(600, 949)]
+    assert read_smpl(out / "partition-1" / "VOL 1" / "stereo" / "PAD.wav")["loops"] == [(600, 949)]
 
 
 def test_an_unlooped_sample_gets_a_root_key_but_no_loop(tmp_path):
     image = disc_with(tmp_path, fixtures.akai_sample("KICK", words=100, pitch=36), name="KICK")
     out = tmp_path / "out"
     list(extract_disc(image, BACKEND, 0, str(out)))
-    smpl = read_smpl(out / "VOL 1" / "KICK.wav")
+    smpl = read_smpl(out / "partition-1" / "VOL 1" / "KICK.wav")
     assert smpl["note"] == 36
     assert smpl["loops"] == []

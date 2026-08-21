@@ -209,8 +209,14 @@ def akai_partition(
         FAT_OFFSET,
         FAT_VOLUME_DIR,
         FILE_ENTRY_LEN,
+        HEADER_PATTERN,
+        HEADER_PATTERN_OFFSET,
+        HEADER_TAIL,
+        HEADER_TAIL_OFFSET,
         NAME_LEN,
         PARTITION_BLOCKS_OFFSET,
+        SIZE_ECHO_BIAS,
+        SIZE_ECHO_OFFSET,
         VOLUME_DIR_OFFSET,
         VOLUME_ENTRY_LEN,
         VOLUME_START_OFFSET,
@@ -265,6 +271,12 @@ def akai_partition(
     for block in phantom_directories:
         allocation[block] = FAT_VOLUME_DIR
 
+    # The constant field a real header carries, and the two fields that restate
+    # the block count. Together they are what says "a partition begins here",
+    # and the walk reads no partition past the first without them (ADR-0023).
+    header[HEADER_PATTERN_OFFSET : HEADER_PATTERN_OFFSET + len(HEADER_PATTERN)] = HEADER_PATTERN
+    struct.pack_into("<H", header, HEADER_TAIL_OFFSET, HEADER_TAIL)
+
     if allocation_map:
         # The map has to fit the header block, as it does on a real partition.
         # A slice assignment past the end would grow the bytearray rather than
@@ -273,10 +285,40 @@ def akai_partition(
             f"an allocation map for {blocks_total} blocks does not fit the header block"
         )
         struct.pack_into("<H", header, PARTITION_BLOCKS_OFFSET, blocks_total)
+        struct.pack_into("<H", header, SIZE_ECHO_OFFSET, (blocks_total + SIZE_ECHO_BIAS) & 0xFFFF)
         packed = struct.pack(f"<{blocks_total}H", *allocation)
         header[FAT_OFFSET : FAT_OFFSET + len(packed)] = packed
 
     image[0:BLOCK_SIZE] = header
+    return bytes(image)
+
+
+def akai_disc(partitions, *, declared=None, flag: int = 0) -> bytes:
+    """Lay partition images end to end and write the disk's partition table.
+
+    ``partitions`` are images from ``akai_partition``, in order; pass a run of
+    zero bytes for a partition the image does not hold. The table goes in the
+    first one, at the fixed offset a real disc keeps it, and declares each
+    partition's size in blocks followed by the disk total.
+
+    ``declared`` overrides the sizes written into the table. Declaring more
+    partitions than are present is how an image short of the disk it was made
+    from presents -- `Kickin' Lunatic Beats 2 CD1` declares eleven and holds
+    one -- and the sizes still have to sum to the total, as they do on all 44
+    discs measured.
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE, PARTITION_TABLE_OFFSET
+
+    sizes = [len(part) // BLOCK_SIZE for part in partitions]
+    listed = list(declared) if declared is not None else sizes
+    image = bytearray(b"".join(partitions))
+    table = bytearray([len(listed), flag])
+    table += struct.pack(f"<{len(listed)}H", *listed)
+    table += struct.pack("<H", sum(listed) & 0xFFFF)
+    assert PARTITION_TABLE_OFFSET + len(table) <= len(image), (
+        "the partition table does not fit in the first partition"
+    )
+    image[PARTITION_TABLE_OFFSET : PARTITION_TABLE_OFFSET + len(table)] = table
     return bytes(image)
 
 
