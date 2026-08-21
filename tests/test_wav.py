@@ -7,7 +7,7 @@ import wave
 
 import pytest
 
-from samplerdisc.wav import Loop, write_wav
+from samplerdisc.wav import DEFAULT_ROOT_KEY, Loop, write_wav
 
 
 def pcm(frames: int, channels: int = 1) -> bytes:
@@ -82,3 +82,26 @@ def test_odd_sampler_rates_survive(tmp_path, rate):
     write_wav(path, pcm(50), rate, midi_note=60)
     with wave.open(str(path)) as w:
         assert w.getframerate() == rate
+
+
+def test_a_loop_is_carried_even_where_the_disc_states_no_root_key(tmp_path):
+    """The smpl chunk's root key is mandatory, so carrying a loop means
+    writing one. 60 is the neutral value, not a claim (ADR-0025)."""
+    path = tmp_path / "loop.wav"
+    write_wav(
+        path, b"\x01\x00" * 1000, rate=22050, midi_note=None, loops=[Loop(start=100, end=899)]
+    )
+    raw = path.read_bytes()
+    at = raw.find(b"smpl")
+    assert at != -1
+    body = at + 8
+    assert struct.unpack_from("<I", raw, body + 12)[0] == DEFAULT_ROOT_KEY
+    assert struct.unpack_from("<I", raw, body + 28)[0] == 1
+    assert struct.unpack_from("<II", raw, body + 36 + 8) == (100, 899)
+
+
+def test_no_root_key_and_no_loop_writes_no_smpl_chunk(tmp_path):
+    """A format that knows neither writes a plain WAV, not an invented one."""
+    path = tmp_path / "plain.wav"
+    write_wav(path, b"\x01\x00" * 1000, rate=22050, midi_note=None, loops=[])
+    assert b"smpl" not in path.read_bytes()

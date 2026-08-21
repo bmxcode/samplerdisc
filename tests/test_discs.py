@@ -10,6 +10,7 @@ in ADR-0012.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import struct
 from functools import lru_cache
@@ -104,7 +105,7 @@ def _pinned_sizes() -> set[int]:
         *_EXPECT_NO_FILESYSTEM.values(),
         *(size for size, _ in _ROLAND_S7XX.values()),
         *(size for size, _, _ in _ISO9660.values()),
-        *(size for size, _, _ in _EMU3.values()),
+        *(size for size, _, _, _, _ in _EMU3.values()),
         *(size for size, _, _, _, _, _ in _AKAI.values()),
     }
 
@@ -527,21 +528,37 @@ def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
 #: Labelled by the short names docs/formats/emu3.md uses, which is what the
 #: measurements there are recorded against.
 #: ``label: (size in bytes, volumes, samples)``.
+#: ``label: (size in bytes, volumes, samples, samples carrying a loop, the
+#: SHA-256 of every sample payload on the disc, concatenated in walk order)``.
+#:
+#: The digest is the pin that matters most. D17 decoded the sample record's
+#: pointer block and taught the E-mu path to write a ``smpl`` chunk, which is
+#: **additive by construction**: nothing in it touches ``read_file`` or the
+#: offset arithmetic, and the digest is what says so rather than the diff. All
+#: seven were computed against the release before D17 and none of them moved.
+#:
+#: The loop counts are pinned as tightly as the sample counts, for the reason
+#: the noted-volume counts are on the AKAI table: a loop appearing where none
+#: was measured is a gate that has come loose, and one disappearing is the
+#: decode silently failing on a disc nobody looked at. `esi32-gm` yields the
+#: fewest by far -- 107 of 2 265 -- because that disc declares a loop end past
+#: the audio it carries on almost every record, and those are refused rather
+#: than clamped (ADR-0025).
 _EMU3 = {
-    "esi32-gm": (93_077_504, 10, 2265),
-    "protozoa": (131_690_496, 16, 5852),
-    "eiiix-1": (304_128_000, 46, 1189),
-    "eiiix-2": (304_435_200, 46, 1333),
-    "eiv-analogia": (293_912_576, 12, 449),
-    "eiv-studio": (399_077_376, 230, 2822),
-    "eiv-vitous": (532_443_136, 44, 828),
+    "esi32-gm": (93_077_504, 10, 2265, 107, "b7964228d84cfc50"),
+    "protozoa": (131_690_496, 16, 5852, 1689, "ac4b74a601955ca1"),
+    "eiiix-1": (304_128_000, 46, 1189, 1157, "c26ee8fb959b3f91"),
+    "eiiix-2": (304_435_200, 46, 1333, 1260, "2d5d002be060cc52"),
+    "eiv-analogia": (293_912_576, 12, 449, 449, "5d8faa38572914cb"),
+    "eiv-studio": (399_077_376, 230, 2822, 2551, "8802808655deea30"),
+    "eiv-vitous": (532_443_136, 44, 828, 826, "66c179be5b78cbd2"),
 }
 
 
 @pytest.mark.parametrize("label", sorted(_EMU3))
 def test_emu3_discs_list_their_banks_and_samples(label: str) -> None:
     """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
-    size, volumes_expected, samples_expected = _EMU3[label]
+    size, volumes_expected, samples_expected, _, _ = _EMU3[label]
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
         assert origin is not None, f"{label}: no filesystem found"
@@ -554,6 +571,44 @@ def test_emu3_discs_list_their_banks_and_samples(label: str) -> None:
         # above, tightened from "some volume explains itself" to "each one
         # does" -- which only a disc whose expected shape is known can ask.
         assert all(v.files or v.note for v in volumes), [v.name for v in volumes if not v.files]
+
+
+@pytest.mark.parametrize("label", sorted(_EMU3))
+def test_emu3_loops_are_decoded_without_disturbing_the_audio(label: str) -> None:
+    """The D17 invariant, both halves of it (ADR-0025).
+
+    The payload digest is the whole point: decoding the record's pointer block
+    must add a ``smpl`` chunk and change nothing else, and a table of sample
+    counts cannot see a payload that shifted by a byte while staying the same
+    length. Every loop must also lie inside the audio of its own sample --
+    that is the gate that separates a decoded loop from a clamped one.
+    """
+    size, _, samples_expected, loops_expected, digest_expected = _EMU3[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        digest = hashlib.sha256()
+        samples = looped = 0
+        for volume in origin.backend.volumes(image, origin.offset):
+            for entry in volume.samples():
+                samples += 1
+                payload = origin.backend.read_file(image, origin.offset, entry)
+                digest.update(payload)
+                sample = origin.backend.parse_sample(entry, payload)
+                # No root key is stated anywhere in the 92-byte record, on any
+                # of the seven discs. Inventing one is what ADR-0025 refuses.
+                assert sample.pitch is None
+                for loop in sample.loops:
+                    assert 0 <= loop.start < loop.end <= sample.frames, (
+                        f"{entry.name}: loop ({loop.start}, {loop.end}) is not "
+                        f"inside {sample.frames} frames"
+                    )
+                looped += bool(sample.loops)
+        assert samples == samples_expected
+        assert looped == loops_expected
+        assert digest.hexdigest()[:16] == digest_expected, (
+            f"{label}: sample payloads moved -- D17 must be additive"
+        )
 
 
 def test_protozoa_gives_each_bank_its_own_records() -> None:

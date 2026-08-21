@@ -22,6 +22,17 @@ WAVE_FORMAT_PCM = 1
 LOOP_FORWARD = 0
 LOOP_ALTERNATING = 1
 
+#: The root key written when the disc carries loop points and no root key.
+#: The smpl chunk has no way to say "this sample has no root key" -- the field
+#: is mandatory -- so carrying a loop at all means writing something here, and
+#: 60 is the neutral value: middle C, no transposition, what a sampler assumes
+#: when nothing tells it otherwise.
+#:
+#: It is a placeholder and not a finding. The E-mu sample record states no root
+#: key anywhere in its 92 bytes, and a WAV written this way is saying "here are
+#: the loop points" rather than "this sample is middle C" (ADR-0025).
+DEFAULT_ROOT_KEY = 60
+
 
 @dataclass(frozen=True)
 class Loop:
@@ -196,8 +207,16 @@ def write_wav(
     body = b"WAVE" + _fmt_chunk(channels, rate, sample_width)
     if name:
         body += _info_chunk(name)
-    if midi_note is not None:
-        body += _smpl_chunk(rate, midi_note, cents, loops or [])
+    # A loop is worth carrying even where the disc states no root key, so the
+    # chunk is written for either. E-mu is the format that needs this: it
+    # declares loop points in every sample record and a root key in none.
+    if midi_note is not None or loops:
+        body += _smpl_chunk(
+            rate,
+            midi_note if midi_note is not None else DEFAULT_ROOT_KEY,
+            cents,
+            loops or [],
+        )
     body += _chunk(b"data", pcm)
 
     with open(path, "wb") as out:

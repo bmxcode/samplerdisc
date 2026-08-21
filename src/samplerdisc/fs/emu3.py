@@ -107,12 +107,56 @@ OFF_BANK_SAMPLE_BYTES = 0x34
 #: Sample record, relative to its own start. A record begins two bytes before
 #: its name; those two bytes are zero on every record after the first.
 SAMPLE_NAME_OFFSET = 2
-OFF_SAMPLE_HEADER_LEN = 22
 OFF_SAMPLE_RECORD_LEN = 34
 OFF_SAMPLE_RATE = 54
 
+#: The eight-pointer block, and the reason the fields either side of it read as
+#: nonsense when sampled at four-byte strides from ``+18``. Every one is a
+#: **byte offset from the record's own start**, naming the first byte of a
+#: 16-bit word, and they come in (left, right) pairs -- the EIII is a
+#: stereo-capable sampler and writes a pointer per channel (ADR-0025).
+#:
+#: ``OFF_SAMPLE_START_L`` is the field this walk scans for. It reads 92 because
+#: the header is 92 bytes and the audio begins immediately after it, so the
+#: same value serves as the record signature and as the start pointer -- which
+#: is what it always was. It reads **0** on 542 of `studio`'s records and 146
+#: of `analogia`'s: those declare no left channel and put 92 at
+#: ``OFF_SAMPLE_START_R`` instead, which is a different value of a working
+#: field rather than a broken one.
+#:
+#: ``OFF_SAMPLE_END_R`` and ``OFF_SAMPLE_RECORD_LEN`` are one field under two
+#: names, and that also explains ``RECORD_LEN_BIAS``: the pointer names the
+#: first byte of the *last* word, so the record ends two bytes further on.
+OFF_SAMPLE_START_L = 22
+OFF_SAMPLE_START_R = 26
+OFF_SAMPLE_END_L = 30
+OFF_SAMPLE_END_R = 34
+OFF_SAMPLE_LOOP_START_L = 38
+OFF_SAMPLE_LOOP_START_R = 42
+OFF_SAMPLE_LOOP_END_L = 46
+OFF_SAMPLE_LOOP_END_R = 50
+
+#: The two channels' pointer sets, each as ``(start, end, loop start, loop
+#: end)``. The set whose start reads 92 is the one that describes the audio;
+#: the other is its mirror, or zeroed where the record declares one channel.
+POINTER_SETS = (
+    (OFF_SAMPLE_START_L, OFF_SAMPLE_END_L, OFF_SAMPLE_LOOP_START_L, OFF_SAMPLE_LOOP_END_L),
+    (OFF_SAMPLE_START_R, OFF_SAMPLE_END_R, OFF_SAMPLE_LOOP_START_R, OFF_SAMPLE_LOOP_END_R),
+)
+
+#: What the pointers are carried on the ``File`` as. The filesystem layer reads
+#: them and does not judge them; which set describes the audio, and whether the
+#: loop it names is usable, is decided in ``sample/emu3.py`` -- the same split
+#: Roland S-7xx uses, where the parameters also arrive beside the audio rather
+#: than in front of it.
+POINTER_KEYS = (
+    ("start_l", "end_l", "loop_start_l", "loop_end_l"),
+    ("start_r", "end_r", "loop_start_r", "loop_end_r"),
+)
+
 #: Records sit back to back and each declares its own length two short of the
-#: distance to the next, verified across a 12-record chain.
+#: distance to the next, verified across a 12-record chain. See the pointer
+#: block above for why two: ``+34`` addresses the last word, not past it.
 RECORD_LEN_BIAS = 2
 
 #: Every EIII/ESI sample header measured is this long. Treated as a validity
@@ -181,6 +225,28 @@ def is_plausible_name(raw: bytes) -> bool:
     return set(raw[len(text) :]) <= {0}
 
 
+def sample_pointers(head: bytes) -> tuple[tuple[str, int], ...]:
+    """The eight-pointer block off a record header, as ``File.meta`` pairs.
+
+    Read and carried, not judged: a pointer that is zero, odd or past the end
+    of the audio travels exactly as the disc wrote it, and ``sample/emu3.py``
+    decides what is usable. Keeping the reading here and the judgement there is
+    what stops a loop rule from having to be re-derived if a fourth E-mu
+    generation turns up with a ninth pointer.
+
+    Returns ``()`` for a header too short to hold the block, which is tail
+    damage: a record that was not fully read must not present as one that
+    declared nothing.
+    """
+    if len(head) < OFF_SAMPLE_LOOP_END_R + 4:
+        return ()
+    return tuple(
+        (key, struct.unpack_from("<I", head, offset)[0])
+        for keys, offsets in zip(POINTER_KEYS, POINTER_SETS, strict=True)
+        for key, offset in zip(keys, offsets, strict=True)
+    )
+
+
 class _Bank(NamedTuple):
     name: str
     folder: str
@@ -246,7 +312,7 @@ def _eiv_record_name(window: bytes) -> str | None:
     """The name of the sample record eight bytes into ``window``, if any.
 
     A record is confirmed by its own tag and its name, *not* by the header
-    length at ``OFF_SAMPLE_HEADER_LEN``. That field reads 92 on most E-IV
+    length at ``OFF_SAMPLE_START_L``. That field reads 92 on most E-IV
     records and 0 on 547 of `studio`'s, so requiring it drops a fifth of the
     disc -- and it is not needed, because the directory already says where the
     record is and what it is called.
@@ -632,6 +698,9 @@ class Emu3Backend:
                 size=size,
                 start_block=record + SAMPLE_HEADER_LEN,
                 raw_type=rate,
+                # The tag window already holds the record's header, so the
+                # pointers cost no extra read on either path.
+                meta=sample_pointers(window[EIV_RECORD_OFFSET:]),
             )
 
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
@@ -736,7 +805,7 @@ class Emu3Backend:
         window = image.read(offset + bank_at, max(limit - bank_at, 0))
         needle = struct.pack("<I", SAMPLE_HEADER_LEN)
         for match in re.finditer(re.escape(needle), window):
-            at = match.start() - OFF_SAMPLE_HEADER_LEN
+            at = match.start() - OFF_SAMPLE_START_L
             if not first <= at < last:
                 continue
             record = self._parse_record(window[at : at + SAMPLE_HEADER_LEN])
@@ -751,6 +820,7 @@ class Emu3Backend:
                 size=record_len - header_len,
                 start_block=bank_at + at + header_len,
                 raw_type=rate,
+                meta=sample_pointers(window[at : at + SAMPLE_HEADER_LEN]),
             )
 
     def _parse_record(self, head: bytes) -> tuple[str, int, int, int] | None:
@@ -760,7 +830,7 @@ class Emu3Backend:
         name = decode_name(raw)
         if not name:
             return None
-        (header_len,) = struct.unpack_from("<I", head, OFF_SAMPLE_HEADER_LEN)
+        (header_len,) = struct.unpack_from("<I", head, OFF_SAMPLE_START_L)
         (declared,) = struct.unpack_from("<I", head, OFF_SAMPLE_RECORD_LEN)
         (rate,) = struct.unpack_from("<I", head, OFF_SAMPLE_RATE)
         record_len = declared + RECORD_LEN_BIAS
@@ -774,10 +844,22 @@ class Emu3Backend:
         return image.read(offset + entry.start_block, entry.size)
 
     def parse_sample(self, entry: File, payload: bytes):
-        """The record's rate travelled on the File; the payload is already PCM."""
+        """The record's rate and pointers travelled on the File; the payload is
+        already PCM.
+
+        The 92 header bytes are in hand during the walk and gone by the time
+        the audio is read, so the loop pointers come across on the ``File``
+        rather than being parsed out of the payload -- the same route the
+        Roland parameters take, for the same reason.
+        """
         from samplerdisc.sample import emu3 as sample_emu3
 
-        return sample_emu3.parse(payload, rate=entry.raw_type, fallback_name=entry.name)
+        return sample_emu3.parse(
+            payload,
+            rate=entry.raw_type,
+            fallback_name=entry.name,
+            pointers={key: entry.get(key) for key in sum(POINTER_KEYS, ())} if entry.meta else {},
+        )
 
     def original_suffix(self, entry: File) -> str:
         return ".e3s" if entry.kind == "sample" else ".bin"
