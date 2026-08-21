@@ -30,7 +30,7 @@ Getting index 10 wrong is the classic failure and it is not obvious: `KICKIN B0-
 | `0x70A` | **block allocation map** — one u16 per block, as many as `0x00` declares |
 | `0x4500` | **partition table** — the disk's own list of its partitions, in the first partition only |
 
-`0x02`, `0xC6` and `0xC8` all hold on all **276 partitions** of the 44 AKAI discs, and together they are what identifies a partition header. The two size fields matter most: a block count with no echo behind it is not a partition's, which is a firmer test than anything about the image's length.
+`0x02`, `0xC6` and `0xC8` all hold on all **275 partitions** of the 44 AKAI discs, and together they are what identifies a partition header. The two size fields matter most: a block count with no echo behind it is not a partition's, which is a firmer test than anything about the image's length.
 
 **The pattern at `0x02` is a rising sawtooth, and sample data reproduces it.** As 16-bit PCM, `3333 × i` is a saw wave, so audio does match it — 374 blocks of one disc's free space carry a complete header prefix, every one in a block the allocation map calls free. That is why a partition header is *confirmed* where the table says one is, and never scanned for ([ADR-0023](../adr/0023-partitions-come-from-the-table-the-disc-declares.md)).
 
@@ -76,7 +76,7 @@ At `0x70A`, immediately after the volume directory's hundred slots: **one u16 pe
 
 A file's extent is the chain from its start block to `0xC000`. **That is what verifies the map rather than merely making it plausible**: the chain length and the file size are stated by two different structures, and across all 44 AKAI discs they agree for **14 607 of 14 607 files** in the first partitions — exactly, with no disc disagreeing anywhere.
 
-Read across all 276 partitions the figure is **68 267 of 68 284**, and the seventeen exceptions are one thing rather than a scatter: every one is a `MULTI FILE` — type `m`, all on `AKAI.S3000.Sound.Library.1` — whose chain runs exactly one block past what its size needs. A multi appears to be allocated a spare block. It is the only kind that disagrees anywhere.
+Read across all 275 partitions the figure is **68 267 of 68 284**, and the seventeen exceptions are one thing rather than a scatter: every one is a `MULTI FILE` — type `m`, all on `AKAI.S3000.Sound.Library.1` — whose chain runs exactly one block past what its size needs. A multi appears to be allocated a spare block. It is the only kind that disagrees anywhere.
 
 The exclusion behind that figure is itself the finding. Five volumes sit on blocks the map calls free, and their files' chains are gone with them; four of those five hold 63 files that read perfectly. These are **deleted volumes**: the blocks went back to the free list, and because the medium is a mastered CD-ROM nothing ever reused them, so the directory and the audio are still there to be read. They are listed with their files like any other volume.
 
@@ -119,7 +119,7 @@ A partition's own blocks are numbered from **its** start, so the same block numb
 
 Where the image holds no header at a position the table declares, it is **skipped and not searched for**. On the discs where that happens the header turns up displaced by a whole number of the container's 32 KB blocks — the image is short of the disc it was made from, which is the fault below and not a filesystem to go hunting through.
 
-Across the 44 discs the table places 276 partitions holding **2 154 volumes and 68 997 files**, against the 448 volumes and 14 670 files of the first partitions alone.
+Across the 44 discs the table declares 384 partitions and 275 are present in the images, holding **2 154 volumes and 68 997 files**, against the 448 volumes and 14 670 files of the first partitions alone.
 
 ## An image can be short
 

@@ -57,7 +57,7 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D15 | Every partition of an AKAI disc, from the table it declares ([ADR-0023](adr/0023-partitions-come-from-the-table-the-disc-declares.md)) | done |
 | D16 | AIFF payloads converted, deduplicated against their WAV twin, and EXS24/HALion instruments kept ([ADR-0024](adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)) | done |
 
-Across the local collection, by listing: 71 of 79 images claimed, 2 578 volumes, 110 989 files, 77 620 of them samples. The AKAI discs are 44 of those images and 68 997 of those files, read across 276 partitions — before D15 they were 14 670 files, because only the partition at the origin was read.
+Across the local collection, by listing: 71 of 79 images claimed, 2 578 volumes, 110 989 files, 77 620 of them samples. The AKAI discs are 44 of those images and 68 997 of those files, read across 275 partitions — before D15 they were 14 670 files, because only the partition at the origin was read.
 
 ## What is not done
 
