@@ -80,7 +80,7 @@ The inverse error — a record that is stereo and declares one channel — was l
 
 ## Consequences
 
-**Good.** 2 656 of the 14 738 E-mu samples come out as the sound they are: 28, 8, 601, 592, 279, 320 and 828 across the seven discs. `eiv-vitous` is all of it — 828 of 828, an orchestral string library that was entirely double-length mono. Their durations halve to the true one, and the CLI's verbose line stops reporting twice the length.
+**Good.** 2 656 of the 14 738 E-mu samples come out as the sound they are: 28, 601, 592, 8, 279, 320 and 828 across the seven discs, in the order the tables above and in [formats/emu3.md](../formats/emu3.md) use. `eiv-vitous` is all of it — 828 of 828, an orchestral string library that was entirely double-length mono. Their durations halve to the true one, and the CLI's verbose line stops reporting twice the length.
 
 **Good, and asserted rather than claimed.** The per-disc payload SHA-256 does not move on any of the seven, because `read_file` is untouched and the audio written is a **permutation** of the same bytes — which the suite now checks directly by de-interleaving each stereo sample and comparing it to the two blocks the disc stored. The sample counts do not move either: one record is one sample, and only its channel count changed.
 
