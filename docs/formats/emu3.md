@@ -368,7 +368,7 @@ end_L + 2 == start_R
 
 **The third condition is not decoration.** 2 721 records across the seven discs satisfy the first two and **65 fail the third**: 19 on `protozoa`, 40 on `eiiix-1`, 6 on `eiiix-2`. They declare a left channel that overlaps the right block — `protozoa` writes `end_L` exactly 8 bytes past `start_R` on 18 records — or one that stops well short of it, as `eiiix-1`'s `LP Up Stroke` does at 24 766 bytes of a 36 402-byte half.
 
-Those 65 are not stereo, and `protozoa` says what they are instead: the second half of six of its trombone records is, byte for byte, a record belonging to another bank. It is the previous occupant of the region, the same thing [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md) is about, one layer further down.
+Those 65 are not stereo, and `protozoa` says what six of them are. `Trom B2`, `Trom E3` and `Trom A3` are each written in two banks, and in all six records the **first half is byte for byte the whole of a one-channel record of the same name** in `Vintage PresetsX` — 16 756 bytes of `Trom B2` against a 33 512-byte payload. Nothing on the disc matches the second half. The payload is twice the sound, so `start_R` lands on `start_L + P/2` by arithmetic rather than by declaration, and `end_L` is what gives it away: it closes the audio 8 bytes *past* the halfway point instead of on it.
 
 **2 656 records pass all three**, which is what this project writes as stereo:
 

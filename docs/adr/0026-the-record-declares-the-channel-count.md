@@ -44,7 +44,7 @@ Those 65 are not stereo, and the split has to reject them. The RMS envelope alon
 
 The positive control is the point. It is twelve records this pointer block knows nothing about, whose stereo-ness is established by an entirely separate mechanism, and the selected set scores with them while the 65 rejects score with two unrelated records.
 
-`protozoa` is the disc to look at. Six of its rejects are trombone samples whose second half is, byte for byte, a record from another bank — the region's previous occupant, the same thing [ADR-0021](0021-a-bank-owns-the-run-its-header-declares.md) is about, seen one layer down. Without the third condition those ship with a different instrument in the right channel.
+`protozoa` is the disc to look at, because six of its rejects can be identified exactly. `Trom B2`, `Trom E3` and `Trom A3` are each written in two banks, and in all six the **first half is byte for byte the whole of a one-channel record of the same name** in `Vintage PresetsX`. Nothing matches the second half. Those payloads are twice their sound, which is why `start_R` lands on `start_L + P/2` at all — by arithmetic, not by declaration — and `end_L` says as much, closing 8 bytes past the halfway point rather than on it. Without the third condition they ship with an unaccounted-for second sound in the right channel.
 
 The third condition also keeps D17 whole. The only two records on any disc whose declared loop end lies past its own channel — `Mbira A3` and `Mbira F3` on `eiiix-1` — are both rejects, so they stay mono and keep their loops. All seven per-disc loop counts survive the change untouched.
 

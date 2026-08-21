@@ -154,10 +154,14 @@ def _is_block_split(pointers: dict[str, int], size: int) -> bool:
     right block or stops short of it. They are not stereo: their halves score
     0.01 on fine structure and 0.01 on best-lag correlation, which is the
     negative control of two unrelated records, while the 2 656 that pass score
-    with the known-true stereo pairs ADR-0017 joins by name. Without this
-    condition `protozoa`'s trombones come out with a different bank's audio in
-    the right channel, and two `eiiix-1` records declare a loop that then ends
-    past their own left channel.
+    with the known-true stereo pairs ADR-0017 joins by name. Six of
+    `protozoa`'s are identified exactly: the first half of each is, byte for
+    byte, the whole of a one-channel record of the same name in another bank,
+    so the payload is twice the sound and ``start_r`` lands on the halfway
+    point by arithmetic rather than by declaration. Without this condition
+    those come out with an unaccounted-for second sound in the right channel,
+    and two `eiiix-1` records declare a loop that then ends past their own
+    left channel.
     """
     if size % STEREO_ALIGNMENT:
         return False
