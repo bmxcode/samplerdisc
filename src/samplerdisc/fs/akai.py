@@ -118,7 +118,7 @@ FAT_CHAIN_END = 0xC000
 #: See docs/formats/akai-fs.md and ADR-0023.
 PARTITION_TABLE_OFFSET = 0x4500
 
-#: 196 bytes of constant at 0x02, byte-identical across all 276 partitions of
+#: 196 bytes of constant at 0x02, byte-identical across all 275 partitions of
 #: the 44 discs: 3333 x i as u16 LE, i = 0..97, wrapping. Nothing is known to
 #: read it and nothing on any disc varies with it, but a partition header
 #: carries it, which is what confirms a partition is where the table says.
@@ -130,7 +130,7 @@ HEADER_PATTERN_OFFSET = 0x02
 HEADER_PATTERN = struct.pack("<98H", *(3333 * step & 0xFFFF for step in range(98)))
 
 #: The header restates its own size. The u16 at 0xC6 is the block count at 0x00
-#: plus this bias, and the u16 at 0xC8 is 47; both hold on all 276 partitions
+#: plus this bias, and the u16 at 0xC8 is 47; both hold on all 275 partitions
 #: measured. Two fields of the header agreeing is what lets a candidate be
 #: confirmed by the disc rather than by the arithmetic that placed it.
 SIZE_ECHO_OFFSET = 0xC6
@@ -269,7 +269,7 @@ def allocation_map(image: SectorImage, offset: int) -> list[int]:
     from one, instead of a map invented out of whatever follows the header.
 
     What makes a count sane is the header restating it: the u16 at 0xC6 is the
-    block count plus a fixed bias on all 276 partitions measured, so a count
+    block count plus a fixed bias on all 275 partitions measured, so a count
     with no echo behind it is not a partition's and gets no map. That is a
     firmer test than the image's length, which was the previous one and refused
     the map to a partition the image merely *ends inside* -- leaving two volumes

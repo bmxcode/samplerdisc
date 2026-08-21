@@ -71,43 +71,40 @@ Compressed `.mdx` is the piece no other open-source tool reads today. The format
 
 ## Tested against
 
-79 disc images from two archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds) and [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds). Fifty-two flat `.iso`/`.bin`, seventeen compressed `.mdx`, five raw CD images, two `.nrg`, one `.mds`/`.mdf` pair, two audio CDs.
+79 disc images from three archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds), [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds) and [Best Service ProSamples](https://archive.org/details/best-service-pro-samples-vol.-12-dance-vocals-akai-1-cd). Fifty-two flat `.iso`/`.bin`, seventeen compressed `.mdx`, five raw CD images, two `.nrg`, one `.mds`/`.mdf` pair, two audio CDs.
 
 | | |
 |---|---|
-| Discs converted | 69 of 79 |
-| Samples | 47 742 |
-| Stereo pairs rejoined | 4 422 |
+| Discs converted | 72 of 79 |
+| Samples | 89 125 |
+| Stereo pairs rejoined | 15 796 |
 | Audio CD tracks | 161 |
-| Entries skipped (damage) | 20 |
-| Time | 31 s |
+| Duplicate audio suppressed | 5 719 |
+| Entries skipped (damage) | 97 |
+| Time | 46 s |
 
-Every extracted WAV was checked against the bytes on the disc it came from — **all 22 320 are byte-identical**, none unreadable, none zero-length. Ten are silent for their whole length and are meant to be: they are named `Dead Air`, on a Proteus library that ships silence as a sample.
+By filesystem:
 
-Sample rates run from 6 000 to 48 000 Hz across 908 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
+| | Discs | Samples | Stereo pairs | Skipped |
+|---|---:|---:|---:|---:|
+| AKAI | 44 | 56 394 | 14 449 | 97 |
+| E-mu `EMU3` | 7 | 14 738 | 6 | 0 |
+| ISO 9660 | 15 | 11 601 | — | 0 |
+| Roland `S770 MR25A` | 5 | 6 392 | 1 341 | 0 |
 
-The ten that do not convert are accounted for: one S-550 disc present as both `.iso` and `.nrg` — a different format from the S-7xx and not yet read ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)) — two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, three Emulator IV discs that list their banks but do not extract them, and one ISO 9660 disc holding E-mu `.EBL` banks rather than audio.
+Every WAV was checked against the disc it came from — **70 of 70 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 89 125 payloads, zero mismatches. The two audio CDs are not in that count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
 
-Every WAV was checked against the disc it came from — **67 of 67 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 40 244 payloads, zero mismatches.
+105 082 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **275 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, six are on a Proteus library that ships `Dead Air` as a sample, and two are on a Roland disc. That is what the discs hold, not something the decoder did.
 
-The five Roland S-7xx discs contribute **6 392 samples and 1 341 stereo pairs, with nothing skipped**.
+Sample rates run from 6 000 to 49 999 Hz across 1 047 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
 
-### Best Service ProSamples
+The 97 damage skips are almost all one thing: 92 payloads that do not begin with an AKAI sample header, concentrated on seven `.mdx` images. The rest are four implausible sample rates and one stereo pair whose halves declare 44 033 and 44 100, so the joiner refuses to fuse them and writes both mono halves instead.
 
-A third collection, [29 discs](https://archive.org/details/best-service-pro-samples-vol.-12-dance-vocals-akai-1-cd), added after the two above and measured separately. Sixteen are AKAI and thirteen are ISO 9660 discs holding plain audio.
+The seven that do not convert are accounted for: one S-550 disc present as both `.iso` and `.nrg` — a different format from the S-7xx and not yet read ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)) — two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, and one ISO 9660 disc holding E-mu `.EBL` banks rather than audio.
 
-| | |
-|---|---|
-| Discs converted | 29 of 29 |
-| Samples | 21 435 |
-| Stereo pairs rejoined | 4 930 |
-| WAV files written | 26 365 |
-| Duplicate AIFF suppressed | 5 719 |
-| Entries skipped (damage) | 0 |
+### The AIFF twins
 
-Every one of the 26 365 files written back reads as a valid WAV with audio in it. The single entry not written that was not a duplicate is a stereo pair on `vol.20` whose two halves declare different rates — 44 033 against 44 100 — so the joiner refuses to fuse them and both mono halves are written instead.
-
-The thirteen ISO 9660 discs ship each sound twice, once as AIFF and once as WAV. 6 033 of the 7 498 AIFF hold audio that is already coming out as a WAV, and those are written once; the other 1 779 are converted, along with 314 whose AIFF carries a root key or a loop that its WAV twin does not. `vol.43` is the reason the check is on the audio and not the filename: its 1 386 AIFF all share a name with a WAV and **none of them share its audio**, being mastered a few frames longer ([ADR-0024](docs/adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)).
+The thirteen ISO 9660 ProSamples discs ship each sound twice, once as AIFF and once as WAV. 6 033 of the 7 498 AIFF hold audio that is already coming out as a WAV, and those are written once; the other 1 465 are converted, along with 314 whose AIFF carries a root key or a loop that its WAV twin does not. `vol.43` is the reason the check is on the audio and not the filename: its 1 386 AIFF all share a name with a WAV and **none of them share its audio**, being mastered a few frames longer ([ADR-0024](docs/adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)).
 
 These discs are also the only place in this project where the correct output is known independently. Where a sound exists as both, the publisher's own WAV says what the AIFF conversion should produce — including the loop convention the AIFF spec leaves open, settled on 195 pairs out of 195.
 
