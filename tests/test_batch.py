@@ -89,6 +89,7 @@ def test_manifest_records_totals_and_failures(tmp_path):
         "converted": 1,
         "failed": 1,
         "samples": 2,
+        "stereo_samples": 0,
         "stereo_pairs": 0,
         "originals": 0,
         "audio_tracks": 0,
@@ -105,3 +106,26 @@ def test_batch_can_keep_originals(tmp_path):
     reports = list(convert_tree(str(tmp_path), str(tmp_path / "out"), keep_originals=True))
     assert reports[0].originals == 2
     assert (tmp_path / "out" / "d" / "partition-1" / "VOL 1" / "original" / "KICK 1.s1s").exists()
+
+
+def test_the_manifest_counts_a_stereo_sample_apart_from_a_joined_pair(tmp_path):
+    """Two different things, and a manifest that added them together would say
+    a disc had rebuilt pairings it never guessed at.
+
+    ``stereo_samples`` is a channel count the record declared (ADR-0026);
+    ``stereo_pairs`` is a join this tool inferred from two filenames
+    (ADR-0007). The E-mu disc here has one of the first and none of the second.
+    """
+    (tmp_path / "emu.iso").write_bytes(
+        fixtures.emu3_disc(
+            [("Default Folder", [("Bank One        ", [("Wide", 22050, 4000)])])],
+            stereo=("Wide",),
+        )
+    )
+    reports = list(convert_tree(str(tmp_path), str(tmp_path / "out")))
+    assert (reports[0].samples, reports[0].stereo_samples, reports[0].stereo_pairs) == (1, 1, 0)
+
+    path = tmp_path / "out" / "manifest.json"
+    write_manifest(str(path), reports)
+    totals = json.loads(path.read_text())["totals"]
+    assert (totals["samples"], totals["stereo_samples"], totals["stereo_pairs"]) == (1, 1, 0)

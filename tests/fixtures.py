@@ -878,26 +878,43 @@ def roland_s7xx_disc(
     return bytes(image)
 
 
-def _emu3_pointers(head: bytearray, payload_bytes: int, loop) -> None:
-    """Write a record's left-hand extent and loop pointers.
+def _emu3_pointers(head: bytearray, payload_bytes: int, loop, stereo: bool = False) -> None:
+    """Write a record's extent and loop pointers.
 
     Byte offsets from the record's own start, naming the first byte of a word,
     which is what the reference discs hold -- so the end addresses the *last*
     word rather than one past it.
+
+    ``stereo`` writes the two-channel form: the payload is a block split, all
+    of the left channel then all of the right, and both pointer sets are
+    written -- the right one a mirror of the left, half a payload on. That is
+    what 2 656 records across the seven reference discs hold (ADR-0026).
     """
     from samplerdisc.fs.emu3 import (
         OFF_SAMPLE_END_L,
+        OFF_SAMPLE_END_R,
         OFF_SAMPLE_LOOP_END_L,
+        OFF_SAMPLE_LOOP_END_R,
         OFF_SAMPLE_LOOP_START_L,
+        OFF_SAMPLE_LOOP_START_R,
+        OFF_SAMPLE_START_R,
         SAMPLE_HEADER_LEN,
     )
 
-    struct.pack_into("<I", head, OFF_SAMPLE_END_L, SAMPLE_HEADER_LEN + payload_bytes - 2)
+    channel_bytes = payload_bytes // 2 if stereo else payload_bytes
+    struct.pack_into("<I", head, OFF_SAMPLE_END_L, SAMPLE_HEADER_LEN + channel_bytes - 2)
+    if stereo:
+        split = SAMPLE_HEADER_LEN + channel_bytes
+        struct.pack_into("<I", head, OFF_SAMPLE_START_R, split)
+        struct.pack_into("<I", head, OFF_SAMPLE_END_R, split + channel_bytes - 2)
     if loop is None:
         return
     start, end = loop
     struct.pack_into("<I", head, OFF_SAMPLE_LOOP_START_L, SAMPLE_HEADER_LEN + start * 2)
     struct.pack_into("<I", head, OFF_SAMPLE_LOOP_END_L, SAMPLE_HEADER_LEN + end * 2)
+    if stereo:
+        struct.pack_into("<I", head, OFF_SAMPLE_LOOP_START_R, split + start * 2)
+        struct.pack_into("<I", head, OFF_SAMPLE_LOOP_END_R, split + end * 2)
 
 
 def emu3_disc(
@@ -915,6 +932,7 @@ def emu3_disc(
     folder_flags: int | None = None,
     total_blocks: int = 4096,
     loops: dict[str, tuple[int, int]] | None = None,
+    stereo: tuple[str, ...] = (),
 ) -> bytes:
     """Build a synthetic EMU3 image.
 
@@ -943,6 +961,11 @@ def emu3_disc(
 
     A bank given no samples gets a header declaring a zero-length sample area,
     which is what the index banks on `esi32-gm`, `eiiix-1` and `eiiix-2` do.
+
+    ``stereo`` names the samples whose record declares two channels. Their
+    payload is a block split -- all of the left channel, then all of the right
+    -- and the frame count given for them is the payload's, so each channel
+    gets half of it (ADR-0026).
 
     ``eiv`` True builds the Emulator IV shape instead -- no ``EMULATOR``
     header, and each bank's samples reached through a chained ``E3S1`` sample
@@ -1051,7 +1074,9 @@ def emu3_disc(
                     head[2:18] = name16(sample_name)
                     struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
                     struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
-                    _emu3_pointers(head, len(pcm), (loops or {}).get(sample_name))
+                    _emu3_pointers(
+                        head, len(pcm), (loops or {}).get(sample_name), sample_name in stereo
+                    )
                     image[record : record + SAMPLE_HEADER_LEN] = head
                     image[record + SAMPLE_HEADER_LEN : record + length] = pcm
                     position += length + EIV_CHAIN_STRIDE
@@ -1075,7 +1100,9 @@ def emu3_disc(
                 struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
                 struct.pack_into("<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS)
                 struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
-                _emu3_pointers(head, len(pcm), (loops or {}).get(sample_name))
+                _emu3_pointers(
+                    head, len(pcm), (loops or {}).get(sample_name), sample_name in stereo
+                )
                 image[cursor : cursor + SAMPLE_HEADER_LEN] = head
                 image[cursor + SAMPLE_HEADER_LEN : cursor + record_len] = pcm
                 cursor += record_len + 16  # a gap: records are not contiguous

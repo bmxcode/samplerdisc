@@ -13,6 +13,7 @@ from __future__ import annotations
 import hashlib
 import os
 import struct
+from array import array
 from functools import lru_cache
 from pathlib import Path
 
@@ -105,7 +106,7 @@ def _pinned_sizes() -> set[int]:
         *_EXPECT_NO_FILESYSTEM.values(),
         *(size for size, _ in _ROLAND_S7XX.values()),
         *(size for size, _, _ in _ISO9660.values()),
-        *(size for size, _, _, _, _ in _EMU3.values()),
+        *(size for size, _, _, _, _, _ in _EMU3.values()),
         *(size for size, _, _, _, _, _ in _AKAI.values()),
     }
 
@@ -527,9 +528,9 @@ def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
 #: the seven and there was no failing test to say so.
 #: Labelled by the short names docs/formats/emu3.md uses, which is what the
 #: measurements there are recorded against.
-#: ``label: (size in bytes, volumes, samples)``.
-#: ``label: (size in bytes, volumes, samples, samples carrying a loop, the
-#: SHA-256 of every sample payload on the disc, concatenated in walk order)``.
+#: ``label: (size in bytes, volumes, samples, samples carrying a loop, samples
+#: the record declares stereo, the SHA-256 of every sample payload on the disc,
+#: concatenated in walk order)``.
 #:
 #: The digest is the pin that matters most. D17 decoded the sample record's
 #: pointer block and taught the E-mu path to write a ``smpl`` chunk, which is
@@ -544,21 +545,30 @@ def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
 #: fewest by far -- 107 of 2 265 -- because that disc declares a loop end past
 #: the audio it carries on almost every record, and those are refused rather
 #: than clamped (ADR-0025).
+#:
+#: The stereo counts are D18's pin and they are **not** the count of records
+#: satisfying ``start_R == start_L + P/2``, which is 2 721. It is that set
+#: minus the 65 whose own ``end_L`` contradicts the split -- 19 on `protozoa`,
+#: 40 on `eiiix-1`, 6 on `eiiix-2` -- which measure as unrelated audio and are
+#: written mono. The two numbers differing on exactly three discs is what the
+#: gate's third condition is for, so a change that loses it fails here rather
+#: than shipping `protozoa`'s trombones with another bank's record in the
+#: right channel (ADR-0026).
 _EMU3 = {
-    "esi32-gm": (93_077_504, 10, 2265, 107, "b7964228d84cfc50"),
-    "protozoa": (131_690_496, 16, 5852, 1689, "ac4b74a601955ca1"),
-    "eiiix-1": (304_128_000, 46, 1189, 1157, "c26ee8fb959b3f91"),
-    "eiiix-2": (304_435_200, 46, 1333, 1260, "2d5d002be060cc52"),
-    "eiv-analogia": (293_912_576, 12, 449, 449, "5d8faa38572914cb"),
-    "eiv-studio": (399_077_376, 230, 2822, 2551, "8802808655deea30"),
-    "eiv-vitous": (532_443_136, 44, 828, 826, "66c179be5b78cbd2"),
+    "esi32-gm": (93_077_504, 10, 2265, 107, 28, "b7964228d84cfc50"),
+    "protozoa": (131_690_496, 16, 5852, 1689, 8, "ac4b74a601955ca1"),
+    "eiiix-1": (304_128_000, 46, 1189, 1157, 601, "c26ee8fb959b3f91"),
+    "eiiix-2": (304_435_200, 46, 1333, 1260, 592, "2d5d002be060cc52"),
+    "eiv-analogia": (293_912_576, 12, 449, 449, 279, "5d8faa38572914cb"),
+    "eiv-studio": (399_077_376, 230, 2822, 2551, 320, "8802808655deea30"),
+    "eiv-vitous": (532_443_136, 44, 828, 826, 828, "66c179be5b78cbd2"),
 }
 
 
 @pytest.mark.parametrize("label", sorted(_EMU3))
 def test_emu3_discs_list_their_banks_and_samples(label: str) -> None:
     """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
-    size, volumes_expected, samples_expected, _, _ = _EMU3[label]
+    size, volumes_expected, samples_expected, _, _, _ = _EMU3[label]
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
         assert origin is not None, f"{label}: no filesystem found"
@@ -573,22 +583,44 @@ def test_emu3_discs_list_their_banks_and_samples(label: str) -> None:
         assert all(v.files or v.note for v in volumes), [v.name for v in volumes if not v.files]
 
 
+def _deinterleave(pcm: bytes) -> tuple[bytes, bytes]:
+    """The two channels of an interleaved buffer, back as they were stored.
+
+    Through ``array`` rather than a byte slice: ``pcm[0::4]`` would take the
+    low byte of every left sample and leave its high byte behind. No byteswap
+    is needed on either host order, because this regroups 2-byte units and
+    never reads their value.
+    """
+    frames = array("h")
+    frames.frombytes(pcm)
+    return frames[0::2].tobytes(), frames[1::2].tobytes()
+
+
 @pytest.mark.parametrize("label", sorted(_EMU3))
 def test_emu3_loops_are_decoded_without_disturbing_the_audio(label: str) -> None:
-    """The D17 invariant, both halves of it (ADR-0025).
+    """The D17 invariant and the D18 one, which are the same invariant
+    (ADR-0025, ADR-0026).
 
-    The payload digest is the whole point: decoding the record's pointer block
-    must add a ``smpl`` chunk and change nothing else, and a table of sample
-    counts cannot see a payload that shifted by a byte while staying the same
-    length. Every loop must also lie inside the audio of its own sample --
-    that is the gate that separates a decoded loop from a clamped one.
+    The payload digest is the whole point. D17 decoded the record's pointer
+    block and had to add a ``smpl`` chunk while changing nothing else; D18 acts
+    on the channel count in that same block, and the audio it writes must be a
+    **permutation** of the disc's bytes rather than merely the same length. So
+    two things are asserted at once: the digest of every payload as
+    ``read_file`` returns it has not moved, and de-interleaving each stereo
+    sample reproduces the two blocks the disc stored, byte for byte.
+
+    The loop counts are pinned across the change for the same reason.
+    ``(pointer - start) / 2`` is a per-channel frame index either way, so a
+    loop that moves is arithmetic that drifted, not a decode that improved.
+    Every loop must still lie inside its own sample's frames -- which for a
+    stereo sample now means inside its *channel*, a tighter bound than before.
     """
-    size, _, samples_expected, loops_expected, digest_expected = _EMU3[label]
+    size, _, samples_expected, loops_expected, stereo_expected, digest_expected = _EMU3[label]
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
         assert origin is not None and origin.backend.name == "emu3"
         digest = hashlib.sha256()
-        samples = looped = 0
+        samples = looped = stereo = 0
         for volume in origin.backend.volumes(image, origin.offset):
             for entry in volume.samples():
                 samples += 1
@@ -598,6 +630,15 @@ def test_emu3_loops_are_decoded_without_disturbing_the_audio(label: str) -> None
                 # No root key is stated anywhere in the 92-byte record, on any
                 # of the seven discs. Inventing one is what ADR-0025 refuses.
                 assert sample.pitch is None
+                if sample.channels == 2:
+                    stereo += 1
+                    half = len(payload) // 2
+                    assert sample.frames == half // 2
+                    assert _deinterleave(sample.pcm) == (payload[:half], payload[half:]), (
+                        f"{entry.name}: the stereo audio is not the disc's own bytes"
+                    )
+                else:
+                    assert sample.pcm == payload[: sample.frames * 2]
                 for loop in sample.loops:
                     assert 0 <= loop.start < loop.end <= sample.frames, (
                         f"{entry.name}: loop ({loop.start}, {loop.end}) is not "
@@ -605,9 +646,10 @@ def test_emu3_loops_are_decoded_without_disturbing_the_audio(label: str) -> None
                     )
                 looped += bool(sample.loops)
         assert samples == samples_expected
-        assert looped == loops_expected
+        assert looped == loops_expected, f"{label}: D18 moved a loop point"
+        assert stereo == stereo_expected
         assert digest.hexdigest()[:16] == digest_expected, (
-            f"{label}: sample payloads moved -- D17 must be additive"
+            f"{label}: sample payloads moved -- the read path must be untouched"
         )
 
 

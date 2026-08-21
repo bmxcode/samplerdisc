@@ -92,6 +92,11 @@ class Extracted:
     #: filesystem has no partitions. AKAI volume names repeat across
     #: partitions, so the name alone does not identify a volume (ADR-0023).
     partition: int = 0
+    #: Channels in the file written. 2 where the sample was stereo *on the
+    #: disc* -- an E-mu record whose pointer block declares two channels
+    #: (ADR-0026) or a stereo AIFF -- which is a different thing from the
+    #: ``Joined`` file an -L/-R pair produces, and counted apart from it.
+    channels: int = 1
 
 
 @dataclass
@@ -217,16 +222,27 @@ def extract_volume(
         # A format that does not carry root key, tuning or loops writes a plain
         # WAV rather than a wrong one.
         pitch = getattr(sample, "pitch", None)
+        # A format whose sample is stereo on the disc says so; the rest are
+        # mono, and one channel is the honest default rather than a guess.
+        channels = getattr(sample, "channels", 1)
         write_wav(
             path,
             sample.pcm,
             rate=sample.rate,
+            channels=channels,
             midi_note=pitch,
             cents=getattr(sample, "cents", 0.0),
             loops=_wav_loops(sample),
             name=sample.name or entry.name,
         )
-        parsed[entry.name] = sample
+        if channels == 1:
+            # Only mono files can be halves of an -L/-R pair: ``interleave``
+            # takes two mono buffers, and a sample that is already stereo is
+            # not one side of anything. No sample on the seven E-mu discs is
+            # both -- 2 656 declare two channels, 12 are name-paired, and the
+            # two sets do not intersect -- so this changes nothing today and
+            # is here so it cannot start to (ADR-0026).
+            parsed[entry.name] = sample
         yield Extracted(
             volume=volume.name,
             name=entry.name,
@@ -235,6 +251,7 @@ def extract_volume(
             frames=sample.frames,
             pitch=pitch if pitch is not None else 0,
             partition=volume.partition,
+            channels=channels,
         )
 
     for entry in deferred:
@@ -373,6 +390,7 @@ def _copy_wav(
             frames=header.frames if header else 0,
             pitch=0,
             partition=volume.partition,
+            channels=header.channels if header else 1,
         ),
         digest,
         bool(header and header.has_smpl),
@@ -444,6 +462,7 @@ def _convert_aiff(
         frames=sample.frames,
         pitch=sample.pitch if sample.pitch is not None else 0,
         partition=volume.partition,
+        channels=sample.channels,
     )
 
 

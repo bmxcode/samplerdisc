@@ -10,6 +10,13 @@ loop start and a loop end, per channel, as byte offsets from the record's own
 start. Those become the WAV's smpl chunk. There is no root key anywhere in the
 92 bytes -- see ``pitch`` below and ADR-0025.
 
+The same block declares a **channel count**, and where it declares two the
+payload is a *block* split -- all of the left channel, then all of the right,
+not interleaved. Read as one mono stream that is a file twice as long as the
+sound, which is what this project shipped for 2 656 of the 14 738 E-mu samples
+until D18. The two halves are interleaved here, in the sample layer, so what
+``pcm`` holds is what a WAV data chunk holds either way (ADR-0026).
+
 The endianness is worth a note, because it was got wrong first. Sampling this
 data at 2048-byte sector boundaries makes it read as big-endian, convincingly
 and repeatably. It is not: the sample payload starts at an odd byte offset, so
@@ -22,6 +29,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from samplerdisc.sample import NotASample as _NotASample
+from samplerdisc.stereo import interleave
 
 
 class NotASample(_NotASample):
@@ -32,6 +40,17 @@ class NotASample(_NotASample):
 #: set that describes it opens with exactly this. The other set is its mirror,
 #: or zeroed on a record declaring a single channel.
 DATA_START = 92
+
+#: An end pointer names the first byte of the *last* word rather than one past
+#: it, so the extent it closes runs two bytes further. ``RECORD_LEN_BIAS`` in
+#: fs/emu3.py is the same fact, seen from the record-length side.
+END_POINTER_BIAS = 2
+
+#: A stereo payload splits into two equal blocks, so it holds a whole number of
+#: frames on both channels only when it divides by four. Every one of the 2 656
+#: records the gate below selects does; the check is here because a payload
+#: that did not would be split half a sample out and sound like tape hiss.
+STEREO_ALIGNMENT = 4
 
 #: Shorter than this and it is not a loop worth writing. The guard is the one
 #: docs/formats/roland-s7xx.md records the need for: without a floor on length
@@ -76,6 +95,11 @@ class Emu3Sample:
     #: than through a special case (ADR-0025).
     pitch: int | None = None
     loops: tuple[SampleLoop, ...] = ()
+    #: 2 where the record's pointer block declares two channels and its own
+    #: extents agree with the split, 1 otherwise. ``pcm`` is interleaved to
+    #: match, and ``frames`` counts frames rather than samples, so duration is
+    #: ``frames / rate`` on either (ADR-0026).
+    channels: int = 1
 
     @property
     def duration(self) -> float:
@@ -91,20 +115,74 @@ def parse(
     """Wrap an already-located payload. Raises NotASample if it is unusable."""
     if not payload:
         raise NotASample("no data on disc")
-    frames = len(payload) // 2
+    pointers = pointers or {}
+    if _is_block_split(pointers, len(payload)):
+        half = len(payload) // 2
+        # The first block is the left channel -- see _is_block_split.
+        pcm = interleave(payload[:half], payload[half:])
+        channels, frames = 2, len(payload) // 4
+    else:
+        channels, frames = 1, len(payload) // 2
+        pcm = payload[: frames * 2]
     if frames == 0:
         raise NotASample("zero-length sample")
     return Emu3Sample(
         name=fallback_name,
         rate=rate,
         frames=frames,
-        pcm=payload[: frames * 2],
-        loops=_loops(pointers or {}, frames),
+        pcm=pcm,
+        channels=channels,
+        loops=_loops(pointers, frames),
     )
+
+
+def _is_block_split(pointers: dict[str, int], size: int) -> bool:
+    """Whether this record declares two channels for a payload of ``size``.
+
+    Three conditions, all read off the record rather than measured off the
+    audio, and the third is the one that took measuring to arrive at.
+
+    ``start_l`` opens the audio, ``start_r`` opens it again half a payload
+    later -- that pair is the channel count, and reading a payload it declares
+    as one mono stream is what concatenated the two channels into a
+    double-length file (ADR-0025 found this; ADR-0026 acts on it).
+
+    **``end_l`` must close the left block exactly where the right one opens.**
+    2 721 records across the seven reference discs satisfy the first two
+    conditions and 65 of them fail this one -- 19 on `protozoa`, 40 on
+    `eiiix-1`, 6 on `eiiix-2` -- declaring a left channel that overlaps the
+    right block or stops short of it. They are not stereo: their halves score
+    0.01 on fine structure and 0.01 on best-lag correlation, which is the
+    negative control of two unrelated records, while the 2 656 that pass score
+    with the known-true stereo pairs ADR-0017 joins by name. Six of
+    `protozoa`'s are identified exactly: the first half of each is, byte for
+    byte, the whole of a one-channel record of the same name in another bank,
+    so the payload is twice the sound and ``start_r`` lands on the halfway
+    point by arithmetic rather than by declaration. Without this condition
+    those come out with an unaccounted-for second sound in the right channel,
+    and two `eiiix-1` records declare a loop that then ends past their own
+    left channel.
+    """
+    if size % STEREO_ALIGNMENT:
+        return False
+    start = pointers.get("start_l", 0)
+    if start != DATA_START:
+        return False
+    split = start + size // 2
+    if pointers.get("start_r", 0) != split:
+        return False
+    return pointers.get("end_l", 0) + END_POINTER_BIAS == split
 
 
 def _loops(pointers: dict[str, int], frames: int) -> tuple[SampleLoop, ...]:
     """The sustain loop, where the record declares one this audio can carry.
+
+    ``frames`` is a count of *frames*, so on a two-channel record it is half
+    the payload's words. That is the right measure and needs no special case:
+    ``(pointer - start) / 2`` is a per-channel frame index either way, landing
+    in the left block of a double-length mono file and on the frame number of
+    an interleaved one, which is why D18 moved this audio without moving a
+    single loop point (ADR-0026).
 
     Which channel's pointers to read is decided by the record, not guessed: the
     set that describes the audio opens at ``DATA_START``. Both sets do on a
@@ -134,8 +212,9 @@ def _loops(pointers: dict[str, int], frames: int) -> tuple[SampleLoop, ...]:
             continue
         if (loop_start - start) % 2 or (loop_end - start) % 2:
             continue
-        # The end must be audio this file actually holds. See the docstring:
-        # clamping is what the other two formats do and what this one cannot.
+        # The end must be audio this file actually holds -- this channel's,
+        # on a two-channel record. See the docstring: clamping is what the
+        # other two formats do and what this one cannot.
         if loop_end > start + frames * 2:
             continue
         a, b = (loop_start - start) // 2, (loop_end - start) // 2
