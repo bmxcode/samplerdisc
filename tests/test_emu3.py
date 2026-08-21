@@ -570,3 +570,147 @@ def test_the_walk_carries_the_pointers_onto_the_file(tmp_path):
     assert entry.get("start_l") == DATA_START
     sample = backend.parse_sample(entry, backend.read_file(image, 0, entry))
     assert [(loop.start, loop.end) for loop in sample.loops] == [(1200, 4800)]
+
+
+# --- the channel count (D18, ADR-0026) -----------------------------------
+
+
+def _stereo_pointers(channel_frames, loop=None, *, end_l=None):
+    """A record declaring two channels over ``channel_frames`` per channel.
+
+    The payload is twice that: all of the left channel, then all of the right.
+    ``end_l`` overrides where the left block says it ends, which is the third
+    condition of the gate and the one 65 records on the shelf fail.
+    """
+    split = DATA_START + channel_frames * 2
+    out = {
+        "start_l": DATA_START,
+        "end_l": split - 2 if end_l is None else end_l,
+        "loop_start_l": 0,
+        "loop_end_l": 0,
+        "start_r": split,
+        "end_r": split + channel_frames * 2 - 2,
+        "loop_start_r": 0,
+        "loop_end_r": 0,
+    }
+    if loop is not None:
+        start, stop = loop
+        out["loop_start_l"] = DATA_START + start * 2
+        out["loop_end_l"] = DATA_START + stop * 2
+        out["loop_start_r"] = split + start * 2
+        out["loop_end_r"] = split + stop * 2
+    return out
+
+
+def _deinterleave(pcm: bytes) -> tuple[bytes, bytes]:
+    """Pull the two channels back out of an interleaved buffer, as 16-bit
+    frames rather than as bytes -- ``pcm[0::4]`` would take the low byte of
+    every left sample and leave its high byte behind."""
+    return (
+        b"".join(pcm[i : i + 2] for i in range(0, len(pcm), 4)),
+        b"".join(pcm[i : i + 2] for i in range(2, len(pcm), 4)),
+    )
+
+
+def _blocks(left: bytes, right: bytes, pointers=None, **kwargs):
+    payload = left + right
+    return parse_sample(
+        payload,
+        rate=22050,
+        fallback_name="X",
+        pointers=pointers or _stereo_pointers(len(left) // 2, **kwargs),
+    )
+
+
+def test_a_two_channel_record_is_interleaved_not_concatenated():
+    """The defect this deliverable exists for: 2 656 of the 14 738 E-mu
+    samples came out as a mono file twice as long as the sound."""
+    sample = _blocks(b"\x01\x00" * 500, b"\x02\x00" * 500)
+    assert sample.channels == 2
+    assert sample.frames == 500
+    assert len(sample.pcm) == 2000
+    assert sample.duration == 500 / 22050
+
+
+def test_the_first_block_is_the_left_channel():
+    """Asserted rather than assumed, because a swap is inaudible in isolation
+    and wrong forever.
+
+    The record's pointer block is ordered ``(start_L, start_R)`` and
+    ``start_L`` addresses the first block, which is the whole of the
+    structural argument. The only content evidence is weak and agrees: of the
+    twelve name-paired records on `eiv-analogia`, all six `-L` names populate
+    the left-hand set and none of them the right (ADR-0026).
+    """
+    sample = _blocks(b"\x11\x11" * 4, b"\x22\x22" * 4)
+    assert sample.pcm == b"\x11\x11\x22\x22" * 4
+
+
+def test_the_loop_frames_are_the_same_read_as_stereo_or_as_mono():
+    """The neatest check that D17 and D18 agree.
+
+    ``(pointer - start) / 2`` is a per-channel frame index either way: it
+    lands in the left block of the double-length mono file this used to write,
+    and on the frame number of the interleaved one it writes now. All seven
+    per-disc loop counts survive the change untouched.
+    """
+    stereo = _blocks(b"\x01\x00" * 5000, b"\x02\x00" * 5000, loop=(1200, 4800))
+    mono = _sample(5000, (1200, 4800))
+    assert [(loop.start, loop.end) for loop in stereo.loops] == [(1200, 4800)]
+    assert stereo.loops == mono.loops
+
+
+def test_a_left_block_that_does_not_end_at_the_split_stays_mono():
+    """The third condition of the gate, and the one that took measuring.
+
+    2 721 records declare ``start_R == start_L + P/2`` and 65 of them declare
+    a left channel that overlaps the right block or stops short of it -- 19 on
+    `protozoa`, 40 on `eiiix-1`, 6 on `eiiix-2`. Those 65 are not stereo:
+    their halves score 0.01 on fine structure and 0.01 on best-lag
+    correlation, which is two unrelated records, against 0.40 and 0.53 for the
+    stereo pairs ADR-0017 joins by name. `protozoa`'s trombones are the case
+    to keep in mind -- the second half of one of those payloads is another
+    bank's record (ADR-0026).
+    """
+    split = DATA_START + 500 * 2
+    overlaps = _blocks(b"\x01\x00" * 500, b"\x02\x00" * 500, end_l=split + 8)
+    short = _blocks(b"\x01\x00" * 500, b"\x02\x00" * 500, end_l=split - 200)
+    assert overlaps.channels == 1 and overlaps.frames == 1000
+    assert short.channels == 1 and short.frames == 1000
+
+
+def test_a_payload_that_does_not_divide_by_four_stays_mono():
+    """Half a frame out on one channel is not stereo, it is noise. No record
+    on the seven reference discs is like this; the gate is here so that one
+    arriving is refused rather than mangled."""
+    pointers = _stereo_pointers(501)
+    sample = parse_sample(b"\x01\x00" * 1001, rate=22050, pointers=pointers)
+    assert sample.channels == 1
+
+
+def test_a_one_channel_record_is_untouched():
+    sample = _sample(5000, (1200, 4800))
+    assert sample.channels == 1
+    assert sample.frames == 5000
+    assert sample.pcm == b"\x01\x00" * 5000
+
+
+def test_the_walk_carries_a_two_channel_record_through_to_the_sample(tmp_path):
+    """End to end: the pointers are read by the filesystem layer and the
+    channel count is decided in the sample layer, the same split the loop
+    decode uses."""
+    data = fixtures.emu3_disc(
+        [("Default Folder", [("Bank One        ", [("Wide", 22050, 4000)])])],
+        stereo=("Wide",),
+    )
+    image = image_of(tmp_path, data)
+    volume = next(v for v in BACKEND.volumes(image, 0) if v.files)
+    entry = volume.files[0]
+    payload = BACKEND.read_file(image, 0, entry)
+    sample = BACKEND.parse_sample(entry, payload)
+    assert sample.channels == 2
+    assert sample.frames == len(payload) // 4
+    # The audio is the disc's own bytes, permuted -- nothing resampled and
+    # nothing dropped.
+    half = len(payload) // 2
+    assert _deinterleave(sample.pcm) == (payload[:half], payload[half:])

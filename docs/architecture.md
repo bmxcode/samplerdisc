@@ -68,6 +68,8 @@ So `sample/` parses a 150-byte header for the rate, the length and the name, and
 
 `stereo.py` reconstructs stereo from the `-L`/`-R` naming convention, writing the joined file *alongside* the mono originals rather than replacing them, because the pairing is a name heuristic and heuristics should not be destructive ([ADR-0007](adr/0007-emit-mono-and-stereo.md)).
 
+There is a second route to a stereo file and it belongs one layer down. An E-mu record declares its own channel count, so `sample/emu3.py` interleaves the two blocks it names and hands `extract` a sample that is simply stereo — no naming, no pairing, no originals kept, since nothing was inferred. `stereo.interleave` is shared between the two, which is the only thing they have in common ([ADR-0026](adr/0026-the-record-declares-the-channel-count.md)).
+
 ## When a layer has no answer
 
 `export-iso` unwraps any container to a flat image without consulting the filesystem ([ADR-0009](adr/0009-export-iso-escape-hatch.md)). It is what a user gets when their disc is a container we understand holding a filesystem we do not — which, given E-mu and Roland discs sit in the same archives, is the expected case for a while.

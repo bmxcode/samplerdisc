@@ -102,6 +102,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
             print("no recognised filesystem -- try `samplerdisc export-iso`", file=sys.stderr)
             return 1
         written = 0
+        stereo = 0
         joined = 0
         kept = 0
         skipped = 0
@@ -117,9 +118,15 @@ def cmd_extract(args: argparse.Namespace) -> int:
         for result in results:
             if isinstance(result, Extracted):
                 written += 1
+                if result.channels > 1:
+                    stereo += 1
                 if args.verbose:
                     seconds = result.frames / result.rate if result.rate else 0
-                    print(f"  {result.volume}/{result.name}  {seconds:.2f}s @ {result.rate} Hz")
+                    channels = "stereo" if result.channels > 1 else "mono"
+                    print(
+                        f"  {result.volume}/{result.name}  "
+                        f"{seconds:.2f}s @ {result.rate} Hz {channels}"
+                    )
             elif isinstance(result, Joined):
                 joined += 1
                 if args.verbose:
@@ -135,6 +142,10 @@ def cmd_extract(args: argparse.Namespace) -> int:
                     skipped += 1
                 print(f"  skipped {result.volume}/{result.name}: {result.reason}", file=sys.stderr)
     print(f"wrote {written} WAV files to {args.out}")
+    if stereo:
+        # Stereo on the disc, not joined here: the record declared two
+        # channels and no filename was consulted (ADR-0026).
+        print(f"{stereo} of them were stereo samples")
     if joined:
         print(f"joined {joined} stereo pairs (mono originals kept)")
     if kept:
@@ -170,7 +181,9 @@ def cmd_batch(args: argparse.Namespace) -> int:
         if report.error:
             print(f"  FAILED  {label}: {report.error}")
         else:
-            extra = f", {report.stereo_pairs} stereo" if report.stereo_pairs else ""
+            extra = f", {report.stereo_pairs} joined" if report.stereo_pairs else ""
+            if report.stereo_samples:
+                extra += f", {report.stereo_samples} stereo"
             extra += f", {report.originals} originals" if report.originals else ""
             if report.audio_tracks:
                 extra = f", {report.audio_tracks} audio tracks"

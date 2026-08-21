@@ -261,3 +261,41 @@ def _wav_bytes(tmp_path, pcm: bytes, rate: int) -> bytes:
     path = tmp_path / "w.wav"
     write_wav(path, pcm, rate=rate)
     return path.read_bytes()
+
+
+# --- a sample that is stereo on the disc (D18, ADR-0026) ------------------
+
+
+def test_a_stereo_emu_record_is_written_as_one_stereo_wav(tmp_path):
+    """Not two files, and not in ``stereo/``.
+
+    ``<volume>/stereo/`` means "joined from two mono files whose names looked
+    like a pair" (ADR-0007, ADR-0017). This record is not a join: the disc
+    declared two channels in the sample record itself, so the file belongs in
+    the volume directory under its own name, and there is no mono half to keep
+    alongside it (ADR-0026).
+    """
+    from samplerdisc.fs.emu3 import Emu3Backend
+
+    path = tmp_path / "emu.iso"
+    path.write_bytes(
+        fixtures.emu3_disc(
+            [("Default Folder", [("Bank One        ", [("Wide", 22050, 4000)])])],
+            stereo=("Wide",),
+        )
+    )
+    image = FlatImage(path)
+    out = tmp_path / "out"
+    results = [
+        r for r in extract_disc(image, Emu3Backend(), 0, str(out)) if isinstance(r, Extracted)
+    ]
+    assert len(results) == 1
+    assert results[0].channels == 2
+    written = out / "Bank One" / "Wide.wav"
+    assert written.exists()
+    assert not (out / "Bank One" / "stereo").exists()
+    with wave.open(str(written)) as w:
+        assert w.getnchannels() == 2
+        assert w.getnframes() == results[0].frames
+        # Frames, not samples: the duration the CLI prints is the sound's.
+        assert w.getnframes() * 4 == len(w.readframes(w.getnframes()))

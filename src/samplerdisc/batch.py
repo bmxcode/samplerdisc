@@ -36,6 +36,11 @@ class DiscReport:
     origin: int | None = None
     volumes: list[dict[str, Any]] = field(default_factory=list)
     samples: int = 0
+    #: Samples that were stereo on the disc, of ``samples``. Counted apart
+    #: from ``stereo_pairs`` because they are different news: one is a channel
+    #: count the record declared, the other a pairing this tool guessed from
+    #: two filenames (ADR-0007, ADR-0026).
+    stereo_samples: int = 0
     stereo_pairs: int = 0
     originals: int = 0
     #: Entries read, understood, and deliberately not written because their
@@ -102,6 +107,8 @@ def convert_disc(
             for result in results:
                 if isinstance(result, Extracted):
                     report.samples += 1
+                    if result.channels > 1:
+                        report.stereo_samples += 1
                     entry = volumes.setdefault(
                         (result.partition, result.volume),
                         {"name": result.volume, "partition": result.partition, "samples": 0},
@@ -145,6 +152,7 @@ def write_manifest(path: str, reports: list[DiscReport]) -> None:
             "converted": sum(1 for r in reports if r.ok),
             "failed": sum(1 for r in reports if not r.ok),
             "samples": sum(r.samples for r in reports),
+            "stereo_samples": sum(r.stereo_samples for r in reports),
             "stereo_pairs": sum(r.stereo_pairs for r in reports),
             "audio_tracks": sum(r.audio_tracks for r in reports),
             "originals": sum(r.originals for r in reports),

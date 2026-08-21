@@ -49,6 +49,8 @@ out/AKAI.S3000.Sound.Library.1/
 
 Extraction writes one WAV per sample, grouped by volume. Where a disc stores stereo as split mono files — the AKAI `-L` / `-R` convention — you also get a joined stereo WAV, and the mono originals are kept alongside it rather than replaced.
 
+Some samples are stereo on the disc itself rather than paired by name: an E-mu record declares its own channel count, and 2 656 of the 14 738 E-mu samples here declare two. Those come out as one stereo WAV under the sample's own name — not in `stereo/`, which means "rebuilt from two files", and with no mono halves to keep, because nothing was guessed at ([ADR-0026](docs/adr/0026-the-record-declares-the-channel-count.md)).
+
 The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM and so does WAV, so there is no resampling, no bit-depth change and no dithering anywhere in the process. Loop points, root key and tuning from the disc are written into the WAV's standard `smpl` chunk, so a DAW that understands them picks them up and one that doesn't sees an ordinary WAV.
 
 `--keep-originals` additionally writes each sample and program out byte-for-byte as the sampler stored it, into an `original/` folder beside the WAVs. Two reasons to want it: programs hold the key ranges and envelopes, which a WAV cannot carry and which are otherwise left on the disc; and the files are named by the generation that wrote them — `.s3p`/`.s3s` for an S3000 disc, `.s1p`/`.s1s` for an S1000 — which is the shape [ConvertWithMoss](https://github.com/git-moss/ConvertWithMoss) wants for turning programs into a playable instrument.
@@ -92,7 +94,9 @@ By filesystem:
 | ISO 9660 | 15 | 11 601 | — | 0 |
 | Roland `S770 MR25A` | 5 | 6 392 | 1 341 | 0 |
 
-Every WAV was checked against the disc it came from — **70 of 70 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 89 125 payloads, zero mismatches. The two audio CDs are not in that count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
+"Stereo pairs" counts files joined from an `-L`/`-R` pair by name. E-mu's six are the only ones on those discs, and they are a different and much rarer thing than the 2 656 samples whose record declares two channels.
+
+Every WAV was checked against the disc it came from — **70 of 70 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 89 125 payloads, zero mismatches. The E-mu stereo samples are compared with their channels put back the way the disc stored them, since their WAV holds the same bytes interleaved; `tests/test_discs.py` asserts that de-interleaving reproduces the disc's two blocks exactly, per sample, on all seven discs. The two audio CDs are not in that count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
 
 105 082 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **275 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, six are on a Proteus library that ships `Dead Air` as a sample, and two are on a Roland disc. That is what the discs hold, not something the decoder did.
 
