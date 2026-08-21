@@ -8,11 +8,13 @@ import struct
 from samplerdisc.container.flat import FlatImage
 from samplerdisc.fs.emu3 import (
     BANK_MAGICS,
-    OFF_SAMPLE_HEADER_LEN,
+    OFF_SAMPLE_START_L,
     Emu3Backend,
     is_plausible_name,
 )
 from samplerdisc.fs.probe import find_origin
+from samplerdisc.sample.emu3 import DATA_START, MIN_LOOP_FRAMES
+from samplerdisc.sample.emu3 import parse as parse_sample
 from tests import fixtures
 
 BACKEND = Emu3Backend()
@@ -194,7 +196,7 @@ def test_an_unexplained_empty_bank_gets_no_note(tmp_path):
     """
     data = bytearray(fixtures.emu3_disc(INDEX_BANK))
     record = data.index(b"Arco C1") - 2  # a record begins two bytes before its name
-    struct.pack_into("<I", data, record + OFF_SAMPLE_HEADER_LEN, 0)
+    struct.pack_into("<I", data, record + OFF_SAMPLE_START_L, 0)
     volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "u.iso"), 0)}
     assert volumes["Full Arco String"].files == []
     assert not volumes["Full Arco String"].note
@@ -407,7 +409,7 @@ def test_the_directory_sizes_the_sample_not_the_record(tmp_path):
 
 
 def test_an_eiv_record_declaring_no_header_length_still_reads(tmp_path):
-    """``OFF_SAMPLE_HEADER_LEN`` reads 0 on 547 of `studio`'s records.
+    """``OFF_SAMPLE_START_L`` reads 0 on 547 of `studio`'s records.
 
     Requiring it to equal 92, as the EIII walk does, drops a fifth of that
     disc. The directory already says where the record is and what it is
@@ -415,7 +417,7 @@ def test_an_eiv_record_declaring_no_header_length_still_reads(tmp_path):
     """
     data = bytearray(fixtures.emu3_disc(EIV_FOLDERS, eiv=True))
     at = data.find(b"Stage Door", 64 * 512)
-    struct.pack_into("<I", data, at - 2 + OFF_SAMPLE_HEADER_LEN, 0)
+    struct.pack_into("<I", data, at - 2 + OFF_SAMPLE_START_L, 0)
     volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "hdr0.iso"), 0)}
     assert [f.name for f in volumes["Scroggins Secret"].files] == ["Stage Door", "All Nines"]
 
@@ -450,3 +452,121 @@ def test_folder_entries_need_not_carry_the_0xffff_flags(tmp_path):
         "flags.iso",
     )
     assert len(list(BACKEND.volumes(image, 0))) == 3
+
+
+# --- loop points (D17, ADR-0025) ----------------------------------------
+
+
+def _pointers(frames, loop=None, *, channel="l", other_zero=True):
+    """One record's pointer block, as it reaches the sample layer."""
+    end = DATA_START + frames * 2 - 2
+    out = dict.fromkeys(
+        (
+            "start_l",
+            "end_l",
+            "loop_start_l",
+            "loop_end_l",
+            "start_r",
+            "end_r",
+            "loop_start_r",
+            "loop_end_r",
+        ),
+        0,
+    )
+    out[f"start_{channel}"] = DATA_START
+    out[f"end_{channel}"] = end
+    if loop is not None:
+        start, stop = loop
+        out[f"loop_start_{channel}"] = DATA_START + start * 2
+        out[f"loop_end_{channel}"] = DATA_START + stop * 2
+    if not other_zero:
+        out["start_r"] = out["end_r"] = end
+    return out
+
+
+def _sample(frames, loop=None, **kwargs):
+    return parse_sample(
+        b"\x01\x00" * frames,
+        rate=22050,
+        fallback_name="X",
+        pointers=_pointers(frames, loop, **kwargs),
+    )
+
+
+def test_the_left_pointer_set_gives_the_loop_in_frames():
+    sample = _sample(5000, (1200, 4800))
+    assert [(loop.start, loop.end) for loop in sample.loops] == [(1200, 4800)]
+
+
+def test_the_right_set_is_read_where_the_record_declares_no_left_channel():
+    """542 of `studio`'s records zero the left start and put 92 at +26."""
+    sample = _sample(5000, (1200, 4800), channel="r")
+    assert [(loop.start, loop.end) for loop in sample.loops] == [(1200, 4800)]
+
+
+def test_a_loop_end_past_the_audio_is_refused_rather_than_clamped():
+    """The one place this format parts company with AKAI and Roland.
+
+    Both of those clamp a declared end back to the audio present. Here the
+    same move destroys the loop: `protozoa`'s mono records whose end already
+    fits correlate at their splice at +0.86, and the 525 whose end overshoots
+    score -0.10 once clamped -- same disc, same shape (ADR-0025).
+
+    Modelled as `esi32-gm` writes it: the record declares an extent longer than
+    the payload it carries, and a loop ending inside that declared extent but
+    past the audio. The pointers nest perfectly; only the audio is short.
+    """
+    frames = 5000
+    pointers = _pointers(frames + 50)  # an extent 50 frames past the payload
+    pointers["loop_start_l"] = DATA_START + 1200 * 2
+    pointers["loop_end_l"] = DATA_START + (frames + 20) * 2
+    sample = parse_sample(b"\x01\x00" * frames, rate=22050, pointers=pointers)
+    assert sample.loops == ()
+    assert sample.frames == frames  # still a sample, just not a looped one
+
+
+def test_a_loop_spanning_the_whole_extent_is_not_a_loop():
+    """The sampler fills the pointers with the sample's own bounds when
+    nothing set them; looping the entire file is not what that means."""
+    assert _sample(5000, (0, 5000)).loops == ()
+
+
+def test_a_loop_shorter_than_the_floor_is_dropped():
+    assert _sample(5000, (1200, 1200 + MIN_LOOP_FRAMES - 1)).loops == ()
+    assert _sample(5000, (1200, 1200 + MIN_LOOP_FRAMES)).loops != ()
+
+
+def test_pointers_that_do_not_nest_are_dropped():
+    assert _sample(5000, (4800, 1200)).loops == ()
+
+
+def test_an_unaligned_pointer_is_dropped():
+    pointers = _pointers(5000, (1200, 4800))
+    pointers["loop_start_l"] += 1
+    assert parse_sample(b"\x01\x00" * 5000, rate=22050, pointers=pointers).loops == ()
+
+
+def test_a_record_with_no_pointers_still_yields_a_sample():
+    """Tail damage: the header was too short to hold the block."""
+    sample = parse_sample(b"\x01\x00" * 100, rate=22050, pointers={})
+    assert sample.frames == 100 and sample.loops == ()
+
+
+def test_the_root_key_is_always_none():
+    """No byte of the 92 tracks the note in the sample's own name -- 8% on
+    1 741 named records of `esi32-gm`, which is chance (ADR-0025)."""
+    assert _sample(5000, (1200, 4800)).pitch is None
+
+
+def test_the_walk_carries_the_pointers_onto_the_file(tmp_path):
+    data = fixtures.emu3_disc(
+        [("Default Folder", [("Bank One        ", [("Looped", 22050, 5000)])])],
+        loops={"Looped": (1200, 4800)},
+    )
+    backend = Emu3Backend()
+    image = image_of(tmp_path, data)
+    volume = next(v for v in backend.volumes(image, 0) if v.files)
+    entry = volume.files[0]
+    assert entry.get("start_l") == DATA_START
+    sample = backend.parse_sample(entry, backend.read_file(image, 0, entry))
+    assert [(loop.start, loop.end) for loop in sample.loops] == [(1200, 4800)]

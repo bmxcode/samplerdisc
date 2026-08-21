@@ -42,6 +42,8 @@ Three things follow from that, and each is the same rule applied at a different 
 
 **Treat the paired length fields as a channel count.** `+34 == 2 × (+30) − 90` on both EIII and E-IV looks exactly like a mono/stereo flag, and building a stereo path on it was planned. Rejected on measurement: de-interleaving a payload as stereo roughly doubles its sample-to-sample delta, which is what decimating a smooth mono signal does, and the known-good `esi32-gm` `Piano E0` scores the same as every E-IV record. Everything is mono. E-IV pairs samples into stereo the way the rest of the collection does, by name ([ADR-0017](0017-the-stereo-side-marker-is-a-character-class.md)).
 
+> **This rejection is overturned by [ADR-0025](0025-the-loop-is-decoded-the-root-key-is-not.md); the rest of this record stands.** The measurement above is sound about *interleaved* stereo and tested the wrong hypothesis: the format splits into blocks — all of the left channel, then all of the right — which de-interleaving cannot detect. The two halves of a record whose pointers declare two channels are the same performance, correlating at 0.99, 0.96 and 0.95 by RMS envelope on three discs against 0.13–0.26 for one-channel records. The paired fields *are* a channel count. Nothing else here depends on it: bank binding, the chain and the directory's length are untouched.
+
 ## Consequences
 
 **Good.** Three discs that could only be listed now extract: 449, 2 822 and 828 samples. The four EIII/ESI counts are unchanged, which is the check that the shared record parser was not disturbed.

@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import struct
 import wave
+from pathlib import Path
 
 from samplerdisc.container.flat import FlatImage
 from samplerdisc.extract import extract_disc
@@ -118,3 +119,45 @@ def test_an_unlooped_sample_gets_a_root_key_but_no_loop(tmp_path):
     smpl = read_smpl(out / "partition-1" / "VOL 1" / "KICK.wav")
     assert smpl["note"] == 36
     assert smpl["loops"] == []
+
+
+# --- E-mu: loop points with no root key (D17, ADR-0025) -----------------
+
+
+def test_an_emu3_sample_carries_its_loop_and_a_neutral_root_key(tmp_path):
+    """The E-mu record declares loop points and no root key anywhere in its 92
+    bytes, so the WAV says what the disc says and no more (ADR-0025)."""
+    from samplerdisc.container.flat import FlatImage
+    from samplerdisc.fs.emu3 import Emu3Backend
+    from samplerdisc.wav import DEFAULT_ROOT_KEY
+
+    data = fixtures.emu3_disc(
+        [
+            (
+                "Default Folder",
+                [
+                    (
+                        "Bank One        ",
+                        [
+                            ("Looped", 22050, 5000),
+                            ("Plain", 22050, 5000),
+                        ],
+                    )
+                ],
+            )
+        ],
+        loops={"Looped": (1200, 4800)},
+    )
+    path = tmp_path / "emu.iso"
+    path.write_bytes(data)
+    out = tmp_path / "out"
+    results = list(extract_disc(FlatImage(path), Emu3Backend(), 0, str(out)))
+    written = {r.name: r.path for r in results if getattr(r, "path", None)}
+
+    looped = read_smpl(Path(written["Looped"]))
+    assert looped is not None
+    assert looped["note"] == DEFAULT_ROOT_KEY
+    assert looped["loops"] == [(1200, 4799)]  # exclusive in, inclusive out
+
+    # A record declaring no loop gets a plain WAV rather than an invented one.
+    assert read_smpl(Path(written["Plain"])) is None

@@ -878,6 +878,28 @@ def roland_s7xx_disc(
     return bytes(image)
 
 
+def _emu3_pointers(head: bytearray, payload_bytes: int, loop) -> None:
+    """Write a record's left-hand extent and loop pointers.
+
+    Byte offsets from the record's own start, naming the first byte of a word,
+    which is what the reference discs hold -- so the end addresses the *last*
+    word rather than one past it.
+    """
+    from samplerdisc.fs.emu3 import (
+        OFF_SAMPLE_END_L,
+        OFF_SAMPLE_LOOP_END_L,
+        OFF_SAMPLE_LOOP_START_L,
+        SAMPLE_HEADER_LEN,
+    )
+
+    struct.pack_into("<I", head, OFF_SAMPLE_END_L, SAMPLE_HEADER_LEN + payload_bytes - 2)
+    if loop is None:
+        return
+    start, end = loop
+    struct.pack_into("<I", head, OFF_SAMPLE_LOOP_START_L, SAMPLE_HEADER_LEN + start * 2)
+    struct.pack_into("<I", head, OFF_SAMPLE_LOOP_END_L, SAMPLE_HEADER_LEN + end * 2)
+
+
 def emu3_disc(
     folders,
     *,
@@ -892,6 +914,7 @@ def emu3_disc(
     duplicate_sample_dir: bool = False,
     folder_flags: int | None = None,
     total_blocks: int = 4096,
+    loops: dict[str, tuple[int, int]] | None = None,
 ) -> bytes:
     """Build a synthetic EMU3 image.
 
@@ -933,6 +956,11 @@ def emu3_disc(
     ``folder_flags`` overrides the folder entries' flags word. ``studio`` writes
     0x0013 and 0x0018 there rather than 0xFFFF, and requiring 0xFFFF loses
     every folder on that disc.
+
+    ``loops`` maps a sample name to ``(start frame, end frame)`` and writes the
+    record's left-hand loop pointers accordingly. A record not named here gets
+    the extent pointers and zeroed loop pointers, which is a record declaring
+    no loop -- so every fixture written before this existed still describes one.
     """
     from samplerdisc.fs.emu3 import (
         BANK_MAGICS,
@@ -948,9 +976,9 @@ def emu3_disc(
         OFF_EIV_LENGTH,
         OFF_EIV_NAME,
         OFF_EIV_POSITION,
-        OFF_SAMPLE_HEADER_LEN,
         OFF_SAMPLE_RATE,
         OFF_SAMPLE_RECORD_LEN,
+        OFF_SAMPLE_START_L,
         RECORD_LEN_BIAS,
         SAMPLE_AREA_PREAMBLE,
         SAMPLE_HEADER_LEN,
@@ -1021,8 +1049,9 @@ def emu3_disc(
                     image[record - EIV_RECORD_OFFSET : record - EIV_RECORD_OFFSET + 4] = EIV_MAGIC
                     head = bytearray(SAMPLE_HEADER_LEN)
                     head[2:18] = name16(sample_name)
-                    struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+                    struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
                     struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+                    _emu3_pointers(head, len(pcm), (loops or {}).get(sample_name))
                     image[record : record + SAMPLE_HEADER_LEN] = head
                     image[record + SAMPLE_HEADER_LEN : record + length] = pcm
                     position += length + EIV_CHAIN_STRIDE
@@ -1043,9 +1072,10 @@ def emu3_disc(
                 record_len = SAMPLE_HEADER_LEN + len(pcm)
                 head = bytearray(SAMPLE_HEADER_LEN)
                 head[2:18] = name16(sample_name)
-                struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+                struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
                 struct.pack_into("<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS)
                 struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+                _emu3_pointers(head, len(pcm), (loops or {}).get(sample_name))
                 image[cursor : cursor + SAMPLE_HEADER_LEN] = head
                 image[cursor + SAMPLE_HEADER_LEN : cursor + record_len] = pcm
                 cursor += record_len + 16  # a gap: records are not contiguous
@@ -1068,7 +1098,7 @@ def emu3_disc(
                     record_len = SAMPLE_HEADER_LEN + len(pcm)
                     head = bytearray(SAMPLE_HEADER_LEN)
                     head[2:18] = name16(stale_name)
-                    struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+                    struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
                     struct.pack_into(
                         "<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS
                     )
@@ -1094,7 +1124,7 @@ def emu3_disc(
         record_len = SAMPLE_HEADER_LEN + len(pcm)
         head = bytearray(SAMPLE_HEADER_LEN)
         head[2:18] = name16("Older Revision")
-        struct.pack_into("<I", head, OFF_SAMPLE_HEADER_LEN, SAMPLE_HEADER_LEN)
+        struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
         struct.pack_into("<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS)
         struct.pack_into("<I", head, OFF_SAMPLE_RATE, 22000)
         image[record_at : record_at + SAMPLE_HEADER_LEN] = head
