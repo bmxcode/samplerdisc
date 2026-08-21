@@ -8,9 +8,11 @@ import wave
 import pytest
 
 from samplerdisc.container.flat import FlatImage
-from samplerdisc.extract import Skipped, extract_disc, safe_name, unique_path
+from samplerdisc.extract import Extracted, Skipped, extract_disc, safe_name, unique_path
 from samplerdisc.fs.akai import SAMPLE_HEADER_LEN, AkaiBackend
+from samplerdisc.fs.iso9660 import Iso9660Backend
 from samplerdisc.sample.akai import NotASample, parse
+from samplerdisc.wav import Loop, write_wav
 from tests import fixtures
 
 BACKEND = AkaiBackend()
@@ -172,3 +174,90 @@ def test_volumes_of_one_name_in_two_partitions_do_not_share_a_directory(tmp_path
     # And they are the two different samples, not one written twice.
     with wave.open(written[0]) as one, wave.open(written[1]) as two:
         assert (one.getnframes(), two.getnframes()) == (64, 128)
+
+
+def _iso_results(tmp_path, files, **kwargs):
+    """Extract one synthetic ISO 9660 disc and return what came back."""
+    path = tmp_path / "d.iso"
+    path.write_bytes(fixtures.make_iso9660(files, **kwargs))
+    image = FlatImage(path)
+    backend = Iso9660Backend()
+    return list(extract_disc(image, backend, 0, str(tmp_path / "out")))
+
+
+def test_an_aiff_whose_audio_is_already_written_is_skipped_not_written(tmp_path):
+    """Best Service shipped these discs with an AIFF tree beside a WAV tree of
+    the same sounds. Writing both gives every sample twice for no extra
+    audio (ADR-0024)."""
+    pcm = fixtures.aiff_pcm(64)
+    wav = _wav_bytes(tmp_path, _swapped(pcm), rate=44100)
+    results = _iso_results(tmp_path, {"A.AIF": fixtures.make_aiff(frames=64), "A.WAV": wav})
+
+    written = [r for r in results if isinstance(r, Extracted)]
+    duplicates = [r for r in results if isinstance(r, Skipped) and r.duplicate]
+    assert [r.name for r in written] == ["A.WAV"]
+    assert [r.name for r in duplicates] == ["A.AIF"]
+    assert "A.WAV" in duplicates[0].reason
+
+
+def test_an_aiff_with_different_audio_is_written_however_it_is_named(tmp_path):
+    """The twin is recognised by its audio and not by its name. ProSamples
+    vol.43 carries pairs that share a name and differ by eleven frames, and
+    those are two different sounds."""
+    wav = _wav_bytes(tmp_path, _swapped(fixtures.aiff_pcm(64)), rate=44100)
+    results = _iso_results(tmp_path, {"A.AIF": fixtures.make_aiff(frames=48), "A.WAV": wav})
+
+    assert sorted(r.name for r in results if isinstance(r, Extracted)) == ["A.AIF", "A.WAV"]
+    assert not [r for r in results if isinstance(r, Skipped) and r.duplicate]
+
+
+def test_the_twin_is_kept_when_it_carries_a_loop_the_wav_has_nowhere(tmp_path):
+    """Same audio is not the same file. On 314 of these pairs the AIFF holds a
+    root key and a loop and the plain WAV holds neither, so deduplicating on
+    the audio alone would drop the metadata with it."""
+    pcm = fixtures.aiff_pcm(200)
+    plain = _wav_bytes(tmp_path, _swapped(pcm), rate=44100)
+    aiff_with_loop = fixtures.make_aiff(frames=200, loop=(64, 192), base_note=48)
+    results = _iso_results(tmp_path, {"A.AIF": aiff_with_loop, "A.WAV": plain})
+
+    written = sorted(r.name for r in results if isinstance(r, Extracted))
+    assert written == ["A.AIF", "A.WAV"]
+
+
+def test_the_twin_is_dropped_when_the_wav_already_carries_the_metadata(tmp_path):
+    """And where both carry it they agree: checked on 173 ProSamples pairs
+    against the publisher's own smpl chunk."""
+    pcm = fixtures.aiff_pcm(200)
+    path = tmp_path / "rich.wav"
+    write_wav(path, _swapped(pcm), rate=44100, midi_note=48, loops=[Loop(start=64, end=191)])
+    aiff_with_loop = fixtures.make_aiff(frames=200, loop=(64, 192), base_note=48)
+    results = _iso_results(tmp_path, {"A.AIF": aiff_with_loop, "A.WAV": path.read_bytes()})
+
+    assert [r.name for r in results if isinstance(r, Extracted)] == ["A.WAV"]
+    assert [r.name for r in results if isinstance(r, Skipped) and r.duplicate] == ["A.AIF"]
+
+
+def test_a_copied_wav_reports_the_rate_and_length_it_declares(tmp_path):
+    """A run that cannot say what it wrote reported nothing. Every ISO 9660
+    payload used to come back as 0 Hz and 0 frames."""
+    wav = _wav_bytes(tmp_path, _swapped(fixtures.aiff_pcm(64)), rate=22050)
+    results = _iso_results(tmp_path, {"A.WAV": wav})
+    extracted = next(r for r in results if isinstance(r, Extracted))
+    assert (extracted.rate, extracted.frames) == (22050, 64)
+
+
+def test_a_converted_aiff_reports_the_rate_and_length_it_declares(tmp_path):
+    results = _iso_results(tmp_path, {"A.AIF": fixtures.make_aiff(frames=64, rate=22050)})
+    extracted = next(r for r in results if isinstance(r, Extracted))
+    assert (extracted.rate, extracted.frames) == (22050, 64)
+
+
+def _swapped(pcm: bytes) -> bytes:
+    """The same 16-bit samples, little-endian."""
+    return bytes(b for pair in zip(pcm[1::2], pcm[0::2], strict=True) for b in pair)
+
+
+def _wav_bytes(tmp_path, pcm: bytes, rate: int) -> bytes:
+    path = tmp_path / "w.wav"
+    write_wav(path, pcm, rate=rate)
+    return path.read_bytes()

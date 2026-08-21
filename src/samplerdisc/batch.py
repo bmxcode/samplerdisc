@@ -38,8 +38,12 @@ class DiscReport:
     samples: int = 0
     stereo_pairs: int = 0
     originals: int = 0
+    #: Entries read, understood, and deliberately not written because their
+    #: audio was already written from another file on the same disc. Counted
+    #: apart from ``skipped`` so a clean disc does not read as a damaged one.
+    duplicates: int = 0
     audio_tracks: int = 0
-    skipped: list[dict[str, str]] = field(default_factory=list)
+    skipped: list[dict[str, object]] = field(default_factory=list)
     error: str | None = None
 
     @property
@@ -108,12 +112,15 @@ def convert_disc(
                 elif isinstance(result, Kept):
                     report.originals += 1
                 elif isinstance(result, Skipped):
+                    if result.duplicate:
+                        report.duplicates += 1
                     report.skipped.append(
                         {
                             "volume": result.volume,
                             "partition": result.partition,
                             "name": result.name,
                             "reason": result.reason,
+                            "duplicate": result.duplicate,
                         }
                     )
             report.volumes = list(volumes.values())
@@ -142,6 +149,7 @@ def write_manifest(path: str, reports: list[DiscReport]) -> None:
             "audio_tracks": sum(r.audio_tracks for r in reports),
             "originals": sum(r.originals for r in reports),
             "skipped": sum(len(r.skipped) for r in reports),
+            "duplicates": sum(r.duplicates for r in reports),
         },
     }
     directory = os.path.dirname(os.path.abspath(path))

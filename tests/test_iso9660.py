@@ -280,3 +280,35 @@ def test_the_fallback_does_not_fire_on_a_healthy_disc(tmp_path):
     )
     volume = next(iter(BACKEND.volumes(image, 0)))
     assert [f.name for f in volume.files] == ["Kick 01.wav"]
+
+
+def test_instrument_definitions_are_classified_as_programs(tmp_path, payload):
+    """EXS24 and HALion files are to one of these discs what a program is to an
+    AKAI one: the key ranges and envelopes, which the WAVs cannot carry."""
+    image = iso_image(
+        tmp_path,
+        {"P.EXS": b"exs", "H.FXP": b"fxp", "B.FXB": b"fxb", "A.WAV": payload, "R.TXT": b"read me"},
+    )
+    kinds = {f.name: f.kind for f in next(iter(BACKEND.volumes(image, 0))).files}
+    assert kinds == {
+        "P.EXS": "program",
+        "H.FXP": "program",
+        "B.FXB": "program",
+        "A.WAV": "wav",
+        "R.TXT": "file",
+    }
+
+
+def test_an_original_keeps_the_extension_the_disc_gave_it(tmp_path, payload):
+    """Unlike a sampler filesystem, this one has real filenames. Falling back
+    to the default suffix writes every kept .exs out as .bin -- the bytes
+    survive and nothing will open them."""
+    image = iso_image(tmp_path, {"P.EXS": b"exs", "A.WAV": payload})
+    files = {f.name: f for f in next(iter(BACKEND.volumes(image, 0))).files}
+    assert BACKEND.original_suffix(files["P.EXS"]) == ".exs"
+
+
+def test_an_original_with_no_extension_falls_back_to_the_default(tmp_path, payload):
+    image = iso_image(tmp_path, {"README": b"notes", "A.WAV": payload})
+    entry = next(f for f in next(iter(BACKEND.volumes(image, 0))).files if f.name == "README")
+    assert BACKEND.original_suffix(entry) == ".bin"

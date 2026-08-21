@@ -105,6 +105,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         joined = 0
         kept = 0
         skipped = 0
+        duplicates = 0
         results = extract_disc(
             image,
             origin.backend,
@@ -128,13 +129,22 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 if args.verbose:
                     print(f"  {result.volume}/original/{result.name}  kept ({result.kind})")
             else:
-                skipped += 1
+                if result.duplicate:
+                    duplicates += 1
+                else:
+                    skipped += 1
                 print(f"  skipped {result.volume}/{result.name}: {result.reason}", file=sys.stderr)
     print(f"wrote {written} WAV files to {args.out}")
     if joined:
         print(f"joined {joined} stereo pairs (mono originals kept)")
     if kept:
-        print(f"kept {kept} original AKAI files")
+        # Not "AKAI files": an ISO 9660 disc keeps EXS24 and HALion
+        # instruments through the same path.
+        print(f"kept {kept} original files")
+    if duplicates:
+        # Not damage, and saying so matters: a disc that lists 423 skips reads
+        # as a bad rip when every one of them is a sound already written.
+        print(f"skipped {duplicates} duplicates of audio already written")
     if skipped:
         # A disc that yields most of its samples is a good outcome; say so
         # plainly rather than burying it.

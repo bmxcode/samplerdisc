@@ -13,6 +13,7 @@ Without these docs, the next session re-derives the MDX block chain by hexdumpin
 | [emu3.md](emu3.md) | E-mu `EMU3` filesystem — EIIIX, ESI/Formula 4000, E-IV |
 | [roland-s7xx.md](roland-s7xx.md) | Roland `S770 MR25A` filesystem — S-770, S-750, S-760 |
 | [iso9660.md](iso9660.md) | ISO 9660 and Joliet — discs whose payload is already audio |
+| [aiff.md](aiff.md) | AIFF — the payload inside those discs, and the one format carried rather than copied |
 | [audio-cd.md](audio-cd.md) | Red Book audio CDs — no filesystem at all |
 
 ## How to read the constants
@@ -34,6 +35,9 @@ The reference discs are not in this repository ([ADR-0008](../adr/0008-no-media-
 | `l-cdx-01` | `Roland - L-CDX-01 - Rhythm Section Instruments (Roland Sxx CD-ROM).iso` | 629 149 696 |
 | `vintage-pro` | `Digital Sound Factory - E-MU Vintage Pro.bin` + `.cue` | 45 558 240 |
 | `bsbssd2` | `Best Service - Brass Super Section (CD2).bin` + `.cue` | 539 584 080 |
+| `prosamples-42` | `Best Service ProSamples vol.42 - Session Instruments [AIFF, EXS24, HALion, WAV] 1CD.iso` | 263 153 664 |
+| `prosamples-43` | `Best Service ProSamples vol.43 - Real Drum Kits [AIFF, EXS24, HALion, WAV] 1CD.iso` | 414 228 480 |
+| `prosamples-45` | `Best Service ProSamples vol.45 - Techno ID [AIFF, EXS24, HALion, WAV] 1CD.iso` | 433 889 280 |
 
 Point `SAMPLERDISC_TEST_DISCS` at a directory containing them to run the disc-backed tests. The scan recurses, so pointing it at the collection root rather than one folder is fine.
 

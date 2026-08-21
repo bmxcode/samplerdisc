@@ -518,6 +518,80 @@ def tiny_wav(tmp_path, frames: int = 32, rate: int = 44100) -> bytes:
     return path.read_bytes()
 
 
+def aiff_pcm(frames: int = 32, channels: int = 1) -> bytes:
+    """Big-endian PCM, the way an AIFF stores it."""
+    return b"".join(struct.pack(">h", (i * 211) % 8000 - 4000) for i in range(frames * channels))
+
+
+def make_aiff(
+    frames: int = 32,
+    rate: int = 44100,
+    channels: int = 1,
+    bits: int = 16,
+    pcm: bytes | None = None,
+    form: bytes = b"AIFF",
+    loop: tuple[int, int] | None = None,
+    base_note: int = 60,
+    detune: int = 0,
+    play_mode: int = 1,
+    name: str = "",
+    ssnd_offset: int = 0,
+    declared_frames: int | None = None,
+) -> bytes:
+    """One AIFF payload. See docs/formats/aiff.md.
+
+    ``loop`` is a ``(start, end)`` frame pair; supplying it adds the MARK and
+    INST chunks that carry a loop and a root key. ``form`` is exposed so a test
+    can build the AIFF-C the parser must refuse.
+    """
+    if pcm is None:
+        pcm = aiff_pcm(frames, channels)
+
+    def chunk(tag: bytes, body: bytes) -> bytes:
+        return tag + struct.pack(">I", len(body)) + body + (b"\x00" if len(body) % 2 else b"")
+
+    # The 80-bit IEEE extended sample rate: exponent, then a mantissa with an
+    # explicit leading bit.
+    exponent = 16383 + 63
+    mantissa = rate
+    while mantissa and not mantissa & (1 << 63):
+        mantissa <<= 1
+        exponent -= 1
+    extended = struct.pack(">HQ", exponent, mantissa) if rate else b"\x00" * 10
+
+    body = chunk(
+        b"COMM",
+        struct.pack(
+            ">HIH", channels, declared_frames if declared_frames is not None else frames, bits
+        )
+        + extended,
+    )
+    if name:
+        body += chunk(b"NAME", name.encode("ascii"))
+    if loop is not None:
+        start, end = loop
+        markers = struct.pack(">H", 2)
+        # Marker names are Pascal strings padded so the count byte and the
+        # characters together come to an even length. "L" needs no pad; "END"
+        # does, and using both exercises the walk either way.
+        for marker_id, position, label in ((1, start, b"L"), (2, end, b"END")):
+            pstring = bytes([len(label)]) + label
+            markers += (
+                struct.pack(">hI", marker_id, position)
+                + pstring
+                + (b"\x00" if len(pstring) % 2 else b"")
+            )
+        body += chunk(b"MARK", markers)
+        body += chunk(
+            b"INST",
+            struct.pack(">bbbbbbh", base_note, detune, 0, 127, 0, 127, 0)
+            + struct.pack(">hhh", play_mode, 1, 2)
+            + struct.pack(">hhh", 0, 0, 0),
+        )
+    body += chunk(b"SSND", struct.pack(">II", ssnd_offset, 0) + b"\x00" * ssnd_offset + pcm)
+    return b"FORM" + struct.pack(">I", 4 + len(body)) + form + body
+
+
 def subchannel_block(seed: int = 0, sectors: int = 15) -> tuple[bytes, bytes]:
     """One MDX block of 2144-byte sectors: 2048 of data plus 96 of subchannel.
 

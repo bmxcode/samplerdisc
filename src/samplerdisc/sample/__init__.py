@@ -7,8 +7,10 @@ in a header ahead of the audio; E-mu carries a rate and nothing else; Roland
 keeps its parameters in a different region of the disc entirely, so its
 filesystem layer hands them over on the ``File``.
 
-None of them convert anything. The payload becomes a WAV data chunk unchanged
-(ADR-0011).
+None of them alter a sample value. A sampler payload becomes a WAV data chunk
+unchanged; AIFF alone is re-ordered, because its samples are big-endian and a
+WAV's are little-endian, and reversing the bytes within a value is not the same
+as changing it (ADR-0011, ADR-0024).
 """
 
 from __future__ import annotations
