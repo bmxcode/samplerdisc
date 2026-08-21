@@ -103,7 +103,7 @@ def _pinned_sizes() -> set[int]:
         *(size for size, _ in _ROLAND_S7XX.values()),
         *(size for size, _, _ in _ISO9660.values()),
         *(size for size, _, _ in _EMU3.values()),
-        *(size for size, _, _, _ in _AKAI.values()),
+        *(size for size, _, _, _, _, _ in _AKAI.values()),
     }
 
 
@@ -436,7 +436,8 @@ def test_protozoa_gives_each_bank_its_own_records() -> None:
 
 
 #: AKAI discs pinned by size, with the volumes, files and *noted* volumes each
-#: must yield. The noted count is pinned as tightly as the file count on
+#: must yield, and the partitions its table declares against the partitions
+#: this image holds. The noted count is pinned as tightly as the file count on
 #: purpose: a note is what separates an emptiness the disc accounts for from
 #: the ADR-0012 signature, so a note appearing where none was measured is a
 #: backend explaining away something nobody looked at, and one disappearing is
@@ -444,28 +445,56 @@ def test_protozoa_gives_each_bank_its_own_records() -> None:
 #: and #17 together with the four counter-examples -- volumes whose type byte
 #: is 0 and whose blocks the allocation map calls free, which carry 63 files
 #: between them and must keep every one.
-#: ``label: (size in bytes, volumes, files, volumes carrying a note)``.
+#:
+#: The two partition columns are the pin on #22, and they differ on purpose:
+#: `Kickin' Lunatic Beats 2 CD1` declares eleven partitions and the image holds
+#: one, which is the image being short of the disc rather than the disc being
+#: small (ADR-0023, issue #17). A present count that climbs to the declared one
+#: would mean the walk had started accepting positions with no header at them.
+#: ``label: (size in bytes, volumes, files, noted, partitions declared, present)``.
 _AKAI = {
-    "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 18, 464, 4),
-    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 18, 669, 5),
-    "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (371_768_845, 20, 1346, 0),
-    "OMI Universe Of Sounds Vol.1 (Roland S-770,S-750)": (295_837_696, 28, 900, 1),
-    "Back in Time Records - Big Bang": (269_979_648, 8, 380, 0),
-    "Best Service ProSamples vol.01 - Hip Hop and R&B Drumloops": (314_882_048, 7, 82, 0),
-    "Best Service ProSamples vol.19 - Pop Brass": (484_558_848, 3, 139, 0),
-    "Best Service ProSamples vol.24 - Breakbeat": (505_772_032, 15, 113, 0),
+    "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 88, 2669, 4, 9, 9),
+    "AMG - Loop Soup AKAI": (542_419_100, 60, 4689, 0, 9, 9),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 18, 669, 5, 11, 1),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (371_768_845, 20, 1346, 0, 9, 1),
+    "OMI Universe Of Sounds Vol.1 (Roland S-770,S-750)": (295_837_696, 69, 1653, 1, 5, 5),
+    "Back in Time Records - Big Bang": (269_979_648, 137, 2689, 0, 9, 9),
+    "Best Service ProSamples vol.01 - Hip Hop and R&B Drumloops": (314_882_048, 41, 492, 1, 9, 5),
+    "Best Service ProSamples vol.19 - Pop Brass": (484_558_848, 12, 533, 0, 9, 5),
+    "Best Service ProSamples vol.24 - Breakbeat": (505_772_032, 38, 310, 0, 4, 4),
+}
+
+#: What each of those discs held when only the partition at the origin was read
+#: (#22). Kept beside the table above rather than deleted: these are the
+#: numbers every earlier release reported, and pinning them is what shows the
+#: new ones are *additional* partitions rather than the same volumes counted
+#: differently. ``label: (volumes, files, noted)`` for partition 1 alone.
+_AKAI_FIRST_PARTITION = {
+    "AKAI Advance Orchestra Upgrade 97 Vol.1": (18, 464, 4),
+    "AMG - Loop Soup AKAI": (7, 490, 0),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (18, 669, 5),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (20, 1346, 0),
+    "OMI Universe Of Sounds Vol.1 (Roland S-770,S-750)": (28, 900, 1),
+    "Back in Time Records - Big Bang": (8, 380, 0),
+    "Best Service ProSamples vol.01 - Hip Hop and R&B Drumloops": (7, 82, 0),
+    "Best Service ProSamples vol.19 - Pop Brass": (3, 139, 0),
+    "Best Service ProSamples vol.24 - Breakbeat": (15, 113, 0),
 }
 
 
 @pytest.mark.parametrize("label", sorted(_AKAI))
 def test_akai_discs_list_their_volumes_and_files(label: str) -> None:
     """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
-    size, volumes_expected, files_expected, noted_expected = _AKAI[label]
+    from samplerdisc.fs.akai import partition_table, partitions
+
+    size, volumes_expected, files_expected, noted_expected, declared, present = _AKAI[label]
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
         assert origin is not None, f"{label}: no filesystem found"
         assert origin.backend.name == "akai"
         assert origin.offset == 0
+        assert len(partition_table(image, origin.offset)) == declared
+        assert len(list(partitions(image, origin.offset))) == present
         volumes = list(origin.backend.volumes(image, origin.offset))
         assert len(volumes) == volumes_expected
         assert sum(len(v.files) for v in volumes) == files_expected
@@ -474,6 +503,79 @@ def test_akai_discs_list_their_volumes_and_files(label: str) -> None:
         # "the collection has no silent volume" to "this disc has none", which
         # only a disc whose expected shape is known can ask (ADR-0012).
         assert all(v.files or v.note for v in volumes), [v.name for v in volumes if not v.files]
+        # Every partition read is one the table declares, and each volume knows
+        # which -- a volume with no partition would be one read outside the
+        # walk, and its block numbers would be relative to nothing (ADR-0023).
+        assert {v.partition for v in volumes} <= set(range(1, declared + 1))
+        assert all(v.partition for v in volumes)
+
+
+@pytest.mark.parametrize("label", sorted(_AKAI_FIRST_PARTITION))
+def test_akai_partition_one_holds_exactly_what_it_did_before(label: str) -> None:
+    """#22 adds partitions; it must not move a single volume of the first one.
+
+    The whole risk in threading a per-partition origin through the walk is
+    getting the arithmetic subtly wrong, and the symptom would not be an error
+    -- it would be volumes and files that still list, from the wrong place.
+    Partition 1's numbers are the control, because they were measured before
+    any of this and nothing about it should touch them.
+    """
+    volumes_expected, files_expected, noted_expected = _AKAI_FIRST_PARTITION[label]
+    with open_image(_pinned_disc(label, _AKAI[label][0])) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        first = [v for v in origin.backend.volumes(image, origin.offset) if v.partition == 1]
+        assert len(first) == volumes_expected
+        assert sum(len(v.files) for v in first) == files_expected
+        assert sum(1 for v in first if v.note) == noted_expected
+        # Partition 1 begins at the origin, so its blocks need no adjustment.
+        assert {v.origin for v in first} == {0}
+
+
+def test_loop_soup_reads_all_nine_partitions_and_the_payloads_agree() -> None:
+    """The disc issue #22 was written against, end to end.
+
+    `Loop Soup` declares nine partitions and the image holds all nine; six
+    carry volumes and the names run on across them -- partition 1 ends at
+    `SOUP 115-117` and partition 2 opens at `SOUP 120`, which is what says
+    this is the disc's own content and not a coincidence of structure.
+
+    Then the strong half: every sample past the first partition is read back
+    and its **payload header** must carry the name its directory entry gives
+    it. Two structures written independently, one 8 KB-aligned block apart --
+    if the per-partition origin were wrong by so much as a block, the names
+    would disagree wholesale rather than the read failing. All 3 200 agree.
+    """
+    from samplerdisc.fs.akai import decode_name, partitions
+
+    with open_image(
+        _pinned_disc("AMG - Loop Soup AKAI", _AKAI["AMG - Loop Soup AKAI"][0])
+    ) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        assert len(list(partitions(image, origin.offset))) == 9
+        volumes = list(origin.backend.volumes(image, origin.offset))
+        opening = {}
+        for volume in volumes:
+            opening.setdefault(volume.partition, volume.name)
+        assert opening[1] == "SOUP 101-103"
+        assert opening[2] == "SOUP 120"
+
+        checked = 0
+        for volume in volumes:
+            if volume.partition == 1:
+                continue
+            for entry in volume.files:
+                if entry.kind != "sample":
+                    continue
+                payload = origin.backend.read_file(image, origin.offset, entry)
+                assert len(payload) == entry.size, f"{volume.name}/{entry.name}: short read"
+                assert decode_name(payload[3:15]) == entry.name, (
+                    f"partition {volume.partition} {volume.name}/{entry.name}: payload header "
+                    f"says {decode_name(payload[3:15])!r}"
+                )
+                checked += 1
+        assert checked == 3200
 
 
 def test_akai_unused_slots_are_explained_by_the_allocation_map() -> None:
@@ -513,7 +615,11 @@ def test_akai_unused_slots_are_explained_by_the_allocation_map() -> None:
         with open_image(_pinned_disc(label, _AKAI[label][0])) as image:
             origin = find_origin(image)
             assert origin is not None
-            volumes = {v.name: v for v in origin.backend.volumes(image, origin.offset)}
+            # Partition 1: these ten volumes were measured there, and a name is
+            # not unique across a disc's partitions (ADR-0023).
+            volumes = {
+                v.name: v for v in origin.backend.volumes(image, origin.offset) if v.partition == 1
+            }
             for name, fragment in wanted.items():
                 volume = volumes[name]
                 assert not volume.files, f"{label}: {name} unexpectedly lists files"
@@ -544,7 +650,9 @@ def test_akai_keeps_the_files_of_a_volume_the_allocation_map_calls_free() -> Non
             origin = find_origin(image)
             assert origin is not None
             allocation = allocation_map(image, origin.offset)
-            volume = {v.name: v for v in origin.backend.volumes(image, origin.offset)}[name]
+            volume = {
+                v.name: v for v in origin.backend.volumes(image, origin.offset) if v.partition == 1
+            }[name]
             assert allocation[volume.start_block] == FAT_FREE, label
             assert len(volume.files) == count, label
             assert not volume.note
@@ -570,17 +678,38 @@ def test_an_akai_file_chain_is_as_long_as_its_declared_size(path: Path) -> None:
     exclusion has to be by what the map says and not by a tolerance -- on
     `ProSamples vol.19` they are 37 of 139 files, so any rate loose enough to
     pass there would be loose enough to hide a real fault on a larger disc.
+
+    **Per partition**, each against its own map, since #22: a block number
+    counts from the partition it is in, so checking every file against the
+    first partition's map would compare the wrong two things and pass or fail
+    for the wrong reason. Extended to all 276 partitions the agreement is 68
+    267 of 68 284 files, and every one of the 17 exceptions is a `MULTI FILE`
+    -- kind ``multi``, all on `AKAI.S3000.Sound.Library.1` -- whose chain runs
+    exactly one block past what its size needs. They are named here rather
+    than tolerated, so a second kind of disagreement fails.
     """
-    from samplerdisc.fs.akai import BLOCK_SIZE, FAT_FREE, FAT_VOLUME_DIR, allocation_map
+    from samplerdisc.fs.akai import (
+        BLOCK_SIZE,
+        FAT_FREE,
+        FAT_VOLUME_DIR,
+        allocation_map,
+        partitions,
+    )
 
     with open_image(path) as image:
         origin = find_origin(image)
         if origin is None or origin.backend.name != "akai":
             return
-        allocation = allocation_map(image, origin.offset)
-        assert allocation, f"{path.name}: no allocation map"
+        maps = {
+            part.offset: allocation_map(image, origin.offset + part.offset)
+            for part in partitions(image, origin.offset)
+        }
+        assert maps.get(0), f"{path.name}: no allocation map"
         disagreed = []
         for volume in origin.backend.volumes(image, origin.offset):
+            allocation = maps.get(volume.origin, [])
+            if not allocation:
+                continue
             if volume.start_block < len(allocation) and allocation[volume.start_block] == FAT_FREE:
                 continue
             for entry in volume.files:
@@ -592,8 +721,16 @@ def test_an_akai_file_chain_is_as_long_as_its_declared_size(path: Path) -> None:
                     if allocation[block] >= FAT_VOLUME_DIR:
                         break
                     block = allocation[block]
-                if length != want:
-                    disagreed.append(f"{volume.name}/{entry.name}: {length} blocks, wanted {want}")
+                if length == want:
+                    continue
+                if entry.kind == "multi" and length == want + 1:
+                    # The one exception, and it is the same on all 17: a multi
+                    # is allocated a block more than its size needs.
+                    continue
+                disagreed.append(
+                    f"partition {volume.partition} {volume.name}/{entry.name} "
+                    f"({entry.kind}): {length} blocks, wanted {want}"
+                )
         assert not disagreed, (
             f"{path.name}: {len(disagreed)} files whose chain is not as long as the "
             f"size their directory declares, first: {disagreed[:3]}"

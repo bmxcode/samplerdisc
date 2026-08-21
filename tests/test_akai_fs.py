@@ -462,3 +462,147 @@ def test_an_absurd_partition_size_yields_no_map(tmp_path):
     assert allocation_map(image_of(tmp_path, bytes(data), "a.iso"), 0) == []
     struct.pack_into("<H", data, PARTITION_BLOCKS_OFFSET, 0)
     assert allocation_map(image_of(tmp_path, bytes(data), "b.iso"), 0) == []
+
+
+# --- partitions ---------------------------------------------------------
+
+
+def _partition(volume: str, file_name: str, seed: int) -> bytes:
+    """One partition holding one volume with one sample, distinguishable by name."""
+    payload = fixtures.akai_sample(file_name, words=64 + seed)
+    return fixtures.akai_partition([(volume, [(file_name, 0x73, len(payload), payload)])])
+
+
+def test_the_table_places_every_partition_and_the_header_confirms_it(tmp_path):
+    """A disc is a disk of partitions, and the disk says how many (ADR-0023).
+
+    Nothing here is inferred from the first partition's size: the table lists
+    each one, and the walk reads a partition only where a header sits at the
+    position the table gives.
+    """
+    from samplerdisc.fs.akai import partition_table, partitions
+
+    data = fixtures.akai_disc(
+        [
+            _partition("SOUP 101-103", "KICK 1", 1),
+            _partition("SOUP 120", "TOY DRMS2", 2),
+            _partition("SOUP 89-93", "SPAGETTI", 3),
+        ]
+    )
+    image = image_of(tmp_path, data)
+    assert partition_table(image, 0) == [512, 512, 512]
+    assert [(p.index, p.offset, p.blocks) for p in partitions(image, 0)] == [
+        (1, 0, 512),
+        (2, 512 * 8192, 512),
+        (3, 1024 * 8192, 512),
+    ]
+    volumes = list(BACKEND.volumes(image, 0))
+    assert [(v.partition, v.name) for v in volumes] == [
+        (1, "SOUP 101-103"),
+        (2, "SOUP 120"),
+        (3, "SOUP 89-93"),
+    ]
+
+
+def test_block_numbers_are_relative_to_their_own_partition(tmp_path):
+    """The trap this deliverable exists to avoid, and it does not raise.
+
+    Every partition numbers its blocks from its own start, so two volumes in
+    different partitions have the same start block and hold different audio.
+    Read a file with the partition term dropped and you get plausible bytes
+    from the wrong partition -- audio, not an error.
+    """
+    first = _partition("VOLUME 001", "KICK 1", 1)
+    second = _partition("VOLUME 001", "SPAGETTI", 2)
+    image = image_of(tmp_path, fixtures.akai_disc([first, second]))
+    volumes = list(BACKEND.volumes(image, 0))
+    assert [v.name for v in volumes] == ["VOLUME 001", "VOLUME 001"]
+    assert volumes[0].start_block == volumes[1].start_block
+    assert volumes[0].origin == 0
+    assert volumes[1].origin == 512 * 8192
+
+    entry = volumes[1].files[0]
+    assert entry.origin == 512 * 8192
+    payload = BACKEND.read_file(image, 0, entry)
+    assert payload == second[entry.start_block * 8192 :][: entry.size]
+    # And the same block in the first partition is a different sample.
+    assert payload != BACKEND.read_file(image, 0, volumes[0].files[0])
+
+
+def test_a_declared_partition_the_image_lacks_is_skipped_and_the_walk_goes_on(tmp_path):
+    """An image short of the disk it was made from loses a partition, not the rest.
+
+    The table gives absolute positions, so a missing header costs its own
+    partition and nothing after it. Where the header is missing the walk stops
+    rather than searching: on the discs that do this the header turns up
+    displaced by a whole number of the container's blocks, which is the rip
+    being incomplete (ADR-0023, issue #17).
+    """
+    blank = bytes(512 * 8192)
+    data = fixtures.akai_disc(
+        [_partition("SOUP 101-103", "KICK 1", 1), blank, _partition("SOUP 89-93", "SPAGETTI", 3)]
+    )
+    image = image_of(tmp_path, data)
+    volumes = list(BACKEND.volumes(image, 0))
+    assert [(v.partition, v.name) for v in volumes] == [(1, "SOUP 101-103"), (3, "SOUP 89-93")]
+    assert BACKEND.layout(image, 0) == "3 partitions declared, 2 present in this image"
+
+
+def test_a_table_declaring_more_than_the_image_holds_reads_what_is_there(tmp_path):
+    """`Kickin' Lunatic Beats 2 CD1` declares eleven partitions and holds one."""
+    data = fixtures.akai_disc([_partition("SOUP 101-103", "KICK 1", 1)], declared=[512, 512, 512])
+    image = image_of(tmp_path, data)
+    assert [v.partition for v in BACKEND.volumes(image, 0)] == [1]
+    assert BACKEND.layout(image, 0) == "3 partitions declared, 1 present in this image"
+
+
+def test_a_table_whose_sizes_do_not_sum_is_not_a_table(tmp_path):
+    """The sum is what tells a table from bytes that happen to land at 0x4500.
+
+    Sizes and total are written separately and agree on all 44 discs measured,
+    so a disagreement means this is not the structure -- and the disc falls
+    back to the one partition the origin resolved to rather than to arithmetic.
+    """
+    import struct
+
+    from samplerdisc.fs.akai import PARTITION_TABLE_OFFSET, partition_table
+
+    data = bytearray(
+        fixtures.akai_disc(
+            [_partition("SOUP 101-103", "KICK 1", 1), _partition("SOUP 120", "X", 2)]
+        )
+    )
+    struct.pack_into("<H", data, PARTITION_TABLE_OFFSET + 2 + 4, 9999)
+    image = image_of(tmp_path, bytes(data))
+    assert partition_table(image, 0) == []
+    assert [(v.partition, v.name) for v in BACKEND.volumes(image, 0)] == [(1, "SOUP 101-103")]
+
+
+def test_a_partition_whose_header_does_not_restate_its_size_is_not_read(tmp_path):
+    """Two fields of the header state the block count, and both must agree.
+
+    That is what confirms a partition is where the table says without trusting
+    the arithmetic that placed it -- and it is why the constant pattern alone
+    is not enough, since sample data reproduces it.
+    """
+    import struct
+
+    from samplerdisc.fs.akai import SIZE_ECHO_OFFSET, partition_header
+
+    data = bytearray(
+        fixtures.akai_disc(
+            [_partition("SOUP 101-103", "KICK 1", 1), _partition("SOUP 120", "TOY DRMS2", 2)]
+        )
+    )
+    struct.pack_into("<H", data, 512 * 8192 + SIZE_ECHO_OFFSET, 0)
+    image = image_of(tmp_path, bytes(data))
+    assert partition_header(image, 512 * 8192) is None
+    assert [v.partition for v in BACKEND.volumes(image, 0)] == [1]
+
+
+def test_a_disc_with_no_partition_table_reads_the_partition_at_the_origin(tmp_path):
+    """The floor: what this backend did before #22, for a disc that declares none."""
+    image = image_of(tmp_path, simple_partition())
+    volumes = list(BACKEND.volumes(image, 0))
+    assert [v.partition for v in volumes] == [1, 1]
+    assert BACKEND.layout(image, 0) == "no partition table -- reading the partition at the origin"

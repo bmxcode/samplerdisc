@@ -89,7 +89,7 @@ def test_extracts_samples_to_playable_wavs(tmp_path):
     out = tmp_path / "out"
     results = list(extract_disc(image, BACKEND, 0, str(out)))
     assert len(results) == 1
-    written = out / "VOL 1" / "KICK 1.wav"
+    written = out / "partition-1" / "VOL 1" / "KICK 1.wav"
     assert written.exists()
     with wave.open(str(written)) as w:
         assert w.getframerate() == 44100
@@ -105,7 +105,7 @@ def test_programs_are_not_written(tmp_path):
     )
     out = tmp_path / "out"
     list(extract_disc(image, BACKEND, 0, str(out)))
-    assert sorted(p.name for p in (out / "VOL 1").iterdir()) == ["KICK 1.wav"]
+    assert sorted(p.name for p in (out / "partition-1" / "VOL 1").iterdir()) == ["KICK 1.wav"]
 
 
 def test_a_damaged_entry_is_skipped_and_the_rest_still_extract(tmp_path):
@@ -128,7 +128,7 @@ def test_a_damaged_entry_is_skipped_and_the_rest_still_extract(tmp_path):
     skipped = [r for r in results if isinstance(r, Skipped)]
     assert len(skipped) == 1
     assert skipped[0].name == "BROKEN"
-    assert (out / "VOL 1" / "GOOD.wav").exists()
+    assert (out / "partition-1" / "VOL 1" / "GOOD.wav").exists()
 
 
 def test_each_volume_gets_its_own_directory(tmp_path):
@@ -140,5 +140,35 @@ def test_each_volume_gets_its_own_directory(tmp_path):
     )
     out = tmp_path / "out"
     list(extract_disc(image, BACKEND, 0, str(out)))
-    assert (out / "VOL 1" / "A.wav").exists()
-    assert (out / "VOL 2" / "B.wav").exists()
+    assert (out / "partition-1" / "VOL 1" / "A.wav").exists()
+    assert (out / "partition-1" / "VOL 2" / "B.wav").exists()
+
+
+def test_volumes_of_one_name_in_two_partitions_do_not_share_a_directory(tmp_path):
+    """Nearly every partition of an AKAI disc has a 'VOLUME 001' (ADR-0023).
+
+    Written flat, the second one's audio lands beside the first's under
+    ``unique_path`` suffixes -- two libraries in one directory with nothing
+    saying which sample came from where. That is not a lost file, it is an
+    unusable one, which is why the partition is part of the path.
+    """
+    first = fixtures.akai_sample("PIANO C3", words=64)
+    second = fixtures.akai_sample("PIANO C3", words=128)
+    data = fixtures.akai_disc(
+        [
+            fixtures.akai_partition([("VOLUME 001", [("PIANO C3", 0x73, len(first), first)])]),
+            fixtures.akai_partition([("VOLUME 001", [("PIANO C3", 0x73, len(second), second)])]),
+        ]
+    )
+    path = tmp_path / "two.iso"
+    path.write_bytes(data)
+    image = FlatImage(path)
+    out = tmp_path / "out"
+    written = [r.path for r in extract_disc(image, BACKEND, 0, str(out))]
+    assert written == [
+        str(out / "partition-1" / "VOLUME 001" / "PIANO C3.wav"),
+        str(out / "partition-2" / "VOLUME 001" / "PIANO C3.wav"),
+    ]
+    # And they are the two different samples, not one written twice.
+    with wave.open(written[0]) as one, wave.open(written[1]) as two:
+        assert (one.getnframes(), two.getnframes()) == (64, 128)

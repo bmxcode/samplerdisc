@@ -1,6 +1,6 @@
 # ADR-0022 · An AKAI volume's emptiness is explained by the partition's allocation map
 
-**Status:** accepted · 2026-08-21
+**Status:** accepted · 2026-08-21 · *amended by [ADR-0023](0023-partitions-come-from-the-table-the-disc-declares.md): "no map, no note" now turns on the header restating its block count, rather than on the count fitting the image, so a partition the image ends inside keeps the map for the blocks it holds.*
 
 ## Context
 

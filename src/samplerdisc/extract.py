@@ -85,6 +85,10 @@ class Extracted:
     rate: int
     frames: int
     pitch: int
+    #: Which partition of the disc the volume came from, 0 where the
+    #: filesystem has no partitions. AKAI volume names repeat across
+    #: partitions, so the name alone does not identify a volume (ADR-0023).
+    partition: int = 0
 
 
 @dataclass
@@ -92,6 +96,7 @@ class Skipped:
     volume: str
     name: str
     reason: str
+    partition: int = 0
 
 
 @dataclass
@@ -102,6 +107,7 @@ class Kept:
     name: str
     path: str
     kind: str
+    partition: int = 0
 
 
 @dataclass
@@ -113,6 +119,7 @@ class Joined:
     path: str
     rate: int
     frames: int
+    partition: int = 0
 
 
 def extract_volume(
@@ -146,7 +153,13 @@ def extract_volume(
                 )
                 with open(kept_path, "wb") as out:
                     out.write(payload)
-                yield Kept(volume=volume.name, name=entry.name, path=kept_path, kind=entry.kind)
+                yield Kept(
+                    volume=volume.name,
+                    name=entry.name,
+                    path=kept_path,
+                    kind=entry.kind,
+                    partition=volume.partition,
+                )
         if entry.kind in _AUDIO_FILE_KINDS:
             # Already an audio file -- an ISO 9660 disc whose payload is plain
             # WAV or AIFF. Copy it out untouched; there is nothing to decode.
@@ -161,18 +174,18 @@ def extract_volume(
         try:
             payload = backend.read_file(image, origin, entry)
         except OSError as exc:  # pragma: no cover - filesystem-level failure
-            yield Skipped(volume.name, entry.name, f"unreadable: {exc}")
+            yield Skipped(volume.name, entry.name, f"unreadable: {exc}", volume.partition)
             continue
         if not payload:
-            yield Skipped(volume.name, entry.name, "no data on disc")
+            yield Skipped(volume.name, entry.name, "no data on disc", volume.partition)
             continue
         try:
             sample = _parse_sample(backend, entry, payload)
         except NotASample as exc:
-            yield Skipped(volume.name, entry.name, str(exc))
+            yield Skipped(volume.name, entry.name, str(exc), volume.partition)
             continue
         if sample.frames == 0:
-            yield Skipped(volume.name, entry.name, "zero-length sample")
+            yield Skipped(volume.name, entry.name, "zero-length sample", volume.partition)
             continue
 
         if not made:
@@ -199,14 +212,15 @@ def extract_volume(
             rate=sample.rate,
             frames=sample.frames,
             pitch=pitch if pitch is not None else 0,
+            partition=volume.partition,
         )
 
     if join_stereo:
-        yield from _join_pairs(volume.name, parsed, out_dir)
+        yield from _join_pairs(volume, parsed, out_dir)
 
 
 def _join_pairs(
-    volume_name: str, parsed: dict[str, _Pairable], out_dir: str
+    volume: Volume, parsed: dict[str, _Pairable], out_dir: str
 ) -> Iterator[Skipped | Joined]:
     pairs = find_pairs(list(parsed))
     if not pairs:
@@ -220,9 +234,10 @@ def _join_pairs(
             # Different rates means these are not two halves of one sound,
             # whatever the names say.
             yield Skipped(
-                volume_name,
+                volume.name,
                 pair.base,
                 f"rate mismatch between halves ({left.rate} vs {right.rate})",
+                volume.partition,
             )
             continue
         if not made:
@@ -245,7 +260,14 @@ def _join_pairs(
             loops=_wav_loops(left),
             name=pair.base,
         )
-        yield Joined(volume=volume_name, name=pair.base, path=path, rate=left.rate, frames=frames)
+        yield Joined(
+            volume=volume.name,
+            name=pair.base,
+            path=path,
+            rate=left.rate,
+            frames=frames,
+            partition=volume.partition,
+        )
 
 
 def _parse_sample(backend: Backend, entry, payload: bytes):
@@ -274,7 +296,7 @@ def _copy_audio(
 ) -> Extracted | Skipped:
     payload = backend.read_file(image, origin, entry)
     if not payload:
-        return Skipped(volume.name, entry.name, "no data on disc")
+        return Skipped(volume.name, entry.name, "no data on disc", volume.partition)
     stem, suffix = os.path.splitext(os.path.basename(entry.name))
     path = unique_path(out_dir, safe_name(stem), suffix.lower() or ".wav")
     with open(path, "wb") as out:
@@ -286,7 +308,22 @@ def _copy_audio(
         rate=0,
         frames=0,
         pitch=0,
+        partition=volume.partition,
     )
+
+
+def volume_dir(out_root: str, volume: Volume) -> str:
+    """Where one volume's WAVs go.
+
+    A volume from a partitioned filesystem is written under its partition,
+    because the name alone does not identify it: nearly every partition of an
+    AKAI disc has a ``VOLUME 001``, and writing two of them into one directory
+    puts two libraries' audio side by side with ``unique_path`` suffixes and
+    nothing to say which is which (ADR-0007, ADR-0023).
+    """
+    if volume.partition:
+        return os.path.join(out_root, f"partition-{volume.partition}", safe_name(volume.name))
+    return os.path.join(out_root, safe_name(volume.name))
 
 
 def extract_disc(
@@ -299,7 +336,7 @@ def extract_disc(
 ) -> Iterator[Extracted | Skipped | Joined | Kept]:
     """Write every sample on the disc, one directory per volume."""
     for volume in backend.volumes(image, origin):
-        out_dir = os.path.join(out_root, safe_name(volume.name))
+        out_dir = volume_dir(out_root, volume)
         yield from extract_volume(
             image, backend, origin, volume, out_dir, join_stereo, keep_originals
         )

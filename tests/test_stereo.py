@@ -156,7 +156,7 @@ def test_stereo_is_written_and_the_mono_originals_are_kept(tmp_path):
     results = list(extract_disc(stereo_disc(tmp_path), BACKEND, 0, str(out)))
     assert sum(isinstance(r, Joined) for r in results) == 1
 
-    volume = out / "VOL 1"
+    volume = out / "partition-1" / "VOL 1"
     assert (volume / "PAD -L.wav").exists()
     assert (volume / "PAD -R.wav").exists()
     joined = volume / "stereo" / "PAD.wav"
@@ -172,20 +172,20 @@ def test_halves_at_different_rates_are_not_joined(tmp_path):
     assert not any(isinstance(r, Joined) for r in results)
     reasons = [r.reason for r in results if isinstance(r, Skipped)]
     assert any("rate mismatch" in r for r in reasons)
-    assert (out / "VOL 1" / "PAD -L.wav").exists()  # mono still written
+    assert (out / "partition-1" / "VOL 1" / "PAD -L.wav").exists()  # mono still written
 
 
 def test_no_stereo_flag_disables_joining(tmp_path):
     out = tmp_path / "out"
     results = list(extract_disc(stereo_disc(tmp_path), BACKEND, 0, str(out), join_stereo=False))
     assert not any(isinstance(r, Joined) for r in results)
-    assert not (out / "VOL 1" / "stereo").exists()
+    assert not (out / "partition-1" / "VOL 1" / "stereo").exists()
 
 
 def test_stereo_channels_match_their_mono_sources(tmp_path):
     out = tmp_path / "out"
     list(extract_disc(stereo_disc(tmp_path), BACKEND, 0, str(out)))
-    volume = out / "VOL 1"
+    volume = out / "partition-1" / "VOL 1"
     with wave.open(str(volume / "PAD -L.wav")) as w:
         left = w.readframes(w.getnframes())
     with wave.open(str(volume / "PAD -R.wav")) as w:
