@@ -109,6 +109,8 @@ def _pinned_sizes() -> set[int]:
         *(size for size, _, _, _, _, _ in _EMU3.values()),
         *(size for size, _, _, _, _, _ in _AKAI.values()),
         *(size for size, _, _, _, _ in _AKAI_PAYLOAD.values()),
+        *(size for size, *_ in _AKAI_SHORT.values()),
+        _AKAI_NOTHING_RECOVERED[1],
     }
 
 
@@ -700,15 +702,28 @@ def test_protozoa_gives_each_bank_its_own_records() -> None:
 #:
 #: The two partition columns are the pin on #22, and they differ on purpose:
 #: `Kickin' Lunatic Beats 2 CD1` declares eleven partitions and the image holds
-#: one, which is the image being short of the disc rather than the disc being
-#: small (ADR-0023, issue #17). A present count that climbs to the declared one
-#: would mean the walk had started accepting positions with no header at them.
+#: eight, three of which no rule may recover -- the image is short of the disc
+#: rather than the disc being small (ADR-0023, ADR-0028, issue #17). A present
+#: count that climbs to the declared one would mean the walk had started
+#: accepting positions with no header at them.
+#:
+#: Three of the nine are the discs a recovery must **not** touch, and they are
+#: pinned here for that and nothing else. `Advanced Media Trax 3` is not short
+#: -- nine declared, nine present -- and an earlier signature search cost it 22
+#: of its 94 volumes, so it is the falsifying case (ADR-0023). `ProSamples
+#: vol.14` and `vol.54` are the second: their missing partitions were never
+#: written, `vol.54` declaring nine partitions of a 63 488-block disk on a CD of
+#: 30 720 blocks, and `vol.14`'s free space carries 148 byte-identical copies of
+#: a partition header that a search must not take (ADR-0028).
 #: ``label: (size in bytes, volumes, files, noted, partitions declared, present)``.
 _AKAI = {
     "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 88, 2669, 4, 9, 9),
     "AMG - Loop Soup AKAI": (542_419_100, 60, 4689, 0, 9, 9),
-    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 18, 669, 5, 11, 1),
-    "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (371_768_845, 20, 1346, 0, 9, 1),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 139, 8392, 13, 11, 8),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (371_768_845, 120, 7549, 0, 9, 8),
+    "Advanced Media Trax 3 - Modern Composer": (759_441_984, 94, 2938, 0, 9, 9),
+    "Best Service ProSamples vol.14 - World Grooves": (553_357_312, 15, 757, 0, 9, 5),
+    "Best Service ProSamples vol.54 - Techno 138 BPM": (251_658_240, 32, 1212, 0, 9, 4),
     "OMI Universe Of Sounds Vol.1 (Roland S-770,S-750)": (295_837_696, 69, 1653, 1, 5, 5),
     "Back in Time Records - Big Bang": (269_979_648, 137, 2689, 0, 9, 9),
     "Best Service ProSamples vol.01 - Hip Hop and R&B Drumloops": (314_882_048, 41, 492, 1, 9, 5),
@@ -726,6 +741,9 @@ _AKAI_FIRST_PARTITION = {
     "AMG - Loop Soup AKAI": (7, 490, 0),
     "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (18, 669, 5),
     "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (20, 1346, 0),
+    "Advanced Media Trax 3 - Modern Composer": (4, 281, 0),
+    "Best Service ProSamples vol.14 - World Grooves": (4, 221, 0),
+    "Best Service ProSamples vol.54 - Techno 138 BPM": (10, 198, 0),
     "OMI Universe Of Sounds Vol.1 (Roland S-770,S-750)": (28, 900, 1),
     "Back in Time Records - Big Bang": (8, 380, 0),
     "Best Service ProSamples vol.01 - Hip Hop and R&B Drumloops": (7, 82, 0),
@@ -760,6 +778,176 @@ def test_akai_discs_list_their_volumes_and_files(label: str) -> None:
         # walk, and its block numbers would be relative to nothing (ADR-0023).
         assert {v.partition for v in volumes} <= set(range(1, declared + 1))
         assert all(v.partition for v in volumes)
+
+
+#: The eight images short of the disc they were made from, and what searching
+#: back for their displaced partition headers recovers (ADR-0028, issue #25).
+#:
+#: The displacements are the finding and are pinned per partition, in AKAI
+#: blocks: they are what says the rip lost whole 32 KB container blocks, and
+#: they accumulate down the disc because it lost them in several places. Every
+#: one is a multiple of 4 blocks -- 32 768 bytes, one MDX block -- and a
+#: displacement that stopped being one would mean the search had begun stepping
+#: in something that is not the container's unit.
+#:
+#: The last five columns are for the **displaced partitions alone**, not the
+#: whole disc, which is the same reasoning as `_AKAI_FIRST_PARTITION` the other
+#: way round: pinned apart, they say what recovery contributed rather than
+#: leaving it to be subtracted. `refused` counts payloads that are not the file
+#: their entry placed, and it is pinned as tightly as the rest -- 43 of the
+#: 15 808 recovered samples, 99.7 % passing, is what says these partitions are
+#: the disc's own and not something header-shaped (ADR-0027).
+#: ``label: (size, declared, present, {index: displacement in blocks}, volumes,
+#: files, samples, written, refused)``.
+_AKAI_SHORT = {
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (
+        378_443_564, 11, 8, {3: 52, 4: 52, 5: 52, 6: 52, 7: 52, 8: 52, 10: 200},
+        121, 7723, 7308, 7293, 15,
+    ),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (
+        371_768_845, 9, 8, {3: 4, 4: 4, 5: 4, 6: 4, 7: 4, 8: 4, 9: 4},
+        100, 6203, 5912, 5912, 0,
+    ),
+    "AKAI.S3000.Sound.Library.5": (
+        294_252_089, 9, 6, {5: 12, 7: 32, 8: 32}, 34, 473, 400, 377, 23,
+    ),
+    "AKAI.S3000.Sound.Library.6": (
+        320_291_524, 9, 8, {3: 68, 4: 68, 5: 68, 6: 68, 7: 68, 8: 68, 9: 68},
+        84, 1054, 955, 955, 0,
+    ),
+    "AKAI.S3000.Sound.Library.7": (
+        221_665_577, 11, 4, {3: 5508, 4: 2028, 5: 512}, 20, 660, 546, 546, 0,
+    ),
+    "Back In Time Rrcords - Elektra Vox AKAI": (
+        353_568_222, 13, 6, {3: 488, 5: 964, 7: 1844, 9: 2664, 11: 1928},
+        33, 661, 463, 463, 0,
+    ),
+    "AMG - Global Trance Mission 2 AKAI": (
+        392_438_329, 9, 7, {6: 8, 7: 8, 9: 32}, 22, 217, 144, 139, 5,
+    ),
+    "Audio Factory - Classical Wild Takes AKAI": (
+        226_074_906, 11, 10, {8: 16, 9: 16, 10: 16, 11: 16}, 18, 189, 80, 80, 0,
+    ),
+}  # fmt: skip
+
+#: The disc that recovers nothing, and the reason it is here rather than absent
+#: from the table above. `Alpha Dance I` is short by one container block, and
+#: its one missing partition's header sits four AKAI blocks inside partition 4,
+#: which is already being read. Refusing it costs the disc everything a
+#: recovery could have given it, and that is the conservative half of ADR-0028
+#: shown on the one disc where it is the whole answer.
+_AKAI_NOTHING_RECOVERED = ("Best Service - Alpha Dance I AKAI", 193_592_710, 5, 4)
+
+
+@pytest.mark.parametrize("label", sorted(_AKAI_SHORT))
+def test_a_short_akai_image_yields_the_partitions_the_lost_blocks_moved(label: str) -> None:
+    """The deliverable, per disc (ADR-0028, issue #25).
+
+    Each of these images decodes cleanly and is missing whole 32 KB blocks of
+    the disc it was made from, so every partition after a gap sits that much
+    nearer the front than the disk's own table puts it. Searching back from the
+    declared position in the container's unit, for a header restating the size
+    the table gave *that* partition, and never reaching into a partition already
+    read, finds 39 of them across the eight.
+
+    Four things are asserted together and each would fail differently. The
+    **displacement per partition** is the finding. The **volume and file counts**
+    are the yield. The **written and refused counts** are what says the audio is
+    the disc's own: a displaced partition's directory and its audio moved
+    together, so the payload check that condemns a misplaced file passes on
+    99.7 % of what this recovers. And **every recovered partition's header block
+    is distinct** from every other partition's on the disc, which is what
+    separates a partition from the stale copies of a header that sit in these
+    discs' free space -- 148 byte-identical ones on `ProSamples vol.14`.
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE, partition_table, partitions
+    from samplerdisc.sample import NotASample, PayloadMismatch
+
+    size, declared, present, displacements, volumes, files, samples, written, refused = _AKAI_SHORT[
+        label
+    ]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "akai"
+        found = list(partitions(image, origin.offset))
+        assert len(partition_table(image, origin.offset)) == declared
+        assert len(found) == present
+        assert {p.index: p.displaced // BLOCK_SIZE for p in found if p.displaced} == displacements
+        # Every displacement is a whole number of what the container stores.
+        assert all(p.displaced % image.granularity == 0 for p in found)
+        # Partition 1 is where the table lives, and it can never move: its
+        # declared position is 0, so there is nowhere in front of it to search.
+        assert found[0].index == 1 and found[0].displaced == 0
+
+        # No two partitions read may overlap, and none may repeat another's
+        # header block -- a stale copy of one would do both.
+        heads: dict[bytes, int] = {}
+        end = 0
+        for part in found:
+            assert part.offset >= end, f"{label}: partition {part.index} overlaps the one before"
+            end = part.offset + part.blocks * BLOCK_SIZE
+            head = image.read(origin.offset + part.offset, BLOCK_SIZE)
+            assert head not in heads, (
+                f"{label}: partition {part.index} has the same header block as {heads[head]}"
+            )
+            heads[head] = part.index
+
+        moved = {index for index, _ in displacements.items()}
+        seen = kept = mismatched = 0
+        volumes_seen = files_seen = 0
+        for volume in origin.backend.volumes(image, origin.offset):
+            if volume.partition not in moved:
+                continue
+            assert volume.displaced == displacements[volume.partition] * BLOCK_SIZE
+            volumes_seen += 1
+            files_seen += len(volume.files)
+            for entry in volume.samples():
+                seen += 1
+                payload = origin.backend.read_file(image, origin.offset, entry)
+                try:
+                    origin.backend.parse_sample(entry, payload)
+                except PayloadMismatch:
+                    mismatched += 1
+                except NotASample:
+                    pass
+                else:
+                    kept += 1
+        assert (volumes_seen, files_seen, seen, kept, mismatched) == (
+            volumes,
+            files,
+            samples,
+            written,
+            refused,
+        )
+
+
+def test_a_displaced_partition_that_would_overlap_a_present_one_is_refused() -> None:
+    """`Alpha Dance I`: the conservative half of the rule, costing a whole disc.
+
+    Its partition 5 is displaced by four AKAI blocks -- one 32 KB container
+    block, the same gap as `Kickin' Lunatic Beats 2 CD2` -- and unlike CD2 there
+    is no later partition clear of the clash to recover. The header is really
+    there and really is partition 5's; reading it would mean two partitions over
+    the same bytes, so it stays unread and the disc gains nothing (ADR-0028).
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE, displaced_header, partition_header, partitions
+
+    label, size, declared, present = _AKAI_NOTHING_RECOVERED
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "akai"
+        found = list(partitions(image, origin.offset))
+        assert len(found) == present
+        assert not any(p.displaced for p in found)
+
+        last = found[-1]
+        assert last.index == declared - 1
+        at = last.offset + last.blocks * BLOCK_SIZE
+        blocks = partition_header(image, origin.offset + at - 4 * BLOCK_SIZE)
+        # The header is there, four blocks inside the partition already read ...
+        assert blocks is not None
+        # ... and the search stops at that partition's end, so it is never seen.
+        assert displaced_header(image, origin.offset, at, blocks, at) is None
 
 
 @pytest.mark.parametrize("label", sorted(_AKAI_FIRST_PARTITION))
@@ -933,7 +1121,7 @@ _AKAI_PAYLOAD = {
     "East Connexion Piano": (277_092_352, 730, 730, 0, 0),
     "AMG - Now CD-Rom for (AKAI)": (521_322_496, 1193, 1193, 0, 0),
     "Best Service - Alpha Dance II AKAI": (309_865_547, 1740, 0, 21, 0),
-    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 624, 0, 9, 0),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 7932, 0, 24, 0),
     "AMG - Loop Soup AKAI": (542_419_100, 3434, 0, 1, 0),
     "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 2236, 0, 0, 0),
 }
@@ -951,7 +1139,7 @@ def test_akai_payloads_are_the_files_their_directory_entries_placed(label: str) 
     high bit. Reading a 192 at 150 does not fail -- it writes a WAV that opens,
     holding 42 bytes of header as PCM at the front, 21 frames short at the end,
     with every loop point 21 frames out. That was happening to **13 451 of the
-    collection's 56 490** AKAI samples, on nine discs, and four of them are
+    56 490** AKAI samples read before D20, on nine discs, and four of them are
     pinned here whole.
 
     **The identity.** 65 payloads across the 44 discs are not the file their
@@ -989,7 +1177,7 @@ def test_akai_payloads_are_the_files_their_directory_entries_placed(label: str) 
                 # The generation bit chose the length; the payload's own word
                 # count against the directory's declared size is what confirms
                 # it, and the two are written by different structures. Across
-                # the collection this holds for 56 425 of 56 425 accepted
+                # the collection this holds for 72 190 of 72 190 accepted
                 # payloads -- which is what makes the rule a finding rather
                 # than a reading that happens to fit (ADR-0020, ADR-0027).
                 (words,) = struct.unpack_from("<I", payload, 26)

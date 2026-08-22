@@ -17,13 +17,13 @@ from samplerdisc.sample import PayloadMismatch as _PayloadMismatch
 #: Two header lengths, and **which one applies is declared, not sniffed**: the
 #: S3000 family writes 192 bytes and the S1000 family 150. The directory's type
 #: byte carries the generation in its high bit -- the same bit that already
-#: names a kept original `.s3s` rather than `.s1s` -- and it splits the 56 490
-#: samples of the 44 discs perfectly, 13 451 at 192 and 42 989 at 150, with no
+#: names a kept original `.s3s` rather than `.s1s` -- and it splits the 72 298
+#: samples of the 44 discs perfectly, 15 352 at 192 and 56 946 at 150, with no
 #: disc mixing the two rules.
 #:
 #: The payload confirms it from the other side: the directory's declared size
-#: is ``words * 2 + header_len`` on **56 430 of 56 430** readable payloads, and
-#: the 60 that fail that identity are the damaged ones. Placed by one
+#: is ``words * 2 + header_len`` on **72 190 of 72 190** readable payloads, and
+#: the 108 that fail that identity are the damaged ones. Placed by one
 #: structure, confirmed by another, the shape ADR-0020, ADR-0021 and ADR-0023
 #: already use. See docs/formats/akai-fs.md and ADR-0027.
 HEADER_LEN_S1000 = 150
@@ -112,21 +112,23 @@ def _check_identity(payload: bytes, declared_name: str | None) -> str:
     is true of a mid-PCM payload and of a wrong-but-valid one alike and they
     are not the same news.
 
-    **What the name test is for.** Across the 44 AKAI discs it fires 60 times
+    **What the name test is for.** Across the 44 AKAI discs it fires 104 times
     and never once on its own: every payload whose name disagrees also has a
     wrong id and a cleared valid flag, because on these images the displacement
-    lands mid-audio rather than on another header. It is kept regardless. The
-    other three ask whether the payload is *a* sample; only this one asks
-    whether it is *this* sample, which is the failure issue #23 named and the
-    one a short image's recovered partitions would raise (#25). It is also what
-    makes the valid flag safe to read as a bit rather than as a byte.
-    See ADR-0027.
+    lands mid-audio rather than on another header. D20 was expected to change
+    that -- recovering the partitions eight short images had displaced added
+    15 808 samples, all of them from exactly the kind of image this test was
+    kept for, and produced no unique catch either (#25). It is kept regardless.
+    The other three ask whether the payload is *a* sample; only this one asks
+    whether it is *this* sample, which is the failure issue #23 named. It is
+    also what makes the valid flag safe to read as a bit rather than as a byte.
+    See ADR-0027 and ADR-0028.
     """
     if len(payload) <= OFF_RATE + 2:
         raise NotASample(f"payload is {len(payload)} bytes, too short for a sample header")
 
     # Every disagreement is collected rather than the first one raised. On the
-    # 61 real mismatches the id is wrong on all of them, so stopping at the
+    # 104 real mismatches the id is wrong on all of them, so stopping at the
     # first would report "id is 179" every time and never once mention the name
     # -- which is the test that says the payload belongs to a different file
     # rather than to none. What the fields disagree about *together* is also

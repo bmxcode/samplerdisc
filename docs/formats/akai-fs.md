@@ -30,9 +30,13 @@ Getting index 10 wrong is the classic failure and it is not obvious: `KICKIN B0-
 | `0x70A` | **block allocation map** — one u16 per block, as many as `0x00` declares |
 | `0x4500` | **partition table** — the disk's own list of its partitions, in the first partition only |
 
-`0x02`, `0xC6` and `0xC8` all hold on all **275 partitions** of the 44 AKAI discs, and together they are what identifies a partition header. The two size fields matter most: a block count with no echo behind it is not a partition's, which is a firmer test than anything about the image's length.
+`0x02`, `0xC6` and `0xC8` all hold on all **314 partitions** read across the 44 AKAI discs, and together they are what identifies a partition header. The two size fields matter most: a block count with no echo behind it is not a partition's, which is a firmer test than anything about the image's length.
 
-**The pattern at `0x02` is a rising sawtooth, and sample data reproduces it.** As 16-bit PCM, `3333 × i` is a saw wave, so audio does match it — 374 blocks of one disc's free space carry a complete header prefix, every one in a block the allocation map calls free. That is why a partition header is *confirmed* where the table says one is, and never scanned for ([ADR-0023](../adr/0023-partitions-come-from-the-table-the-disc-declares.md)).
+**Free blocks carry complete copies of a partition header, and a scan cannot tell them from the real thing.** 374 blocks of `AMG - Global Trance Mission 2`'s free space satisfy all three fields *and* restate a size the disk's table declares; `ProSamples vol.14` has 153 and `vol.12` 91. They are not audio that happens to fit the pattern, which is what an earlier note here said: digested, `vol.14`'s 153 are its five real partition headers plus **one 8192-byte block repeated 148 times, byte for byte**, and `Global Trance Mission 2`'s are three distinct blocks repeated 288, 58 and 19 times. Audio does not do that.
+
+Each copy is a whole header with a volume directory that parses. `vol.14`'s holds the pristine formatted state — `VOLUME 001` … `VOLUME 100`, type 0, start block 0 — and `Global Trance Mission 2`'s names real volumes (`R+R KIT 1`, `REGGAE KIT 1`, `RAP    KIT 1`). What wrote them is not established: filler from the mastering, or headers from an earlier state of the disk. Every one is in a block the partition's own allocation map calls free.
+
+The consequence is the same either way and stronger than the sawtooth reading was: **there is no byte test that separates these from a partition header, because they are partition headers.** A position must be placed by something the disc states — the table, with the container's lost blocks subtracted from it — and confirmed there ([ADR-0023](../adr/0023-partitions-come-from-the-table-the-disc-declares.md), [ADR-0028](../adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md)).
 
 The size at `0x00` is what bounds the allocation map, and it is much smaller than the disc: a partition of 7680 blocks is 62.9 MB inside an image of 500 MB or more. A disc carries **several partitions** — see *More than one partition* below.
 
@@ -47,9 +51,11 @@ Volume entry, 16 bytes:
 
 **The type is a byte, and 13 is a different field.** Reading the pair as one u16 was harmless for as long as nothing used the value — `start` at 14 is unaffected, so every volume on every disc was still found — and it produced nonsense the moment anything did: the one disc that sets byte 13 reported volume types of 513, 769 and 1025, an inflation of 256 per volume.
 
-What byte 13 is has not been established. It is zero on 4373 of the 4400 non-empty slots across the collection. The exception is `OMI … Universe Of Sounds Vol.1 (Roland S-770,S-750)`, where it runs 2, 3, 4 … 28 over the disc's 27 live volumes in slot order and is 0 on the unused slot at the end — an incrementing per-volume index of some kind, on one disc, with no second specimen to check it against.
+What byte 13 is has not been established. It is zero on 4373 of the 4400 non-empty slots of the 44 discs' **first** partitions, and the exception is `OMI … Universe Of Sounds Vol.1 (Roland S-770,S-750)`, where it runs 2, 3, 4 … 28 over the disc's 27 live volumes in slot order and is 0 on the unused slot at the end — an incrementing per-volume index of some kind, on one disc, with no second specimen to check it against. Over all 314 partitions read it is zero on 31 333 of 31 400; where the other 40 are has not been looked into.
 
 ### Volume type
+
+Counted over the **first** partitions, which is where the correspondence below was established:
 
 | Byte | Volumes | Reading | Evidence |
 |---|---|---|---|
@@ -57,6 +63,8 @@ What byte 13 is has not been established. It is zero on 4373 of the 4400 non-emp
 | 3 | 9 | S3000 | 8 of 9 hold nothing but high-bit files |
 | 7 | 91 | CD3000 | 57 of 91 hold nothing but high-bit files; the rest are mixed |
 | 0 | 10 | not a live volume | — |
+
+Over all 314 partitions the shape is the same at ten times the size — 1 733 type 1, 711 type 7, 107 type 3 and 35 type 0 — with every type-1 volume that holds files holding only low-bit ones, and type 7 and type 3 running 449 of 682 and 79 of 107 all-high with the rest mixed.
 
 The generations line up with the high bit on the *file* type byte, which is the same signal that names a kept original `.s3p` rather than `.s1p`. A volume can hold files of both generations, so the correspondence is a strong tendency and not a rule.
 
@@ -76,7 +84,7 @@ At `0x70A`, immediately after the volume directory's hundred slots: **one u16 pe
 
 A file's extent is the chain from its start block to `0xC000`. **That is what verifies the map rather than merely making it plausible**: the chain length and the file size are stated by two different structures, and across all 44 AKAI discs they agree for **14 607 of 14 607 files** in the first partitions — exactly, with no disc disagreeing anywhere.
 
-Read across all 275 partitions the figure is **68 267 of 68 284**, and the seventeen exceptions are one thing rather than a scatter: every one is a `MULTI FILE` — type `m`, all on `AKAI.S3000.Sound.Library.1` — whose chain runs exactly one block past what its size needs. A multi appears to be allocated a spare block. It is the only kind that disagrees anywhere.
+Read across all 314 partitions the figure is **85 338 of 85 355**, and the seventeen exceptions are one thing rather than a scatter: every one is a `MULTI FILE` — type `m`, all on `AKAI.S3000.Sound.Library.1` — whose chain runs exactly one block past what its size needs. A multi appears to be allocated a spare block. It is the only kind that disagrees anywhere.
 
 The exclusion behind that figure is itself the finding. Five volumes sit on blocks the map calls free, and their files' chains are gone with them; four of those five hold 63 files that read perfectly. These are **deleted volumes**: the blocks went back to the free list, and because the medium is a mastered CD-ROM nothing ever reused them, so the directory and the audio are still there to be read. They are listed with their files like any other volume.
 
@@ -117,9 +125,9 @@ That last entry is why the table is worth reading rather than multiplying the fi
 
 A partition's own blocks are numbered from **its** start, so the same block number means a different place in each one, and a file read with the partition term dropped returns another partition's audio rather than an error.
 
-Where the image holds no header at a position the table declares, it is **skipped and not searched for**. On the discs where that happens the header turns up displaced by a whole number of the container's 32 KB blocks — the image is short of the disc it was made from, which is the fault below and not a filesystem to go hunting through.
+Where the image holds no header at a position the table declares, the partition is either absent from the disc or **displaced** — moved towards the front by blocks the container lost. The two are told apart by where a header turns up, and the rule for that is in *An image can be short* below.
 
-Across the 44 discs the table declares 384 partitions and 275 are present in the images, holding **2 154 volumes and 68 997 files**, against the 448 volumes and 14 670 files of the first partitions alone.
+Across the 44 discs the table declares 384 partitions. **275 sit where the table puts them and 39 more are displaced**, holding **2 586 volumes and 86 177 files** between them, against the 448 volumes and 14 670 files of the first partitions alone.
 
 ## An image can be short
 
@@ -132,25 +140,34 @@ Two structures agree on the displacement and neither knows about the other:
 
 131 072 bytes is exactly four MDX blocks, which is a quantity of the *container* and one the AKAI filesystem knows nothing about — that is what identifies the layer at fault. `CD2` of the same pair is short by one such block (its partition 2 is at `size − 4`), and its partition 1 happens to survive it intact.
 
-**The partition table turns that into a measurement anyone can repeat**, and it explains the three discs that looked like a different layout. Where a declared partition has no header at its declared position, searching the image finds one *earlier*, always by a whole number of 32 KB container blocks:
+**The partition table turns that into a measurement anyone can repeat**, and it explains the discs that looked like a different layout. Where a declared partition has no header at its declared position, searching the image finds one *earlier*, always by a whole number of 32 KB container blocks. These are the eight images short of their disc, with the displacement of every partition recovered from them, in AKAI blocks:
 
-| Disc | Declared | Present | Displacement, first to last |
-|---|---|---|---|
-| `AMG - Kickin' Lunatic Beats 2 CD2` | 9 | 1 | 4 blocks, on all eight |
-| `Best Service - Alpha Dance I` | 5 | 4 | 4 |
-| `AKAI.S3000.Sound.Library.5` | 9 | 3 | 8 … 36 |
-| `AMG - Global Trance Mission 2` | 9 | 4 | 8 … 32 |
-| `Audio Factory - Classical Wild Takes` | 11 | 6 | 16, on all five |
-| `AMG - Kickin' Lunatic Beats 2 CD1` | 11 | 1 | 16 … 336 |
-| `AKAI.S3000.Sound.Library.6` | 9 | 1 | 60 … 68 |
-| `Back In Time Rrcords - Elektra Vox` | 13 | 1 | 424 … 2888 |
-| `AKAI.S3000.Sound.Library.7` | 11 | 1 | 1456 … 7288 |
+| Disc | Declared | Read | Displacements recovered |
+|---|---:|---:|---|
+| `AMG - Kickin' Lunatic Beats 2 CD2` | 9 | 8 | 4 on partitions 3–9 |
+| `Audio Factory - Classical Wild Takes` | 11 | 10 | 16 on partitions 8–11 |
+| `AKAI.S3000.Sound.Library.6` | 9 | 8 | 68 on partitions 3–9 |
+| `AMG - Kickin' Lunatic Beats 2 CD1` | 11 | 8 | 52 on partitions 3–8, 200 on 10 |
+| `AKAI.S3000.Sound.Library.5` | 9 | 6 | 12, 32, 32 on partitions 5, 7, 8 |
+| `AMG - Global Trance Mission 2` | 9 | 7 | 8, 8, 32 on partitions 6, 7, 9 |
+| `AKAI.S3000.Sound.Library.7` | 11 | 4 | 5508, 2028, 512 on partitions 3, 4, 5 |
+| `Back In Time Rrcords - Elektra Vox` | 13 | 6 | 488, 964, 1844, 2664, 1928 on partitions 3, 5, 7, 9, 11 |
 
-Every displacement is a multiple of 4 blocks — 32 768 bytes, one MDX block — and every one of these images is `.mdx`. They also **accumulate**: `Elektra Vox` slips by 424 blocks, then another 64, then 156, and so on down the disc, which is what a rip losing blocks here and there looks like from inside the filesystem. These are not discs laid out differently; they are incomplete rips. Recovering their partitions would mean locating headers by search, which [ADR-0023](../adr/0023-partitions-come-from-the-table-the-disc-declares.md) declines to do and [issue #25](https://github.com/bmxcode/samplerdisc/issues/25) records.
+Every displacement is a multiple of 4 blocks — 32 768 bytes, one MDX block — and every one of these images is `.mdx`. They also **accumulate**: `Elektra Vox` slips by 424 blocks, then another 64, then 156, and so on down the disc, which is what a rip losing blocks here and there looks like from inside the filesystem. These are not discs laid out differently; they are incomplete rips.
 
-A missing partition is not always damage, and the two are distinguishable: on the ProSamples discs the declared partitions that are absent have **no header anywhere near** them, because the CD carries only the front of a larger disk or the mastering never wrote them. Displacement is the tell, not absence.
+The 39 recovered partitions hold **432 volumes, 17 180 files and 15 808 samples**, and 15 765 of those samples — 99.7 % — carry a payload header that agrees with the directory entry that placed it. That is the point about a gap: it removes whole blocks, so everything after it moves by a *constant*, and inside a displaced partition the directory and its audio move together and stay consistent. A displacement only breaks that agreement where the gap falls **inside** a partition read at its declared position.
 
-A short image also shows up in the table's arithmetic alone: `Kickin' Lunatic Beats 2 CD1` declares eleven partitions where the image holds one, and `ProSamples vol.54` declares nine of a 63 488-block disk on a CD of 30 720 blocks — the second of those is not damage, it is a CD carrying only the front of a larger disk. Declared against present is worth printing for that reason: it names the gap without diagnosing it.
+**Where a search may look, and where it may not.** A header is confirmed at a found position exactly as at a declared one, and three constraints keep the search from being a scan ([ADR-0028](../adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md)):
+
+- it walks **backwards from the position the table gives that partition**, because a short image has lost bytes and nothing moved away from the front — which also settles the index, since a header restating size N does not say which N it is;
+- it steps in the **unit the container stores the disc in**, 32 768 cooked bytes for these `.mdx` images, because that is what the rip lost whole numbers of;
+- it stops at the **end of the partition already accepted**, so nothing is ever found inside a partition already being read.
+
+The last is what refuses the rest. **70 declared partitions stay unread**: 10 have no header at any position the search may look at, 29 land exactly on a partition already read, and 31 would overlap one. `Best Service - Alpha Dance I` is entirely in the third group — its one displaced partition sits four blocks inside partition 4, so the disc recovers nothing.
+
+A missing partition is not always damage, and the two are distinguishable. On the ProSamples discs the declared partitions that are absent were never written — the CD carries only the front of a larger disk — and the nearest header-shaped block is either exactly one partition back (the previous partition's own header, seen through a size the disk repeats) or a stale copy sitting in free space, 70 blocks back on `vol.12` and 21 on `vol.14`. Both are inside a partition already read, and both are refused for that and not for being those discs.
+
+A short image also shows up in the table's arithmetic alone: `Kickin' Lunatic Beats 2 CD1` declares eleven partitions and three of them cannot be read from this image at all, and `ProSamples vol.54` declares nine of a 63 488-block disk on a CD of 30 720 blocks — the second of those is not damage, it is a CD carrying only the front of a larger disk. Declared against read is worth printing for that reason: it names the gap without diagnosing it.
 
 The visible consequence inside partition 1 is not only the four empty volumes. **Nine files in `13-TRACK 06` no longer hold their own audio**: everything past the first gap has slid, so their payload is mid-PCM rather than a header. They are refused and named, one line each saying which fields disagree and which entry placed them ([ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md)). [Issue #23](https://github.com/bmxcode/samplerdisc/issues/23) proposed that check believing they were being written out; they were already being refused, with a message that said neither which test failed nor that a directory entry was involved.
 
@@ -240,13 +257,13 @@ Sample data is **signed 16-bit little-endian mono PCM**. That is already exactly
 
 Three structures agree, none of them aware of the others:
 
-- **The type byte.** 13 451 of the 44 discs' 56 490 samples have it set and every one of them is 192; the other 42 989 are 150. No disc mixes the two rules and there is not one exception.
-- **The word count.** The directory's declared size is `words × 2 + header_len` on **56 430 of 56 430** payloads readable at all — 13 441 at 192, 42 989 at 150. The 60 that fail it are the damaged ones, and every one of those also fails an identity test below.
+- **The type byte.** 15 352 of the 44 discs' 72 298 samples have it set and every one of them is 192; the other 56 946 are 150. No disc mixes the two rules and there is not one exception.
+- **The word count.** The directory's declared size is `words × 2 + header_len` on **72 190 of 72 190** payloads readable at all — 15 314 at 192, 56 876 at 150. The 108 that fail it are the damaged ones, and every one of those also fails an identity test below.
 - **The bytes.** On `AKAI.S3000.Sound.Library.2`'s `NPF E0`, offsets 150–170 are zero and 171–191 are `0a ff ff 22 a8 00 aa ff ff 00 8c ff ff 00 aa ff ff 00 88 ff ff` — the same shape on every sample of the disc, which audio is not. Waveform starts at 192.
 
-Nine of the 44 discs are affected: `AKAI.S3000.Sound.Library.1`–`7` (4 455, 3 086, 1 990, 1 010, 601, 168 and 218 samples), `East Connexion Piano` (730) and `AMG - Now CD-Rom for (AKAI)` (1 193).
+Nine of the 44 discs are affected: `AKAI.S3000.Sound.Library.1`–`7` (4 451, 3 083, 1 989, 1 010, 971, 1 123 and 764 samples written), `East Connexion Piano` (730) and `AMG - Now CD-Rom for (AKAI)` (1 193). `Library.5`, `.6` and `.7` are much larger figures than D19 measured, because three quarters of their partitions were unread until the displaced ones were recovered.
 
-**Getting this wrong does not fail, which is why it lasted four deliverables.** Reading a 192 at 150 yields the right frame count, a WAV that opens, and a length within 0.1 % — with 42 bytes of header in place of the attack (a burst of roughly ±20 000 lasting 0.24 ms, an audible click), the last 21 frames of the sound gone, and every loop point 21 frames out. An earlier note here said S3000 discs *may* use a 192-byte variant and advised branching on the id and valid bytes. Both halves were wrong: the variant is not conditional, and those two bytes do not carry the answer — `0x80` appears on 42 989 samples at 150 and 13 410 at 192, and the id is `3` on both. See [ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md).
+**Getting this wrong does not fail, which is why it lasted four deliverables.** Reading a 192 at 150 yields the right frame count, a WAV that opens, and a length within 0.1 % — with 42 bytes of header in place of the attack (a burst of roughly ±20 000 lasting 0.24 ms, an audible click), the last 21 frames of the sound gone, and every loop point 21 frames out. An earlier note here said S3000 discs *may* use a 192-byte variant and advised branching on the id and valid bytes. Both halves were wrong: the variant is not conditional, and those two bytes do not carry the answer — `0x80` appears on 56 876 samples at 150 and 15 314 at 192, and the id is `3` on both. See [ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md).
 
 ### The valid byte is a flag, not a value
 
@@ -256,33 +273,25 @@ Nine of the 44 discs are affected: `AKAI.S3000.Sound.Library.1`–`7` (4 455, 3 
 
 Every sample payload restates the file's id, its valid flag and its name, and the directory entry states the name and the size independently. Where they disagree, the payload is not the file the entry placed and it is refused rather than written under that entry's name — a WAV that opens, plays, and is somebody else's audio is the worst failure this format offers ([ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md), [issue #23](https://github.com/bmxcode/samplerdisc/issues/23)).
 
-**65 of the 56 490 samples disagree**, on ten discs; the other 34 have none. What each test catches:
-
-| Test | Fires | Fires alone |
-|---|---:|---:|
-| id is not `3` | 61 | 1 |
-| valid byte has no `0x80` | 60 | 0 |
-| name is not the entry's | 60 | **0** |
-| rate outside 4 000–50 000 | 58 | 4 |
-
-**The name comparison has no unique catch anywhere in the collection.** Every payload whose name disagrees also has a wrong id and a cleared valid flag, because on these images the displacement lands mid-audio and mid-audio does not look like a header. It is kept anyway: the other three ask whether the payload is *a* sample, and only this one asks whether it is *this* sample.
+**104 of the 72 298 samples disagree**, on nine discs; the other 35 have none. The name test's unique catch is still **zero** — every payload whose name disagrees also has a wrong id and a cleared valid flag, because a displacement lands mid-audio and mid-audio does not look like a header. It is kept anyway: the other three ask whether the payload is *a* sample, and only this one asks whether it is *this* sample.
 
 Where they are:
 
-| Disc | Mismatches | Where | Partitions declared / present |
+| Disc | Mismatches | Where | Partitions declared / read |
 |---|---:|---|---|
+| `AKAI.S3000.Sound.Library.5` | 30 | `HIT NOISE` last 17 of 20, `SURDO` last 7 of 13, `BELL TREE` last 6 of 13 | 9 / 6 |
+| `Kickin' Lunatic Beats 2 CD1` | 24 | `09-TRACK 37` last 15 of 26, `13-TRACK 06` last 9 of 20 | 11 / 8 |
 | `Best Service - Alpha Dance II` | 21 | `AC.DRUMLOOPS`, last 21 of 22 | **6 / 6** |
 | `Best Service - Alpha Dance I` | 15 | `ATTACK BANK2`, last 15 of 18 | 5 / 4 |
-| `Kickin' Lunatic Beats 2 CD1` | 9 | `13-TRACK 06`, last 9 of 20 | 11 / 1 |
-| `AKAI.S3000.Sound.Library.5` | 7 | `SURDO`, last 7 of 13 | 9 / 3 |
-| `AKAI.S3000.Sound.Library.1` | 4 | `3084 B.BEAT6`, last 3 of 8; one rate | 13 / 13 |
-| `AMG - Global Trance Mission 2` | 3 | `AMBIENT PAD2`, last 3 of 6 | 9 / 4 |
-| `AKAI.S3000.Sound.Library.2` | 3 | three isolated rate bytes — 0, 519, 519 | 13 / 13 |
+| `AMG - Global Trance Mission 2` | 8 | `SYNTH     10` last 5 of 6, `AMBIENT PAD2` last 3 of 6 | 9 / 7 |
+| `AKAI.S3000.Sound.Library.1` | 3 | `3084 B.BEAT6`, last 3 of 8 | 13 / 13 |
 | `AKAI.S3000.Sound.Library.3` | 1 | `VOLUME 001`, its only file | 13 / 13 |
-| `Audio Factory - Classical Wild Takes` | 1 | `VOLUME 002`, last of 2 | 11 / 6 |
+| `Audio Factory - Classical Wild Takes` | 1 | `VOLUME 002`, last of 2 | 11 / 10 |
 | `AMG - Loop Soup` | 1 | `SOUP 101-103`, entry 27 of 39 | 9 / 9 |
 
-**60 of the 65 are a run to the end of one volume**, which is what a lost run of blocks looks like from inside a directory. The remaining five are single files: four with a corrupt rate byte and an otherwise perfect header — `EG 2MUTE` at 0 Hz, `M.VOICE A1` and `SYN 1` at 519, `HOUSE BASS` at 1280 — and `Loop Soup`'s one directory record whose start block lands mid-sample. Those four *are* the files their entries placed, with one field unusable, which is a different fault from the other 61 and is counted apart.
+Four more samples are refused for a corrupt rate byte with an otherwise perfect header — `EG 2MUTE` at 0 Hz, `M.VOICE A1` and `SYN 1` at 519, `HOUSE BASS` at 1280. Those *are* the files their entries placed, with one field unusable, and are counted apart.
+
+**103 of the 104 are a run to the end of one volume**, which is what a lost run of blocks looks like from inside a directory; the exception is `Loop Soup`'s one directory record whose start block lands mid-sample. And the run is a *displacement*, now measured rather than inferred: **103 of the 104 refused payloads are sitting intact, carrying their entry's own name, a whole number of container blocks earlier** — one block back for `Alpha Dance II`'s 21, 134 for `Library.3`'s one, one to four for the rest. Recovering them is [issue #35](https://github.com/bmxcode/samplerdisc/issues/35) and is not done: a partition has a declared position to search back from and a file has only the chain its allocation map states ([ADR-0028](../adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md)).
 
 **A tail run does not require a missing partition.** `Alpha Dance II` declares six partitions and holds all six; `Library.1` and `Library.3` likewise. Their damage is a run of blocks lost *inside* a partition, so no header goes missing and the table's declared-against-present arithmetic sees nothing. Declared equalling present is not a clean bill of health.
 

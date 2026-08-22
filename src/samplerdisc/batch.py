@@ -34,6 +34,13 @@ class DiscReport:
     container: str | None = None
     filesystem: str | None = None
     origin: int | None = None
+    #: The backend's one line on how the disc is divided, verbatim -- the same
+    #: line ``list`` prints, or None where the filesystem has no structure
+    #: above the volume. It is here because it is the only place a run over a
+    #: collection records that an image is **short of the disc it was made
+    #: from**: its samples extract and verify, and the disc has more on it than
+    #: the file does (ADR-0028).
+    layout: str | None = None
     volumes: list[dict[str, Any]] = field(default_factory=list)
     samples: int = 0
     #: Samples that were stereo on the disc, of ``samples``. Counted apart
@@ -100,6 +107,8 @@ def convert_disc(
                 return report
             report.filesystem = origin.backend.name
             report.origin = origin.offset
+            describe = getattr(origin.backend, "layout", None)
+            report.layout = describe(image, origin.offset) if describe is not None else None
 
             out_dir = os.path.join(out_root, safe_name(os.path.splitext(os.path.basename(path))[0]))
             # Keyed by partition *and* name: nearly every partition of an AKAI

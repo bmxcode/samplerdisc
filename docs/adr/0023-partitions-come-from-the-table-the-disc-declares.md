@@ -1,6 +1,6 @@
 # ADR-0023 · An AKAI disc's partitions come from the table it declares
 
-**Status:** accepted · 2026-08-21
+**Status:** accepted · 2026-08-21 · *amended by [ADR-0028](0028-a-displaced-partition-is-anchored-quantised-and-floored.md): "a declared position with no header is skipped, never searched for" becomes "searched for backwards from the declared position, in the container's storage unit, for a header restating this partition's size, and never below the end of the partition already accepted". The refusal of a **scan** stands — and the 374 blocks below turn out to be complete stale partition headers rather than audio, which makes it firmer.*
 
 ## Context
 

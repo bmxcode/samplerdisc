@@ -4,6 +4,35 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 
 ## Unreleased
 
+### Added
+
+- **Eight AKAI images are short of the disc they were made from, and their displaced partitions are now read.** Whole 32 KB blocks are missing from these `.mdx` files — the container decodes every block it holds, and the file is not a complete copy of the disc — so every partition after a gap sits that much nearer the front than the disk's own partition table places it. **39 partitions are found there**, carrying **432 volumes, 17 180 files and 15 808 samples** that nothing could reach before. The collection goes from 89 156 samples to **104 921**, and AKAI from 56 425 to **72 190**. ([docs/formats/akai-fs.md](docs/formats/akai-fs.md), [ADR-0028](docs/adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md), [#25](https://github.com/bmxcode/samplerdisc/issues/25))
+
+  | Disc | Recovered | Volumes | Files | Samples | Written |
+  |---|---:|---:|---:|---:|---:|
+  | `AMG - Kickin' Lunatic Beats 2 CD1` | 7 | 121 | 7 723 | 7 308 | 7 293 |
+  | `AMG - Kickin' Lunatic Beats 2 CD2` | 7 | 100 | 6 203 | 5 912 | 5 912 |
+  | `AKAI.S3000.Sound.Library.6` | 7 | 84 | 1 054 | 955 | 955 |
+  | `Back In Time Records - Elektra Vox` | 5 | 33 | 661 | 463 | 463 |
+  | `Audio Factory - Classical Wild Takes` | 4 | 18 | 189 | 80 | 80 |
+  | `AKAI.S3000.Sound.Library.5` | 3 | 34 | 473 | 400 | 377 |
+  | `AKAI.S3000.Sound.Library.7` | 3 | 20 | 660 | 546 | 546 |
+  | `AMG - Global Trance Mission 2` | 3 | 22 | 217 | 144 | 139 |
+
+  **The audio verifies, and that is what made this safe to do at all.** 15 765 of the 15 808 recovered samples — 99.7 % — carry a payload header whose id, valid flag and name agree with the directory entry that placed them, checked by a structure the search never consults. A gap removes whole blocks, so everything past one moves by a *constant*: inside a displaced partition the directory and its audio moved together and stay consistent. Five of the eight discs recover thousands of files with **not one refusal between them**.
+
+  **The search is anchored, quantised and floored, which is what separates it from the scan [ADR-0023](docs/adr/0023-partitions-come-from-the-table-the-disc-declares.md) refused.** It walks *backwards from the position the table gives that partition* — which also settles which partition it is, since sizes repeat across a disk; it steps in *the unit the container states it stores the disc in*, new as `SectorImage.granularity`, 32 768 bytes on these images; and it *stops at the end of the partition already accepted*, so nothing is ever found inside a partition already being read. Partition 1 therefore cannot move on any disc — its declared position is 0 — and every count pinned since D15 is unchanged on the other 36 discs.
+
+  **70 declared partitions stay unread and 60 of them are not absent**, which is the deliberate cost. A header is there, inside a partition already being read: 31 would overlap one, 29 land exactly on one. `Best Service - Alpha Dance I` is the whole disc's worth of that and recovers nothing. The remaining 10 have no header at any position the search may look at.
+
+  **ADR-0023 was right on the evidence it had, and one piece of that evidence turns out to be something else.** It refused a signature scan partly because the header's constant field is a sawtooth that audio reproduces — 374 matching blocks on `Global Trance Mission 2`, 153 on `ProSamples vol.14`. Digested, `vol.14`'s 153 are its five real partition headers plus **one 8192-byte block repeated 148 times, byte for byte**; audio does not do that. They are complete stale partition headers sitting in free space, with volume directories that parse. There is no byte test that separates those from a real header, because they are real headers — so the refusal stands and is firmer than it was.
+
+  **The payload name check still has no unique positives, and this was the deliverable expected to give it one.** It fires 104 times across the collection now and never once without the id and valid tests firing too — the 15 808 recovered samples included. A displacement landing exactly on another sample's header is the case it exists for, and 15 808 more displaced samples produced none of them. ([ADR-0027](docs/adr/0027-a-payload-must-be-the-file-its-entry-placed.md))
+
+  **`AKAI.S3000.Sound.Library.6`'s recovered partition 5 brings 18 stereo pairs whose halves declare different rates** — `PROPHE FX1` at 44 597 against 44 100, and the like. The joiner refuses to fuse a pair the disc disagrees with itself about and writes both mono halves, so nothing is lost; it is why the run's "skipped (damage)" line goes from 5 to 23 while no audio went missing.
+
+- **A short image says so.** `list` prints the displacement under each partition heading and in its layout line — *"11 partitions declared, 8 present in this image (7 of them displaced -- this image is short of the disc it was made from)"* — and `batch` records that line per disc in the manifest, as `layout`. Before this, a disc missing ten of its eleven partitions said only how many were present. ([ADR-0028](docs/adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md))
+
 ### Fixed
 
 - **S3000 AKAI samples had 42 bytes of header at the front of their audio.** The S3000 family writes a **192-byte** header where the S1000 family writes 150, and every sample was read at 150. That does not fail — the frame count comes out right, the WAV opens, the length is within 0.1 % — so what shipped was a file beginning with a burst of roughly ±20 000 lasting 0.24 ms in place of the attack, missing the last 21 frames of the sound, with every loop point 21 frames out of alignment. **13 451 of the collection's 56 490 AKAI samples**, on nine discs: `AKAI.S3000.Sound.Library.1`–`7` (4 455, 3 086, 1 990, 1 010, 601, 168 and 218), `East Connexion Piano` (730) and `AMG - Now CD-Rom for (AKAI)` (1 193). **Anyone who extracted those discs should do it again.** ([docs/formats/akai-fs.md](docs/formats/akai-fs.md), [ADR-0027](docs/adr/0027-a-payload-must-be-the-file-its-entry-placed.md))

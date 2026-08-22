@@ -49,7 +49,17 @@ def cmd_list(args: argparse.Namespace) -> int:
             if volume.partition and volume.partition != current:
                 current = volume.partition
                 partitions += 1
-                print(f"\npartition {volume.partition}")
+                # Where the partition was not where the disc's table put it,
+                # say so here rather than only in the summary line: these
+                # volumes read perfectly and are still evidence that the image
+                # is short of the disc (ADR-0028).
+                short = (
+                    f"  ({volume.displaced} bytes before its declared position "
+                    f"-- this image is short of the disc)"
+                    if volume.displaced
+                    else ""
+                )
+                print(f"\npartition {volume.partition}{short}")
             # Volumes sit under their partition where there is one, because
             # their names repeat across partitions (ADR-0023).
             indent = "  " if volume.partition else ""

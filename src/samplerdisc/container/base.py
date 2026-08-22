@@ -42,6 +42,24 @@ class SectorImage(ABC):
         return self.size // SECTOR_SIZE
 
     @property
+    def granularity(self) -> int:
+        """Cooked bytes per unit this container stores the disc in.
+
+        The unit an *incomplete* image is missing whole numbers of. A container
+        that holds the sectors literally can only be short by sectors, so the
+        default is one; a container that packs the disc into larger blocks --
+        compressed MDX -- loses a whole block at a time, and every byte after
+        the gap moves forward by that much.
+
+        This is a fact about the container and nothing else: it says what the
+        file is made of, not what is inside it. A filesystem that finds a
+        structure displaced from where the disc's own table puts it needs the
+        step to search in, and the step is a quantity of this layer -- which is
+        precisely why the filesystem may not name it (ADR-0003, ADR-0028).
+        """
+        return SECTOR_SIZE
+
+    @property
     def origin(self) -> int:
         """Cooked-stream offset at which the data track begins."""
         return 0
