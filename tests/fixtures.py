@@ -330,21 +330,30 @@ def akai_sample(
     loop: tuple[int, int] | None = None,
     dwell: int = 9999,
     cents: int = 0,
+    header_len: int | None = None,
+    valid: int | None = None,
+    sample_id: int = 3,
 ) -> bytes:
-    """A 150-byte S1000 sample header followed by signed 16-bit LE PCM.
+    """A sample header followed by signed 16-bit LE PCM.
 
     ``loop`` is (start, end) in frames; the header stores the end and the
     length, not the start.
+
+    ``header_len`` is 150 by default, the S1000 length. Pass 192 for the S3000
+    variant: the fields are the same and the audio starts 42 bytes later, which
+    is what the type byte's high bit selects on a real disc. ``valid`` and
+    ``sample_id`` are overridable so a payload can be made *not* the file its
+    directory entry names, which no real disc in the collection provides.
     """
     from samplerdisc.fs.akai import NAME_LEN, SAMPLE_HEADER_LEN, SAMPLE_VALID
     from samplerdisc.sample.akai import OFF_LOOP_RECORDS, OFF_LOOPS, OFF_TUNE_CENTS
 
-    header = bytearray(SAMPLE_HEADER_LEN)
-    header[0] = 3
+    header = bytearray(SAMPLE_HEADER_LEN if header_len is None else header_len)
+    header[0] = sample_id
     header[1] = 1
     header[2] = pitch
     header[3 : 3 + NAME_LEN] = akai_name(name)
-    header[15] = SAMPLE_VALID
+    header[15] = SAMPLE_VALID if valid is None else valid
     struct.pack_into("<I", header, 26, words)
     struct.pack_into("<H", header, 138, rate)
     header[OFF_TUNE_CENTS] = cents & 0xFF

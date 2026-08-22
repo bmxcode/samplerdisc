@@ -108,6 +108,7 @@ def _pinned_sizes() -> set[int]:
         *(size for size, _, _ in _ISO9660.values()),
         *(size for size, _, _, _, _, _ in _EMU3.values()),
         *(size for size, _, _, _, _, _ in _AKAI.values()),
+        *(size for size, _, _, _, _ in _AKAI_PAYLOAD.values()),
     }
 
 
@@ -909,6 +910,142 @@ def test_akai_keeps_the_files_of_a_volume_the_allocation_map_calls_free() -> Non
             assert not volume.note
             total += len(volume.files)
     assert total == 63
+
+
+#: AKAI discs pinned by what their **payloads** say, as opposed to what their
+#: directories say above. ``label: (size, samples, s3000 headers, mismatches,
+#: damaged)``, where the last two account for every sample not written:
+#: a *mismatch* is a payload that is not the file its entry placed, and
+#: *damaged* is one that is that file with a field unusable -- four corrupt
+#: rate bytes across the collection, and nothing else (ADR-0027).
+#:
+#: The eight are chosen to cover every case the collection offers. Four whole
+#: S3000 discs, because the 192-byte header was read as 150 on every sample of
+#: them and a regression would be silent -- the WAVs would still open. Three
+#: discs carrying mismatches, one of which (`Alpha Dance II`) declares six
+#: partitions and holds all six, so its 21 refusals are damage the partition
+#: table cannot see. And `Advance Orchestra`, which is 2 236 samples with
+#: nothing wrong anywhere: the control that says these numbers measure the
+#: discs and not the checks.
+_AKAI_PAYLOAD = {
+    "AKAI.S3000.Sound.Library.1": (264_088_447, 4455, 4451, 3, 1),
+    "AKAI.S3000.Sound.Library.2": (298_155_354, 3086, 3083, 0, 3),
+    "East Connexion Piano": (277_092_352, 730, 730, 0, 0),
+    "AMG - Now CD-Rom for (AKAI)": (521_322_496, 1193, 1193, 0, 0),
+    "Best Service - Alpha Dance II AKAI": (309_865_547, 1740, 0, 21, 0),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 624, 0, 9, 0),
+    "AMG - Loop Soup AKAI": (542_419_100, 3434, 0, 1, 0),
+    "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 2236, 0, 0, 0),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_AKAI_PAYLOAD))
+def test_akai_payloads_are_the_files_their_directory_entries_placed(label: str) -> None:
+    """Every payload accepted must be the file its entry named, at the right length.
+
+    Two findings pinned together, because ruling out the false positive for one
+    is what found the other (ADR-0027).
+
+    **The header length.** S3000-family samples put 192 bytes in front of the
+    audio and S1000 ones 150, and the directory's type byte says which in its
+    high bit. Reading a 192 at 150 does not fail -- it writes a WAV that opens,
+    holding 42 bytes of header as PCM at the front, 21 frames short at the end,
+    with every loop point 21 frames out. That was happening to **13 451 of the
+    collection's 56 490** AKAI samples, on nine discs, and four of them are
+    pinned here whole.
+
+    **The identity.** 65 payloads across the 44 discs are not the file their
+    entry placed or are that file with a field unusable, and all 65 were
+    already being refused -- as "does not begin with an AKAI sample header",
+    which is true of a payload that is mid-audio and of one that is a perfectly
+    good sample under the wrong name alike. The mismatch count is pinned as
+    tightly as the sample count for ADR-0012's reason: a refusal appearing
+    where none was measured is a check that has started condemning real audio,
+    and one disappearing is a check that has stopped looking.
+    """
+    from samplerdisc.sample import NotASample, PayloadMismatch
+    from samplerdisc.sample.akai import HEADER_LEN_S1000, HEADER_LEN_S3000
+
+    size, samples, s3000_expected, mismatch_expected, damaged_expected = _AKAI_PAYLOAD[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "akai"
+        seen = s3000 = mismatched = damaged = 0
+        for volume in origin.backend.volumes(image, origin.offset):
+            for entry in volume.samples():
+                seen += 1
+                payload = origin.backend.read_file(image, origin.offset, entry)
+                try:
+                    sample = origin.backend.parse_sample(entry, payload)
+                except PayloadMismatch:
+                    mismatched += 1
+                    continue
+                except NotASample:
+                    damaged += 1
+                    continue
+                assert sample.header_len in (HEADER_LEN_S1000, HEADER_LEN_S3000)
+                if sample.header_len == HEADER_LEN_S3000:
+                    s3000 += 1
+                # The generation bit chose the length; the payload's own word
+                # count against the directory's declared size is what confirms
+                # it, and the two are written by different structures. Across
+                # the collection this holds for 56 425 of 56 425 accepted
+                # payloads -- which is what makes the rule a finding rather
+                # than a reading that happens to fit (ADR-0020, ADR-0027).
+                (words,) = struct.unpack_from("<I", payload, 26)
+                assert entry.size == words * 2 + sample.header_len, (
+                    f"{volume.name}/{entry.name}: size {entry.size}, "
+                    f"{words} words, header {sample.header_len}"
+                )
+                # And the audio is the disc's own bytes from that offset, not
+                # merely the right number of them. A count cannot see a 42-byte
+                # slip; this is the check that would have caught it.
+                assert sample.pcm == payload[sample.header_len : sample.header_len + words * 2]
+        assert (seen, s3000, mismatched, damaged) == (
+            samples,
+            s3000_expected,
+            mismatch_expected,
+            damaged_expected,
+        )
+
+
+@pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))
+def test_an_akai_payload_is_never_written_under_another_files_name(path: Path) -> None:
+    """The general statement, over whatever AKAI discs a contributor has.
+
+    The tables above are this collection's; this is the invariant, and it is
+    the one issue #23 asked for: **no AKAI sample is written whose payload
+    header names a different file**. It holds trivially now, since such a
+    payload is refused -- which is the point. If a future change relaxes the
+    name test, or reads the header at an offset where another file's name
+    happens to land, this fails on any shelf rather than on ours.
+    """
+    from samplerdisc.fs.akai import NAME_LEN, decode_name
+    from samplerdisc.sample import NotASample
+    from samplerdisc.sample.akai import OFF_NAME
+
+    with open_image(path) as image:
+        origin = find_origin(image)
+        if origin is None or origin.backend.name != "akai":
+            return
+        wrong = []
+        for volume in origin.backend.volumes(image, origin.offset):
+            for entry in volume.samples():
+                payload = origin.backend.read_file(image, origin.offset, entry)
+                try:
+                    sample = origin.backend.parse_sample(entry, payload)
+                except NotASample:
+                    continue
+                header_name = decode_name(payload[OFF_NAME : OFF_NAME + NAME_LEN])
+                if header_name != entry.name or sample.name != entry.name:
+                    wrong.append(
+                        f"partition {volume.partition} {volume.name}/{entry.name}: "
+                        f"payload header says {header_name!r}"
+                    )
+        assert not wrong, (
+            f"{path.name}: {len(wrong)} samples written under a name their payload "
+            f"header does not carry, first: {wrong[:3]}"
+        )
 
 
 @pytest.mark.parametrize("path", _discs(), ids=_ids(_discs()))

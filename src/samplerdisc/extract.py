@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from samplerdisc.fs.base import original_suffix
-from samplerdisc.sample import NotASample, aiff
+from samplerdisc.sample import NotASample, PayloadMismatch, aiff
 from samplerdisc.sample.akai import parse
 from samplerdisc.stereo import find_pairs, interleave
 from samplerdisc.wav import LOOP_FORWARD, Loop, read_header, write_wav
@@ -110,6 +110,13 @@ class Skipped:
     #: duplicate are both "skipped" and they are not the same news, so the
     #: summary must be able to tell them apart (ADR-0024).
     duplicate: bool = False
+    #: True where the payload is not the file this entry placed -- the
+    #: filesystem repeats a file's identity in its payload and the two
+    #: disagree. Counted apart for ADR-0024's reason one step on: "damaged or
+    #: unreadable" is true of a payload that is mid-audio and of one that is a
+    #: perfectly good sample under the wrong name, and only the second says the
+    #: directory and the data have come apart (ADR-0027).
+    mismatch: bool = False
 
 
 @dataclass
@@ -208,6 +215,13 @@ def extract_volume(
             continue
         try:
             sample = _parse_sample(backend, entry, payload)
+        except PayloadMismatch as exc:
+            # Caught ahead of NotASample, which it subclasses: the payload may
+            # be usable audio and is still refused, because it is not the file
+            # the directory placed here and writing it puts one sample's sound
+            # under another's name (ADR-0027).
+            yield Skipped(volume.name, entry.name, str(exc), volume.partition, mismatch=True)
+            continue
         except NotASample as exc:
             yield Skipped(volume.name, entry.name, str(exc), volume.partition)
             continue

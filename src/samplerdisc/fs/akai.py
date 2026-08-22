@@ -68,7 +68,9 @@ TYPE_KINDS = {
     "m": "multi",
 }
 
-#: Sample payload header (docs/formats/akai-fs.md).
+#: Sample payload header (docs/formats/akai-fs.md). The S1000 length; the S3000
+#: family writes 192, chosen by the type byte's high bit -- see
+#: ``AkaiBackend.parse_sample`` and ``sample/akai.py``.
 SAMPLE_HEADER_LEN = 150
 SAMPLE_ID = 3
 PROGRAM_ID = 1
@@ -541,6 +543,40 @@ class AkaiBackend:
         if len(declared) == 1:
             return "1 partition"
         return f"{len(declared)} partitions declared, {present} present in this image"
+
+    def parse_sample(self, entry: File, payload: bytes):
+        """Parse one sample, telling the parser what the directory declared.
+
+        Two things travelled on the ``File`` and are gone from the payload's
+        point of view, and both have to come back across here rather than being
+        sniffed out of the bytes:
+
+        **The name**, so the payload can be required to be the file this entry
+        placed. The payload repeats it and nothing compared the two, which is
+        issue #23.
+
+        **The generation**, because it chooses the header length. The type
+        byte's high bit is set on the S3000 family and clear on the S1000 one,
+        and it is already what names a kept original ``.s3s`` rather than
+        ``.s1s``. S3000 samples put 192 bytes in front of the audio and S1000
+        ones 150; reading a 192 at 150 puts 42 bytes of header into the WAV as
+        PCM, drops the last 21 frames and leaves every loop point 21 frames
+        out. That was happening to 13 451 of the collection's 56 490 AKAI
+        samples. See docs/formats/akai-fs.md and ADR-0027.
+
+        Imported here rather than at module scope: ``sample.akai`` imports the
+        charset and the name helpers from this module, so a top-level import
+        would be circular. ``Emu3Backend`` and ``RolandS7xxBackend`` do the
+        same for the same reason.
+        """
+        from samplerdisc.sample import akai as sample_akai
+
+        return sample_akai.parse(
+            payload,
+            fallback_name=entry.name,
+            declared_name=entry.name,
+            s3000=bool(entry.raw_type & 0x80),
+        )
 
     def original_suffix(self, entry: File) -> str:
         """Name an original after the machine that wrote it.

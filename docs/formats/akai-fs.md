@@ -152,7 +152,9 @@ A missing partition is not always damage, and the two are distinguishable: on th
 
 A short image also shows up in the table's arithmetic alone: `Kickin' Lunatic Beats 2 CD1` declares eleven partitions where the image holds one, and `ProSamples vol.54` declares nine of a 63 488-block disk on a CD of 30 720 blocks — the second of those is not damage, it is a CD carrying only the front of a larger disk. Declared against present is worth printing for that reason: it names the gap without diagnosing it.
 
-The visible consequence inside partition 1 is not only the four empty volumes. **Nine files in `13-TRACK 06` extract audio that is not theirs**: their payload header no longer matches the name the directory gives them, because everything past the first gap has slid. A payload whose header disagrees with its directory entry is a cheap check that would catch this and is not made anywhere yet — [issue #23](https://github.com/bmxcode/samplerdisc/issues/23).
+The visible consequence inside partition 1 is not only the four empty volumes. **Nine files in `13-TRACK 06` no longer hold their own audio**: everything past the first gap has slid, so their payload is mid-PCM rather than a header. They are refused and named, one line each saying which fields disagree and which entry placed them ([ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md)). [Issue #23](https://github.com/bmxcode/samplerdisc/issues/23) proposed that check believing they were being written out; they were already being refused, with a message that said neither which test failed nor that a directory entry was involved.
+
+The same damage appears **without a partition going missing**, which is worth stating separately because the table's arithmetic cannot see it. `Alpha Dance II` declares six partitions and holds all six, and 21 of `AC.DRUMLOOPS`'s 22 samples are displaced; `AKAI.S3000.Sound.Library.1` and `.3` are the same shape, 25 files across the three. The rip lost a run of blocks inside a partition rather than the blocks a header sat on.
 
 Observed volume names, useful as a smoke test that charset and offsets are both right:
 
@@ -214,7 +216,7 @@ Programs hold key ranges and envelopes, not audio. They are listed and skipped b
 
 The generation is readable from the same byte: the high bit is set on S3000-family discs and clear on S1000 ones, which is what names a kept original `.s3p`/`.s3s` rather than `.s1p`/`.s1s`. `s3000-lib1` sets it; `black2black` and `loopsoup` do not.
 
-## Sample file — 150-byte header, then PCM
+## Sample file — a header, then PCM
 
 | Offset | Size | Meaning |
 |---|---|---|
@@ -222,17 +224,67 @@ The generation is readable from the same byte: the high bit is set on S3000-fami
 | 1 | 1 | bandwidth |
 | 2 | 1 | original pitch, MIDI note |
 | 3 | 12 | name, AKAI charset |
-| 15 | 1 | valid — `0x80` |
+| 15 | 1 | valid — a **flag byte**, `0x80` set |
 | 26 | 4 | u32 LE number of sample **words** |
 | 132 | 4 | u32 LE SLOCAT |
 | **138** | **2** | **u16 LE sample rate** |
-| 150 | … | sample data |
+| **150 or 192** | … | sample data |
 
 The name sits at offset **3**, not 4, and the valid byte at **15**, not 16. Both are off-by-one traps that produce names shifted by one character — readable enough to look like success.
 
 Sample data is **signed 16-bit little-endian mono PCM**. That is already exactly what a WAV data chunk holds, so writing a WAV is a copy with a header in front of it, not a conversion. There is no resampling, no bit-depth change and no dithering anywhere in this project.
 
-S3000 discs may use a 192-byte header variant. Branch on the id and valid bytes rather than assuming 150.
+### The header is 150 bytes or 192, and the directory says which
+
+**The S3000 family writes 192 and the S1000 family 150**, and the two are not distinguishable from the bytes in front of the audio — every field above sits at the same offset in both. What separates them is the **high bit of the directory entry's type byte**, the same bit that already names a kept original `.s3s` rather than `.s1s`.
+
+Three structures agree, none of them aware of the others:
+
+- **The type byte.** 13 451 of the 44 discs' 56 490 samples have it set and every one of them is 192; the other 42 989 are 150. No disc mixes the two rules and there is not one exception.
+- **The word count.** The directory's declared size is `words × 2 + header_len` on **56 430 of 56 430** payloads readable at all — 13 441 at 192, 42 989 at 150. The 60 that fail it are the damaged ones, and every one of those also fails an identity test below.
+- **The bytes.** On `AKAI.S3000.Sound.Library.2`'s `NPF E0`, offsets 150–170 are zero and 171–191 are `0a ff ff 22 a8 00 aa ff ff 00 8c ff ff 00 aa ff ff 00 88 ff ff` — the same shape on every sample of the disc, which audio is not. Waveform starts at 192.
+
+Nine of the 44 discs are affected: `AKAI.S3000.Sound.Library.1`–`7` (4 455, 3 086, 1 990, 1 010, 601, 168 and 218 samples), `East Connexion Piano` (730) and `AMG - Now CD-Rom for (AKAI)` (1 193).
+
+**Getting this wrong does not fail, which is why it lasted four deliverables.** Reading a 192 at 150 yields the right frame count, a WAV that opens, and a length within 0.1 % — with 42 bytes of header in place of the attack (a burst of roughly ±20 000 lasting 0.24 ms, an audible click), the last 21 frames of the sound gone, and every loop point 21 frames out. An earlier note here said S3000 discs *may* use a 192-byte variant and advised branching on the id and valid bytes. Both halves were wrong: the variant is not conditional, and those two bytes do not carry the answer — `0x80` appears on 42 989 samples at 150 and 13 410 at 192, and the id is `3` on both. See [ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md).
+
+### The valid byte is a flag, not a value
+
+`0x80` is a bit within the byte and not the byte. 29 samples on `AKAI.S3000.Sound.Library.2` carry `0x81` and two on `Library.1` carry `0x9c`, with a correct id, a name matching their directory entry exactly, a rate of 44 100 or 22 050 and a word count the declared size agrees with. What the low bits mean is not established, and there is no third combination in the collection to check a reading against.
+
+### The payload repeats what the directory said, and the two must agree
+
+Every sample payload restates the file's id, its valid flag and its name, and the directory entry states the name and the size independently. Where they disagree, the payload is not the file the entry placed and it is refused rather than written under that entry's name — a WAV that opens, plays, and is somebody else's audio is the worst failure this format offers ([ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md), [issue #23](https://github.com/bmxcode/samplerdisc/issues/23)).
+
+**65 of the 56 490 samples disagree**, on ten discs; the other 34 have none. What each test catches:
+
+| Test | Fires | Fires alone |
+|---|---:|---:|
+| id is not `3` | 61 | 1 |
+| valid byte has no `0x80` | 60 | 0 |
+| name is not the entry's | 60 | **0** |
+| rate outside 4 000–50 000 | 58 | 4 |
+
+**The name comparison has no unique catch anywhere in the collection.** Every payload whose name disagrees also has a wrong id and a cleared valid flag, because on these images the displacement lands mid-audio and mid-audio does not look like a header. It is kept anyway: the other three ask whether the payload is *a* sample, and only this one asks whether it is *this* sample.
+
+Where they are:
+
+| Disc | Mismatches | Where | Partitions declared / present |
+|---|---:|---|---|
+| `Best Service - Alpha Dance II` | 21 | `AC.DRUMLOOPS`, last 21 of 22 | **6 / 6** |
+| `Best Service - Alpha Dance I` | 15 | `ATTACK BANK2`, last 15 of 18 | 5 / 4 |
+| `Kickin' Lunatic Beats 2 CD1` | 9 | `13-TRACK 06`, last 9 of 20 | 11 / 1 |
+| `AKAI.S3000.Sound.Library.5` | 7 | `SURDO`, last 7 of 13 | 9 / 3 |
+| `AKAI.S3000.Sound.Library.1` | 4 | `3084 B.BEAT6`, last 3 of 8; one rate | 13 / 13 |
+| `AMG - Global Trance Mission 2` | 3 | `AMBIENT PAD2`, last 3 of 6 | 9 / 4 |
+| `AKAI.S3000.Sound.Library.2` | 3 | three isolated rate bytes — 0, 519, 519 | 13 / 13 |
+| `AKAI.S3000.Sound.Library.3` | 1 | `VOLUME 001`, its only file | 13 / 13 |
+| `Audio Factory - Classical Wild Takes` | 1 | `VOLUME 002`, last of 2 | 11 / 6 |
+| `AMG - Loop Soup` | 1 | `SOUP 101-103`, entry 27 of 39 | 9 / 9 |
+
+**60 of the 65 are a run to the end of one volume**, which is what a lost run of blocks looks like from inside a directory. The remaining five are single files: four with a corrupt rate byte and an otherwise perfect header — `EG 2MUTE` at 0 Hz, `M.VOICE A1` and `SYN 1` at 519, `HOUSE BASS` at 1280 — and `Loop Soup`'s one directory record whose start block lands mid-sample. Those four *are* the files their entries placed, with one field unusable, which is a different fault from the other 61 and is counted apart.
+
+**A tail run does not require a missing partition.** `Alpha Dance II` declares six partitions and holds all six; `Library.1` and `Library.3` likewise. Their damage is a run of blocks lost *inside* a partition, so no header goes missing and the table's declared-against-present arithmetic sees nothing. Declared equalling present is not a clean bill of health.
 
 ## Where a directory ends
 

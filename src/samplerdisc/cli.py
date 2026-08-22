@@ -107,6 +107,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         kept = 0
         skipped = 0
         duplicates = 0
+        mismatches = 0
         results = extract_disc(
             image,
             origin.backend,
@@ -138,6 +139,8 @@ def cmd_extract(args: argparse.Namespace) -> int:
             else:
                 if result.duplicate:
                     duplicates += 1
+                elif result.mismatch:
+                    mismatches += 1
                 else:
                     skipped += 1
                 print(f"  skipped {result.volume}/{result.name}: {result.reason}", file=sys.stderr)
@@ -156,6 +159,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
         # Not damage, and saying so matters: a disc that lists 423 skips reads
         # as a bad rip when every one of them is a sound already written.
         print(f"skipped {duplicates} duplicates of audio already written")
+    if mismatches:
+        # The loudest line on a short image, and the one ADR-0012's argument
+        # applies to: a payload that is not the file the directory placed is
+        # not "damage" in the sense the next line means, and lumping the two
+        # together is how nine wrong samples went unremarked on for a release.
+        print(f"skipped {mismatches} payloads that are not the file the directory placed")
     if skipped:
         # A disc that yields most of its samples is a good outcome; say so
         # plainly rather than burying it.
