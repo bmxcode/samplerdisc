@@ -22,3 +22,14 @@ class NotASample(ValueError):
     Each format raises its own subclass, so a caller can catch this one thing
     rather than a tuple that grows by one every time a backend is added.
     """
+
+
+class PayloadMismatch(NotASample):
+    """The payload is not the file the directory placed here.
+
+    Narrower than ``NotASample`` and a different fact: the bytes may be a
+    perfectly good sample, they are just not *this* sample. A filesystem that
+    repeats a file's identity in its payload can say so; the extract path
+    counts these apart from damage without knowing which filesystem it was
+    (ADR-0003, ADR-0024, ADR-0027).
+    """

@@ -47,6 +47,11 @@ class DiscReport:
     #: audio was already written from another file on the same disc. Counted
     #: apart from ``skipped`` so a clean disc does not read as a damaged one.
     duplicates: int = 0
+    #: Entries whose payload is not the file the directory placed there.
+    #: Counted apart from ``skipped`` because it is a different fault: the
+    #: filesystem and the data have come apart, which on these discs means the
+    #: image is short of the disc it was made from (ADR-0027).
+    mismatches: int = 0
     audio_tracks: int = 0
     skipped: list[dict[str, object]] = field(default_factory=list)
     error: str | None = None
@@ -121,6 +126,8 @@ def convert_disc(
                 elif isinstance(result, Skipped):
                     if result.duplicate:
                         report.duplicates += 1
+                    if result.mismatch:
+                        report.mismatches += 1
                     report.skipped.append(
                         {
                             "volume": result.volume,
@@ -128,6 +135,7 @@ def convert_disc(
                             "name": result.name,
                             "reason": result.reason,
                             "duplicate": result.duplicate,
+                            "mismatch": result.mismatch,
                         }
                     )
             report.volumes = list(volumes.values())
@@ -158,6 +166,7 @@ def write_manifest(path: str, reports: list[DiscReport]) -> None:
             "originals": sum(r.originals for r in reports),
             "skipped": sum(len(r.skipped) for r in reports),
             "duplicates": sum(r.duplicates for r in reports),
+            "mismatches": sum(r.mismatches for r in reports),
         },
     }
     directory = os.path.dirname(os.path.abspath(path))
