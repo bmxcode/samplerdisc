@@ -234,8 +234,9 @@ def displaced_header(
     partition already accepted before it. Returns the offset or None.
 
     Every one of those four words is load-bearing, because a free search for
-    this header is what ADR-0023 refused and was right to refuse: the constant
-    at 0x02 is a sawtooth and sample data reproduces it.
+    this header is what ADR-0023 refused and was right to refuse: the free
+    blocks of these discs hold complete stale *copies* of a partition header,
+    which no byte test can tell from the real thing.
 
     **Backwards from the declared position.** A short image has *lost* bytes,
     so everything after a gap has moved towards the front and nothing has moved
@@ -259,9 +260,9 @@ def displaced_header(
     on the ProSamples discs, whose missing partitions are genuinely absent: on
     seven of them the nearest match is exactly one partition back, which is the
     *previous* partition's header seen through a size that repeats, and on
-    `vol.12` and `vol.14` it is 70 and 21 blocks back, inside a partition's
-    audio, which is the sawtooth ADR-0023 warned about. Both are below the
-    floor and neither is accepted. It also makes partition 1 unmovable on every
+    `vol.12` and `vol.14` it is 70 and 21 blocks back, on one of those stale
+    copies sitting in a read partition's free space. Both are below the floor
+    and neither is examined. It also makes partition 1 unmovable on every
     disc: its declared position is 0, so its window is empty.
     """
     step = image.granularity
