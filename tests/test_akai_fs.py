@@ -532,11 +532,10 @@ def test_block_numbers_are_relative_to_their_own_partition(tmp_path):
 def test_a_declared_partition_the_image_lacks_is_skipped_and_the_walk_goes_on(tmp_path):
     """An image short of the disk it was made from loses a partition, not the rest.
 
-    The table gives absolute positions, so a missing header costs its own
-    partition and nothing after it. Where the header is missing the walk stops
-    rather than searching: on the discs that do this the header turns up
-    displaced by a whole number of the container's blocks, which is the rip
-    being incomplete (ADR-0023, issue #17).
+    The table gives absolute positions, so a partition that cannot be found
+    costs its own and nothing after it. Here there is nothing to find -- the
+    partition's blocks are zeros, and the backward search reaches no header at
+    any position it may look at (ADR-0023, ADR-0028, issue #17).
     """
     blank = bytes(512 * 8192)
     data = fixtures.akai_disc(
@@ -606,3 +605,213 @@ def test_a_disc_with_no_partition_table_reads_the_partition_at_the_origin(tmp_pa
     volumes = list(BACKEND.volumes(image, 0))
     assert [v.partition for v in volumes] == [1, 1]
     assert BACKEND.layout(image, 0) == "no partition table -- reading the partition at the origin"
+
+
+# --- an image short of the disc it was made from (ADR-0028) --------------
+
+#: Blocks per partition in the short-image fixtures below. Small enough that a
+#: three-partition disc is a few megabytes and large enough that the partition
+#: table at 0x4500 fits inside the first one.
+_SHORT_BLOCKS = 192
+
+#: What the MDX container stores a disc in, and therefore what a rip of one
+#: loses. The fixtures delete whole units of this and nothing else.
+_UNIT = 32768
+
+
+def _short_disc(count: int, gap_at_block: int, units: int = 1) -> bytes:
+    """A disk of ``count`` partitions with a run of container blocks missing.
+
+    ``gap_at_block`` is where the gap starts, in AKAI blocks from the origin.
+    Everything after it moves ``units * 32768`` bytes towards the front, the
+    table still declaring the positions the *disk* had.
+    """
+    partitions = [
+        fixtures.akai_partition(
+            [
+                (
+                    f"VOLUME 00{index}",
+                    [(f"KICK {index}", 0x73, 278, fixtures.akai_sample(f"KICK {index}"))],
+                )
+            ],
+            blocks_total=_SHORT_BLOCKS,
+        )
+        for index in range(1, count + 1)
+    ]
+    return fixtures.short_image(fixtures.akai_disc(partitions), gap_at_block * 8192, _UNIT, units)
+
+
+def test_a_partition_the_rip_moved_is_found_where_the_lost_blocks_put_it(tmp_path):
+    """The deliverable, in one fixture (ADR-0028).
+
+    A gap inside partition 1 pulls every partition after it towards the front
+    by exactly what was lost. Partition 2's header then sits *inside* partition
+    1's declared extent and is refused -- that is `Alpha Dance I` and
+    `Kickin' Lunatic Beats 2 CD2`'s partition 2, and refusing it is what keeps
+    the 275 partitions read before this from moving. Partition 3 is clear of
+    everything already accepted and is read, with its volume and its sample
+    intact, because inside a displaced partition the directory and the audio
+    moved together.
+    """
+    from samplerdisc.fs.akai import partitions
+
+    image = image_of(tmp_path, _short_disc(3, gap_at_block=100))
+    found = [(p.index, p.offset, p.displaced) for p in partitions(image, 0)]
+    assert found == [
+        (1, 0, 0),
+        (3, 2 * _SHORT_BLOCKS * 8192 - _UNIT, _UNIT),
+    ]
+    volumes = list(BACKEND.volumes(image, 0))
+    assert [(v.partition, v.name, v.displaced) for v in volumes] == [
+        (1, "VOLUME 001", 0),
+        (3, "VOLUME 003", _UNIT),
+    ]
+    # The recovered partition's audio is the file its directory placed: the
+    # payload header carries the entry's own name, which is what says the
+    # partition was found and not merely something header-shaped (ADR-0027).
+    entry = volumes[1].files[0]
+    payload = BACKEND.read_file(image, 0, entry)
+    assert decode_name(payload[3:15]) == entry.name == "KICK 3"
+    assert BACKEND.layout(image, 0) == (
+        "3 partitions declared, 2 present in this image (1 of them displaced -- "
+        "this image is short of the disc it was made from)"
+    )
+
+
+def test_a_partition_is_never_found_inside_one_already_being_read(tmp_path):
+    """The rule that does all the rejecting, and the whole safety argument.
+
+    Partition 2's header is really there and really is partition 2's -- and
+    taking it would mean reading two partitions over the same bytes, so it is
+    refused. The search stops at the end of the last partition accepted, which
+    is why this is a bound rather than a filter: nothing below the floor is
+    ever examined.
+
+    On the shelf this is what refuses the ProSamples discs, whose missing
+    partitions are genuinely absent and whose nearest match is a stale header
+    sitting in a partition already read (ADR-0028).
+    """
+    from samplerdisc.fs.akai import displaced_header, partition_header, partitions
+
+    image = image_of(tmp_path, _short_disc(2, gap_at_block=100))
+    at = _SHORT_BLOCKS * 8192 - _UNIT
+    # The header is there, and reading it is not the question.
+    assert partition_header(image, at) == _SHORT_BLOCKS
+    # It is inside partition 1, so the search may not reach it ...
+    assert (
+        displaced_header(image, 0, _SHORT_BLOCKS * 8192, _SHORT_BLOCKS, _SHORT_BLOCKS * 8192)
+        is None
+    )
+    # ... and with no floor in the way, the same call finds it. The rule is the
+    # floor and nothing else about the bytes.
+    assert displaced_header(image, 0, _SHORT_BLOCKS * 8192, _SHORT_BLOCKS, 0) == at
+    assert [(p.index, p.displaced) for p in partitions(image, 0)] == [(1, 0)]
+    assert BACKEND.layout(image, 0) == "2 partitions declared, 1 present in this image"
+
+
+def test_partition_one_cannot_move_on_any_disc(tmp_path):
+    """Its declared position is 0, so its window is empty by construction.
+
+    Partition 1 is where the table itself lives and it is the control on every
+    count this project has pinned since #22. Nothing may search in front of it,
+    and there is nowhere in front of it to search.
+    """
+    from samplerdisc.fs.akai import displaced_header
+
+    image = image_of(tmp_path, _short_disc(3, gap_at_block=100))
+    assert displaced_header(image, 0, 0, _SHORT_BLOCKS, 0) is None
+
+
+def test_the_search_steps_in_the_unit_the_container_states(tmp_path):
+    """The step is the container's word, not the filesystem's guess (ADR-0003).
+
+    A displacement of one 32 KB block is invisible to a search stepping in
+    64 KB ones. The filesystem has no way to know which is right -- the number
+    belongs to the layer that stores the disc -- so it asks, and this is that
+    seam under test rather than the value 32768.
+    """
+    from samplerdisc.fs.akai import displaced_header
+
+    class _Coarser:
+        """The same image, telling the filesystem a different storage unit."""
+
+        def __init__(self, inner, granularity):
+            self._inner, self.granularity = inner, granularity
+
+        size = property(lambda self: self._inner.size)
+
+        def read(self, offset, length):
+            return self._inner.read(offset, length)
+
+    image = image_of(tmp_path, _short_disc(3, gap_at_block=100))
+    declared = 2 * _SHORT_BLOCKS * 8192
+    floor = _SHORT_BLOCKS * 8192
+    assert displaced_header(image, 0, declared, _SHORT_BLOCKS, floor) == declared - _UNIT
+    assert displaced_header(_Coarser(image, 2 * _UNIT), 0, declared, _SHORT_BLOCKS, floor) is None
+    # A container with nothing to say gets no search at all rather than a
+    # default step chosen here.
+    assert displaced_header(_Coarser(image, 0), 0, declared, _SHORT_BLOCKS, floor) is None
+
+
+def test_a_partition_never_written_is_not_recovered_from_another_ones_header(tmp_path):
+    """The ProSamples case: absent is not displaced, and the two must not merge.
+
+    These CDs carry the front of a larger disk -- `vol.54` declares nine
+    partitions of a 63 488-block disk on a CD of 30 720 blocks -- so the
+    partitions they are missing were never written and there is nothing to
+    find. What makes that dangerous is that a *size* repeats: with no floor the
+    search walks back over the unwritten region and reaches partition 1's
+    header, which restates the same block count and would be read a second time
+    under partition 3's index. The second assertion is that failure, and the
+    first is the rule refusing it (ADR-0028).
+    """
+    from samplerdisc.fs.akai import displaced_header, partitions
+
+    blank = bytes(_SHORT_BLOCKS * 8192)
+    data = fixtures.akai_disc(
+        [
+            fixtures.akai_partition(
+                [("VOLUME 001", [("KICK 1", 0x73, 278, fixtures.akai_sample("KICK 1"))])],
+                blocks_total=_SHORT_BLOCKS,
+            ),
+            blank,
+            blank,
+        ]
+    )
+    image = image_of(tmp_path, data)
+    declared = 2 * _SHORT_BLOCKS * 8192
+    assert displaced_header(image, 0, declared, _SHORT_BLOCKS, _SHORT_BLOCKS * 8192) is None
+    assert displaced_header(image, 0, declared, _SHORT_BLOCKS, 0) == 0
+    assert [(p.index, p.displaced) for p in partitions(image, 0)] == [(1, 0)]
+    assert BACKEND.layout(image, 0) == "3 partitions declared, 1 present in this image"
+
+
+def test_a_displaced_partition_must_restate_the_size_the_table_gave_it(tmp_path):
+    """The header confirms a found position exactly as it does a declared one.
+
+    Three fields and the block count the table gave *this* index. A header that
+    is one block out is not this partition's, and is refused rather than read
+    with the size the table wanted (ADR-0023, ADR-0028).
+    """
+    import struct
+
+    from samplerdisc.fs.akai import (
+        PARTITION_BLOCKS_OFFSET,
+        SIZE_ECHO_BIAS,
+        SIZE_ECHO_OFFSET,
+        displaced_header,
+        partitions,
+    )
+
+    declared = 2 * _SHORT_BLOCKS * 8192
+    floor = _SHORT_BLOCKS * 8192
+    data = bytearray(_short_disc(3, gap_at_block=100))
+    at = declared - _UNIT
+    # Partition 3's header, restating one block less than the table gives it.
+    struct.pack_into("<H", data, at + PARTITION_BLOCKS_OFFSET, _SHORT_BLOCKS - 1)
+    struct.pack_into(
+        "<H", data, at + SIZE_ECHO_OFFSET, (_SHORT_BLOCKS - 1 + SIZE_ECHO_BIAS) & 0xFFFF
+    )
+    image = image_of(tmp_path, bytes(data), "resized.iso")
+    assert displaced_header(image, 0, declared, _SHORT_BLOCKS, floor) is None
+    assert [p.index for p in partitions(image, 0)] == [1]

@@ -71,6 +71,17 @@ class Volume:
     #: AKAI disc's partitions -- nearly every one has a ``VOLUME 001`` -- so
     #: this is what keeps two of them apart in a listing and on disk.
     partition: int = 0
+    #: Bytes between where the disc's own bookkeeping puts this volume's
+    #: partition and where it was found, 0 -- and meaningless -- where the
+    #: filesystem has no partitions.
+    #:
+    #: Non-zero says the image is short of the disc it was made from: whole
+    #: units of the container are missing in front of this volume, so it and
+    #: everything after it sit nearer the front than the disc's table declares.
+    #: The audio is intact and internally consistent, and *the image is not the
+    #: disc* -- which a listing should say rather than leave to be inferred
+    #: from a partition count (ADR-0028).
+    displaced: int = 0
     #: Why this volume has no files, when that is expected rather than wrong.
     #: A volume with no files and no note is the signature of a probe that
     #: matched something it should not have (ADR-0012), so the two cases must

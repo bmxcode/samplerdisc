@@ -207,6 +207,23 @@ class MdxImage(_FileBacked):
         return self._size
 
     @property
+    def granularity(self) -> int:
+        """One block of the chain, in cooked bytes -- 32 768 on most images.
+
+        The chain carries no index, so nothing in the file says which block is
+        which: a rip that lost one produces a file that decodes perfectly and
+        is short of the disc by exactly this much, with everything after the
+        gap moved forward. That is what makes the number worth publishing
+        rather than keeping to this module.
+
+        Measured, never assumed. It is ``block_size`` scaled from the stored
+        stride to the cooked one, so an image holding 2144-byte sectors with
+        subchannel reports the 30 720 cooked bytes its 32 160-byte block
+        carries, not 32 160. See docs/formats/mdx.md.
+        """
+        return self.block_size // self.stride * SECTOR_SIZE
+
+    @property
     def compressed_blocks(self) -> int:
         return sum(1 for block in self.blocks if not block.stored)
 

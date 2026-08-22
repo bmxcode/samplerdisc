@@ -369,6 +369,33 @@ def test_block_size_and_stride_are_read_off_the_image(tmp_path):
     assert image.read(0, image.size) == expected
 
 
+def test_a_container_states_the_unit_it_stores_the_disc_in(tmp_path):
+    """``granularity`` is what an incomplete image is missing whole numbers of.
+
+    A flat image holds the sectors literally, so it can only be short by one; a
+    compressed MDX holds a chain of blocks with no index, so it loses a whole
+    block at a time and everything after the gap moves forward by that much.
+    That number is a fact about the container and about nothing else, which is
+    why the filesystem asks for it rather than naming it (ADR-0003, ADR-0028).
+
+    Reported in **cooked** bytes on both, so the two are comparable: an image
+    of 32160-byte blocks holding 2144-byte sectors is short by the 30 720 bytes
+    of data such a block carries, not by 32 160.
+    """
+    flat = FlatImage(write(tmp_path, "flat.iso", fixtures.cooked_sectors(4)))
+    assert flat.granularity == SECTOR_SIZE
+
+    raw, _ = fixtures.make_mdx([fixtures.compressible_block(i) for i in range(2)])
+    plain = MdxImage(write(tmp_path, "plain-granularity.mdx", raw))
+    assert plain.granularity == DEFAULT_BLOCK_SIZE
+
+    stored = [block for block, _ in (fixtures.subchannel_block(i) for i in range(3))]
+    raw, _ = fixtures.make_mdx(stored)
+    subchannel = MdxImage(write(tmp_path, "subch-granularity.mdx", raw))
+    assert (subchannel.block_size, subchannel.stride) == (32160, 2144)
+    assert subchannel.granularity == 15 * SECTOR_SIZE == 30720
+
+
 def test_plain_images_have_no_subchannel_stride(tmp_path):
     blocks = [fixtures.compressible_block(i) for i in range(2)]
     raw, expected = fixtures.make_mdx(blocks)

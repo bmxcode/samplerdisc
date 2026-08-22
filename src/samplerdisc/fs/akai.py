@@ -37,9 +37,10 @@ VOLUME_INDEX_OFFSET = 13
 VOLUME_START_OFFSET = 14
 
 #: Volume type byte: which sampler owns the volume, or 0 for one the sampler
-#: will not load. Counted across 44 discs: 338 type 1, 91 type 7, 9 type 3,
-#: 10 type 0. It is NOT an allocation flag -- four type-0 volumes carry 63
-#: files between them, which is why the allocation map below does that job.
+#: will not load. Counted over the 44 discs' first partitions: 338 type 1, 91
+#: type 7, 9 type 3, 10 type 0; over all 314 partitions read, 1733/711/107/35.
+#: It is NOT an allocation flag -- four type-0 volumes carry 63 files between
+#: them, which is why the allocation map below does that job.
 VOLUME_TYPE_INACTIVE = 0
 VOLUME_TYPES = {0: "inactive", 1: "S1000", 3: "S3000", 7: "CD3000"}
 
@@ -88,10 +89,12 @@ PARTITION_BLOCKS_OFFSET = 0x00
 #: after the volume directory's hundred slots. This is the disc's own record of
 #: what each block holds, and it is what tells a live volume from a slot that
 #: was formatted and never used -- a question the volume entry itself cannot
-#: answer. Verified across all 44 AKAI discs: every one of 14 607 files has a
-#: chain of exactly ceil(size / BLOCK_SIZE) blocks, counting the files of the
-#: five deleted volumes out -- their blocks went back to the free list, so
-#: their chains no longer describe the audio still sitting in them.
+#: answer. Verified across all 44 AKAI discs: 85 338 of 85 355 files have a
+#: chain of exactly ceil(size / BLOCK_SIZE) blocks -- 14 607 of 14 607 in the
+#: first partitions, and 17 `MULTI FILE` entries on one disc are the only
+#: exception anywhere. That counts the files of the five deleted volumes out:
+#: their blocks went back to the free list, so their chains no longer describe
+#: the audio still sitting in them.
 #: See docs/formats/akai-fs.md and ADR-0022.
 FAT_OFFSET = VOLUME_DIR_OFFSET + _MAX_VOLUMES * VOLUME_ENTRY_LEN
 
@@ -120,19 +123,23 @@ FAT_CHAIN_END = 0xC000
 #: See docs/formats/akai-fs.md and ADR-0023.
 PARTITION_TABLE_OFFSET = 0x4500
 
-#: 196 bytes of constant at 0x02, byte-identical across all 275 partitions of
-#: the 44 discs: 3333 x i as u16 LE, i = 0..97, wrapping. Nothing is known to
+#: 196 bytes of constant at 0x02, byte-identical across all 314 partitions read
+#: on the 44 discs: 3333 x i as u16 LE, i = 0..97, wrapping. Nothing is known to
 #: read it and nothing on any disc varies with it, but a partition header
 #: carries it, which is what confirms a partition is where the table says.
 #:
-#: **It must never be scanned for.** As 16-bit PCM it is a rising sawtooth, and
-#: sample data reproduces it: 374 blocks of one disc's free space match, every
-#: one in a block the allocation map calls free (ADR-0023).
+#: **It must never be scanned for**, and the reason is stronger than it looks:
+#: the free blocks of these discs hold complete *copies* of a partition header
+#: -- 148 byte-identical ones on `ProSamples vol.14`, 374 matches on `Global
+#: Trance Mission 2`, every one in a block the allocation map calls free. No
+#: byte test separates those from a real header, because they are real headers.
+#: A position is placed by what the disc states and confirmed there, never
+#: chosen because the bytes look right (ADR-0023, ADR-0028).
 HEADER_PATTERN_OFFSET = 0x02
 HEADER_PATTERN = struct.pack("<98H", *(3333 * step & 0xFFFF for step in range(98)))
 
 #: The header restates its own size. The u16 at 0xC6 is the block count at 0x00
-#: plus this bias, and the u16 at 0xC8 is 47; both hold on all 275 partitions
+#: plus this bias, and the u16 at 0xC8 is 47; both hold on all 314 partitions
 #: measured. Two fields of the header agreeing is what lets a candidate be
 #: confirmed by the disc rather than by the arithmetic that placed it.
 SIZE_ECHO_OFFSET = 0xC6
@@ -166,6 +173,12 @@ class Partition(NamedTuple):
     index: int
     offset: int
     blocks: int
+    #: Bytes between where the table puts this partition and where its header
+    #: actually is, 0 for a partition sitting where it was declared. Non-zero
+    #: only on an image short of the disc it was made from: the table places
+    #: the partition on the *disk*, and the image has lost whole container
+    #: blocks in front of it (ADR-0028).
+    displaced: int = 0
 
 
 def partition_table(image: SectorImage, origin: int) -> list[int]:
@@ -210,18 +223,75 @@ def partition_header(image: SectorImage, offset: int) -> int | None:
     return blocks
 
 
+def displaced_header(
+    image: SectorImage, origin: int, declared: int, size: int, floor: int
+) -> int | None:
+    """Where a declared partition's header is, when the image is short of it.
+
+    Searches **backwards from the position the table gave this partition**, in
+    steps of the container's own storage unit, for a header restating the size
+    the table gave *this* partition -- and stops at ``floor``, the end of the
+    partition already accepted before it. Returns the offset or None.
+
+    Every one of those four words is load-bearing, because a free search for
+    this header is what ADR-0023 refused and was right to refuse: the free
+    blocks of these discs hold complete stale *copies* of a partition header,
+    which no byte test can tell from the real thing.
+
+    **Backwards from the declared position.** A short image has *lost* bytes,
+    so everything after a gap has moved towards the front and nothing has moved
+    away from it. Searching forward would be searching where the fault cannot
+    have put anything.
+
+    **In the container's unit.** The displacement is a whole number of the
+    blocks the container stores, because that is what the rip dropped; the
+    filesystem does not know what that unit is and must not guess, so it asks
+    (ADR-0003). On the collection the answer is the same at 32 768, 8 192 and
+    2 048 bytes, so this is not what makes the search safe -- it is what keeps
+    it honest about the fault it is repairing, and what bounds its cost.
+
+    **Restating this partition's size.** The header confirms the position, as
+    it does at a declared one: the same three fields, plus the size the table
+    gave this index. Sizes repeat within a disk, which is why the anchor
+    matters -- see below.
+
+    **Stopping at the floor.** A partition may not be found inside one already
+    being read. This is the whole safety argument and it does all the rejecting
+    on the ProSamples discs, whose missing partitions are genuinely absent: on
+    seven of them the nearest match is exactly one partition back, which is the
+    *previous* partition's header seen through a size that repeats, and on
+    `vol.12` and `vol.14` it is 70 and 21 blocks back, on one of those stale
+    copies sitting in a read partition's free space. Both are below the floor
+    and neither is examined. It also makes partition 1 unmovable on every
+    disc: its declared position is 0, so its window is empty.
+    """
+    step = image.granularity
+    if step <= 0:
+        return None
+    position = declared - step
+    while position >= floor:
+        if partition_header(image, origin + position) == size:
+            return position
+        position -= step
+    return None
+
+
 def partitions(image: SectorImage, origin: int) -> Iterator[Partition]:
     """Every partition of the disk that this image actually holds.
 
-    The table says where each one begins; the header there confirms it. A
-    declared position the image has no header at is **skipped rather than
-    searched for**: on the discs where that happens the image is short of the
-    disc it was made from, and the header it is missing turns up displaced by a
-    whole number of the container's own 32 KB blocks -- a fault of the rip, not
-    a filesystem to go hunting through (ADR-0022, ADR-0023, issue #17).
+    The table says where each one begins and the header there confirms it. A
+    declared position with no header is not the end of the story on an image
+    that is **short of the disc it was made from**: the rip lost whole blocks
+    of the container, so everything past a gap sits that much nearer the front,
+    and the partition is there to be found rather than absent. Searching for it
+    is ``displaced_header`` above, and what makes that search a confirmation
+    rather than a scan is written there (ADR-0028).
 
-    Because the table gives absolute positions, one missing header costs its
-    own partition and no other: the walk carries on to the next declared start.
+    Because the table gives absolute positions, one partition that cannot be
+    found costs its own and no other: the walk carries on to the next declared
+    start. Accepted partitions never overlap -- the search stops at the end of
+    the last one accepted, and a recovered partition always ends before its
+    declared end, so it cannot reach into a later one either.
     """
     sizes = partition_table(image, origin)
     if not sizes:
@@ -233,14 +303,20 @@ def partitions(image: SectorImage, origin: int) -> Iterator[Partition]:
         yield Partition(1, 0, blocks)
         return
     at = 0
+    #: Bytes past the end of the last partition accepted. Nothing may be found
+    #: below it, and it is the far end of every search.
+    floor = 0
     for index, size in enumerate(sizes, start=1):
-        offset = at * BLOCK_SIZE
+        declared = at * BLOCK_SIZE
         at += size
-        if origin + offset >= image.size:
-            continue
-        if partition_header(image, origin + offset) != size:
-            continue
-        yield Partition(index, offset, size)
+        offset = declared
+        if partition_header(image, origin + declared) != size:
+            found = displaced_header(image, origin, declared, size, floor)
+            if found is None:
+                continue
+            offset = found
+        floor = offset + size * BLOCK_SIZE
+        yield Partition(index, offset, size, declared - offset)
 
 
 def decode_name(raw: bytes) -> str:
@@ -271,7 +347,7 @@ def allocation_map(image: SectorImage, offset: int) -> list[int]:
     from one, instead of a map invented out of whatever follows the header.
 
     What makes a count sane is the header restating it: the u16 at 0xC6 is the
-    block count plus a fixed bias on all 275 partitions measured, so a count
+    block count plus a fixed bias on all 314 partitions read, so a count
     with no echo behind it is not a partition's and gets no map. That is a
     firmer test than the image's length, which was the previous one and refused
     the map to a partition the image merely *ends inside* -- leaving two volumes
@@ -458,6 +534,7 @@ class AkaiBackend:
                 start_block=start,
                 origin=partition.offset,
                 partition=partition.index,
+                displaced=partition.displaced,
             )
             volume.files = list(self._files(image, at, partition.offset, start, max_block))
             if not volume.files:
@@ -531,18 +608,31 @@ class AkaiBackend:
         """One line on how the disk is divided, for ``list``.
 
         Declared against present is the interesting pair: `Kickin' Lunatic
-        Beats 2 CD1` declares eleven partitions and the image holds one, and
+        Beats 2 CD1` declares eleven partitions and the image holds eight, and
         that gap is the image being short of the disc rather than the disc
         being small (issue #17). Saying it is the difference between a fact and
         an absence nobody sees.
+
+        A displaced count says the same thing from the other side. Where it is
+        non-zero the image has lost blocks and the partitions after each gap
+        were found before the table puts them, so *this image is not the disc*
+        -- which is worth a user knowing before they wonder why a volume is
+        missing (ADR-0028).
         """
         declared = partition_table(image, offset)
-        present = sum(1 for _ in partitions(image, offset))
+        found = list(partitions(image, offset))
+        displaced = sum(1 for part in found if part.displaced)
         if not declared:
             return "no partition table -- reading the partition at the origin"
         if len(declared) == 1:
             return "1 partition"
-        return f"{len(declared)} partitions declared, {present} present in this image"
+        line = f"{len(declared)} partitions declared, {len(found)} present in this image"
+        if displaced:
+            line += (
+                f" ({displaced} of them displaced -- this image is short of the disc "
+                f"it was made from)"
+            )
+        return line
 
     def parse_sample(self, entry: File, payload: bytes):
         """Parse one sample, telling the parser what the directory declared.
@@ -561,8 +651,8 @@ class AkaiBackend:
         ``.s1s``. S3000 samples put 192 bytes in front of the audio and S1000
         ones 150; reading a 192 at 150 puts 42 bytes of header into the WAV as
         PCM, drops the last 21 frames and leaves every loop point 21 frames
-        out. That was happening to 13 451 of the collection's 56 490 AKAI
-        samples. See docs/formats/akai-fs.md and ADR-0027.
+        out. That was happening to 13 451 of the 56 490 AKAI samples the
+        collection read before D19. See docs/formats/akai-fs.md and ADR-0027.
 
         Imported here rather than at module scope: ``sample.akai`` imports the
         charset and the name helpers from this module, so a top-level import

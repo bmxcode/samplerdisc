@@ -78,32 +78,36 @@ Compressed `.mdx` is the piece no other open-source tool reads today. The format
 | | |
 |---|---|
 | Discs converted | 72 of 79 |
-| Samples | 89 156 |
-| Stereo pairs rejoined | 15 808 |
+| Samples | 104 921 |
+| Stereo pairs rejoined | 17 309 |
 | Audio CD tracks | 161 |
 | Duplicate audio suppressed | 5 719 |
-| Entries not the file their entry placed | 61 |
-| Entries skipped (damage) | 5 |
-| Time | 48 s |
+| Entries not the file their entry placed | 104 |
+| Entries skipped (damage) | 23 |
+| Time | 72 s |
 
 By filesystem:
 
 | | Discs | Samples | Stereo pairs | Skipped |
 |---|---:|---:|---:|---:|
-| AKAI | 44 | 56 425 | 14 461 | 66 |
+| AKAI | 44 | 72 190 | 15 962 | 127 |
 | E-mu `EMU3` | 7 | 14 738 | 6 | 0 |
 | ISO 9660 | 15 | 11 601 | — | 0 |
 | Roland `S770 MR25A` | 5 | 6 392 | 1 341 | 0 |
 
 "Stereo pairs" counts files joined from an `-L`/`-R` pair by name. E-mu's six are the only ones on those discs, and they are a different and much rarer thing than the 2 656 samples whose record declares two channels.
 
-Every WAV was checked against the disc it came from — **70 of 70 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 89 156 payloads, zero mismatches. The E-mu stereo samples are compared with their channels put back the way the disc stored them, since their WAV holds the same bytes interleaved; `tests/test_discs.py` asserts that de-interleaving reproduces the disc's two blocks exactly, per sample, on all seven discs. The two audio CDs are not in that count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
+Every WAV was checked against the disc it came from — **70 of 70 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 104 921 payloads, zero mismatches. The E-mu stereo samples are compared with their channels put back the way the disc stored them, since their WAV holds the same bytes interleaved; `tests/test_discs.py` asserts that de-interleaving reproduces the disc's two blocks exactly, per sample, on all seven discs. The two audio CDs are not in that count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
 
-105 125 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **275 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, six are on a Proteus library that ships `Dead Air` as a sample, and two are on a Roland disc. That is what the discs hold, not something the decoder did.
+122 391 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **275 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, six are on a Proteus library that ships `Dead Air` as a sample, and two are on a Roland disc. That is what the discs hold, not something the decoder did.
 
-Sample rates run from 6 000 to 49 999 Hz across 1 047 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
+Sample rates run from 6 000 to 49 999 Hz across 1 071 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
 
-The 66 AKAI entries not written are two different faults. **61 are payloads that are not the file the directory placed there** — their header carries another file's id, valid flag or name — and 60 of those 61 are a run to the end of one volume, on ten discs; the other 34 AKAI discs have none. That is what a rip losing a run of blocks looks like from inside a directory, and it does not need a partition to go missing: `Best Service - Alpha Dance II` declares six partitions and holds all six, and still loses 21 of `AC.DRUMLOOPS`'s 22 samples. Each is refused with a line naming every field that disagrees and the entry that placed it, rather than being written out under a name that is not its own ([ADR-0027](docs/adr/0027-a-payload-must-be-the-file-its-entry-placed.md)). The remaining five are damage of a different kind: four samples whose header is otherwise perfect and whose rate field reads 0, 519, 519 or 1280, and one stereo pair whose halves declare 44 033 and 44 100, so the joiner refuses to fuse them and writes both mono halves instead.
+The 127 AKAI entries not written are two different faults. **104 are payloads that are not the file the directory placed there** — their header carries another file's id, valid flag or name — and 103 of those 104 are a run to the end of one volume, on nine discs; the other 35 AKAI discs have none. That is what a rip losing a run of blocks looks like from inside a directory, and it does not need a partition to go missing: `Best Service - Alpha Dance II` declares six partitions and holds all six, and still loses 21 of `AC.DRUMLOOPS`'s 22 samples. Each is refused with a line naming every field that disagrees and the entry that placed it, rather than being written out under a name that is not its own ([ADR-0027](docs/adr/0027-a-payload-must-be-the-file-its-entry-placed.md)). Every one of those 103 is sitting intact, under its own name, a whole number of container blocks earlier in the image — the same fault as the displaced partitions below, one level down, and not yet recovered ([#35](https://github.com/bmxcode/samplerdisc/issues/35)).
+
+The other 23 are damage of a different kind, and 19 of them are not damage at all: four samples whose header is otherwise perfect and whose rate field reads 0, 519, 519 or 1280, and **19 `-L`/`-R` pairs whose two halves declare different sample rates** — 18 of them synth FX on `AKAI.S3000.Sound.Library.6`, at 44 597 against 44 100 and the like. The joiner refuses to fuse a pair the disc disagrees with itself about, and writes both mono halves instead, so no audio is lost.
+
+**Eight of the 44 AKAI images are short of the disc they were made from.** Whole 32 KB blocks are missing from the file, so every partition after a gap sits that much nearer the front than the disk's own table says — and 39 of them are found there and read, carrying 17 180 files and 15 808 samples that nothing could reach before. `list` and the manifest say so per disc: *"11 partitions declared, 8 present in this image (7 of them displaced — this image is short of the disc it was made from)"*. 70 declared partitions are still unread, and 60 of those are refused rather than absent: a header is there, inside a partition already being read, and reading it would put one run of bytes under two partitions at once ([ADR-0028](docs/adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md)).
 
 The seven that do not convert are accounted for: one S-550 disc present as both `.iso` and `.nrg` — a different format from the S-7xx and not yet read ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)) — two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, and one ISO 9660 disc holding E-mu `.EBL` banks rather than audio.
 

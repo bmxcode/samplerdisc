@@ -322,6 +322,23 @@ def akai_disc(partitions, *, declared=None, flag: int = 0) -> bytes:
     return bytes(image)
 
 
+def short_image(data: bytes, at: int, unit: int, count: int = 1) -> bytes:
+    """Drop ``count`` whole ``unit``-sized blocks starting at ``at``.
+
+    What an incomplete rip produces, and the reason it is invisible: the
+    container's chain carries no index, so the file that comes out decodes
+    perfectly and is short of the disc. Everything past the gap sits
+    ``count * unit`` bytes nearer the front than the disc's own bookkeeping
+    puts it -- a partition header included, which is what makes the damage
+    findable at all (ADR-0028).
+
+    ``at`` must be a multiple of ``unit``: a rip loses whole blocks of whatever
+    the container stores, never part of one.
+    """
+    assert at % unit == 0, f"a container loses whole blocks; {at} is not a multiple of {unit}"
+    return data[:at] + data[at + count * unit :]
+
+
 def akai_sample(
     name: str,
     rate: int = 44100,
