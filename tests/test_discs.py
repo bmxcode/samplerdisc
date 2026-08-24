@@ -132,6 +132,10 @@ _HEAD_BYTES = 1 << 20
 _HEAD_DIGEST = {
     "emu-classics": "3882c2319cc27871",
     "eiv-studio": "f1f1c805136d4881",
+    # Vol. 10 - Elements of Sound 1MB shares its size with Vol. 11 (the 2MB
+    # cut of the same library), so it needs the first-megabyte digest to be
+    # told apart -- their bank directories differ.
+    "elements1mb": "250858faa4d17ceb",
 }
 
 
@@ -614,10 +618,22 @@ _EMU3 = {
     "eiiix-2": (304_435_200, 46, 1337, 892, 592, "8bfcddf6d8dbd806"),
     "emu-classics": (526_723_072, 22, 1516, 1133, 185, "e1398c11a9e7cb02"),
     "vintage": (527_030_272, 16, 993, 846, 2, "fbcc378dd173f96c"),
-    "ditto-drums": (308_121_600, 48, 948, 14, 0, "3c756586711810de"),
+    "ditto-drums": (308_121_600, 48, 979, 14, 0, "47b17bcd6028ec29"),
     "eiv-analogia": (293_912_576, 12, 449, 6, 279, "5d8faa38572914cb"),
     "eiv-studio": (399_077_376, 230, 2822, 2214, 320, "8802808655deea30"),
     "eiv-vitous": (532_443_136, 44, 828, 198, 828, "66c179be5b78cbd2"),
+    # D24 recovers a bank whose header carries a mis-typed copy of its
+    # directory name (ADR-0031). ``ditto-drums`` gains ``PERCUSSION#1   X``'s
+    # 31 records above; these two discs are pinned for the first time by it.
+    #
+    # Their sample totals still include a *separate*, pre-existing
+    # duplicate-directory-name double-listing that D24 does not touch:
+    # ``elements1mb`` lists ``Harpsichord    X`` twice and ``heavy`` lists
+    # ``HvyGtr Maj.Open`` twice, each pair reading the same records because
+    # ``located`` is keyed by name. When that is fixed these counts move; it is
+    # filed separately (see the PR).
+    "elements1mb": (296_042_496, 102, 1465, 1181, 0, "299901d661807f2d"),
+    "heavy": (524_599_296, 68, 870, 680, 745, "2c22387cd8be8344"),
 }
 
 
@@ -816,6 +832,72 @@ def test_emu3_banks_that_declared_a_sample_area_and_yielded_nothing(label: str) 
                     assert end_r == SAMPLE_HEADER_LEN + 2 * frame - 2
 
 
+#: The banks of [issue #43](https://github.com/bmxcode/samplerdisc/issues/43),
+#: with the records each yields and the mis-typed header name that hid it.
+#: Five named EIII/ESI banks across three discs claimed a volume, found no
+#: header for their directory name and read nothing, and unlike the OS-code
+#: slots that share that note they are ordinary sample banks (ADR-0031).
+#:
+#: They are pinned by the **mechanism** and not only by the count. Each carries
+#: a real ``EMULATOR`` header at the address its placement predicts, whose own
+#: name at ``+16`` is the directory name corrupted by a shifted space, a case
+#: change or a single doubled/dropped character -- which is why keying
+#: ``located`` on exact-name equality missed it. The test asserts the bound
+#: header's name is that near-copy and is *not* the directory name, so the day
+#: this stops holding it says whether the bank went empty, was located wrong,
+#: or matched by exact name after all.
+_EMU3_RECOVERED_BANKS = {
+    "elements1mb": (("Electric Grand X", 9, "Eelectric GrandX"),),
+    "ditto-drums": (("PERCUSSION#1   X", 31, "PERCUSSION #1  X"),),
+    "heavy": (
+        ("HvyGtr FX5     X", 2, "HvyGtr FX5    XX"),
+        ("Misc Gtr FX 2MbX", 6, "Misc Gtr FX 2mbX"),
+        ("HvGtrFdBkTxtr2Mb", 1, "HvGtrFdBkTxtr2M"),
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EMU3_RECOVERED_BANKS))
+def test_emu3_banks_recovered_from_a_mistyped_header_name(label: str) -> None:
+    """Issue #43, pinned by the mis-typed header rather than by the totals.
+
+    A regression here is a bank falling back to its note, or -- worse and
+    quieter -- binding a *different* header. Asserting the bound header's own
+    name is the corrupted copy, distinct from the directory name, is what tells
+    a genuine recovery apart from an exact-name match that would mean the
+    corruption was never really there.
+    """
+    from samplerdisc.fs.emu3 import (
+        BANK_NAME_LEN,
+        OFF_BANK_NAME,
+        _near_name,
+        decode_name,
+    )
+
+    size = _EMU3[label][0]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        backend = origin.backend
+        offset = origin.offset
+        banks = backend._banks(image, offset)
+        headers = backend._bank_headers(image, offset)
+        placement = backend._placement(banks, headers)
+        assert placement is not None, f"{label}: no placement fit to recover through"
+        unit, bias = placement
+        volumes = {v.name: v for v in backend.volumes(image, offset)}
+        by_start = {bank.name: bank.start for bank in banks}
+        for name, expected, header_name in _EMU3_RECOVERED_BANKS[label]:
+            volume = volumes[name]
+            assert len(volume.files) == expected, f"{label}/{name}: {len(volume.files)} samples"
+            assert not volume.note, f"{label}/{name}: recovered but still noted"
+            want = unit * by_start[name] + bias
+            raw = image.read(offset + want + OFF_BANK_NAME, BANK_NAME_LEN)
+            assert decode_name(raw) == header_name, f"{label}/{name}: header name {raw!r}"
+            assert header_name != name, "a recovered header's name is a corrupted copy, not exact"
+            assert _near_name(name, header_name)
+
+
 #: Banks whose last record must end exactly at ``0x30 + 74 + 0x34``, out of the
 #: banks that yield records at all. This is the independent half of D21's
 #: evidence: the bank header's declared run is a different field, written by a
@@ -830,7 +912,12 @@ _EMU3_RUN_ENDS = {
     "eiiix-2": (44, 39),
     "emu-classics": (19, 16),
     "vintage": (13, 13),
-    "ditto-drums": (44, 44),
+    "ditto-drums": (45, 45),
+    # Newly pinned by D24. ``ditto-drums`` gains its recovered ``PERCUSSION#1``;
+    # ``heavy``'s two non-exact banks are the ordinary payload-overshoot D21
+    # already documents, not the recovery.
+    "elements1mb": (100, 100),
+    "heavy": (65, 63),
 }
 
 

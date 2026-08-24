@@ -953,6 +953,7 @@ def emu3_disc(
     formula_4000: tuple[str, ...] = (),
     stale_tail: tuple[tuple[str, int, int], ...] = (),
     second_header: str | None = None,
+    header_names: dict[str, str] | None = None,
     eiv: bool = False,
     duplicate_sample_dir: bool = False,
     folder_flags: int | None = None,
@@ -984,6 +985,10 @@ def emu3_disc(
     `esi32-gm` carries two such copies and they sit *before* the banks its
     directory points at, so taking the first header of a name reads the wrong
     one.
+
+    ``header_names`` maps a bank name to the name its header writes at +16,
+    when that differs from the directory entry: the D24 case, where the
+    mastering mistyped the header's own copy so only its address places it.
 
     A bank given no samples gets a header declaring a zero-length sample area,
     which is what the index banks on `esi32-gm`, `eiiix-1` and `eiiix-2` do.
@@ -1111,7 +1116,12 @@ def emu3_disc(
             if bank_header:
                 magic = BANK_MAGICS[1] if bank_name in formula_4000 else BANK_MAGICS[0]
                 image[at : at + len(magic)] = magic
-                image[at + 16 : at + 32] = name16(bank_name)
+                # ``header_names`` writes a *different* name at +16 from the
+                # directory entry, which is the D24 case: the mastering mistyped
+                # the header's own copy of the name, so it no longer matches the
+                # directory verbatim and only its address gives it away.
+                written = (header_names or {}).get(bank_name, bank_name)
+                image[at + 16 : at + 32] = name16(written)
             # The declared sample area starts at 0x30 and its first record
             # sits SAMPLE_AREA_PREAMBLE bytes into it, which is what every
             # populated bank on the reference discs does.

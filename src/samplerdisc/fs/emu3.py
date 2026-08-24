@@ -212,6 +212,49 @@ def decode_name(raw: bytes) -> str:
     return raw.decode("ascii", "replace").rstrip("\x00 ").strip()
 
 
+def _levenshtein(a: str, b: str) -> int:
+    """Edit distance, iterative single-row -- small strings, called rarely."""
+    if a == b:
+        return 0
+    previous = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        current = [i]
+        for j, cb in enumerate(b, 1):
+            current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + (ca != cb)))
+        previous = current
+    return previous[-1]
+
+
+def _near_name(directory: str, header: str) -> bool:
+    """Whether a bank header's own name is a corrupted copy of the directory's.
+
+    A handful of banks carry a header whose 16-byte name field at
+    ``OFF_BANK_NAME`` is the directory's name mis-typed by the mastering: a
+    doubled or dropped character and a shifted space, never more. Normalising
+    away case and spaces and allowing a single further edit matches every one
+    measured and clears the things that are genuinely a different bank by a wide
+    margin (see docs/formats/emu3.md, "A header's name can be a corrupted copy
+    of the directory's", and ADR-0031):
+
+    * ``Electric Grand X`` / ``Eelectric GrandX`` -- one insert
+    * ``PERCUSSION#1   X`` / ``PERCUSSION #1  X`` -- equal once spaces go
+    * ``HvyGtr FX5     X`` / ``HvyGtr FX5    XX`` -- one insert
+    * ``Misc Gtr FX 2MbX`` / ``Misc Gtr FX 2mbX`` -- equal once case folds
+    * ``HvGtrFdBkTxtr2Mb`` / ``HvGtrFdBkTxtr2M`` -- one delete
+
+    against the operating-system slots, whose header addresses happen to fall on
+    another bank's header entirely: ``E3 Main Code`` / ``Ditto Drums    X`` and
+    ``E3X Main Code`` / ``DAVE W  KIT1   X`` are both a dozen edits apart. The
+    gate is what keeps the placement arithmetic from binding an OS slot to the
+    audio it points at by accident.
+    """
+
+    def norm(name: str) -> str:
+        return name.lower().replace(" ", "")
+
+    return _levenshtein(norm(directory), norm(header)) <= 1
+
+
 def is_plausible_name(raw: bytes) -> bool:
     """Printable text, padded to width with spaces *or* NULs.
 
@@ -678,6 +721,18 @@ class Emu3Backend:
         directory does not allocate, both *before* the banks the directory
         points at; `protozoa` carries a second ``Phatt Presets  X`` after
         them. Whichever end you take, one of those discs is read wrong.
+
+        A bank whose name matches **no** header exactly is then given one last
+        chance: the header sitting at the address its placement predicts, when
+        that header carries a near-copy of the bank's name (ADR-0031). Five
+        banks across three discs -- ``Electric Grand X``, ``PERCUSSION#1   X``,
+        ``HvyGtr FX5     X``, ``Misc Gtr FX 2MbX``, ``HvGtrFdBkTxtr2Mb`` -- have
+        a real ``EMULATOR`` header the mastering mis-typed the name on, and were
+        listed empty with a note where their audio was plainly there. This never
+        *places* a bank: the header is one the signature scan already found, and
+        the name at ``+16`` is what confirms it -- the same instrument the
+        placement fit already uses to arbitrate a name written twice, one step
+        wider.
         """
         at_name: dict[str, list[int]] = {}
         for at, name in headers:
@@ -691,6 +746,25 @@ class Emu3Backend:
             want = unit * bank.start + bias
             if want in at_name.get(bank.name, ()):
                 found[bank.name] = want
+        # Recovery. ``taken`` is the addresses that name-matched entries own, so
+        # a bank can never be bound to a header another bank already claims --
+        # which is what keeps ``ditto-drums``'s ``E3 Main Code`` off the
+        # ``Ditto Drums    X`` header its arithmetic lands on. ``by_address``
+        # names the header actually sitting at ``want``; a bank whose predicted
+        # address holds no header, or one whose name is not a near-copy of it,
+        # keeps its note.
+        by_address = {at: name for at, name in headers}
+        taken = {found[bank.name] for bank in banks if bank.name in at_name}
+        for bank in banks:
+            if bank.name in at_name:
+                continue
+            want = unit * bank.start + bias
+            header_name = by_address.get(want)
+            if header_name is None or want in taken:
+                continue
+            if _near_name(bank.name, header_name):
+                found[bank.name] = want
+                taken.add(want)
         return found
 
     def _declared_run(

@@ -149,6 +149,22 @@ What decides is where the directory put the bank. `header address == unit × sta
 
 This does **not** reopen [ADR-0015](../adr/0015-locate-banks-by-signature.md). Nothing is placed by the arithmetic; it only says which of two headers already carrying the right name a directory entry meant, and only names with a single header are allowed to vote for the fit. It is the same instrument, used the same way, as the E-IV allocation-unit fit below.
 
+### A header's name can be a corrupted copy of the directory's
+
+A bank's header repeats the directory's name at `+16`, and matching on it is what confirms a hit. On a handful of banks the mastering **mistyped that copy**, so the header no longer matches the directory verbatim and keying the lookup on exact-name equality lists the bank empty — with the `no bank header found for this bank; listed only` note — while its audio sits right there behind a header the signature scan did find. Five such banks across three discs:
+
+| Disc | Directory name | Header `+16` name | Records | First record |
+|---|---|---|---:|---|
+| `elements1mb` | `Electric Grand X` | `Eelectric GrandX` | 9 | `ELEC GRAND  _000` |
+| `ditto-drums` | `PERCUSSION#1   X` | `PERCUSSION #1  X` | 31 | `TAMB BRASS` |
+| `heavy` | `HvyGtr FX5     X` | `HvyGtr FX5    XX` | 2 | `Gtr FX 11` |
+| `heavy` | `Misc Gtr FX 2MbX` | `Misc Gtr FX 2mbX` | 6 | `Gtr Feedback Shr` |
+| `heavy` | `HvGtrFdBkTxtr2Mb` | `HvGtrFdBkTxtr2M ` | 1 | `Gtr FeedbackLoop` |
+
+Every corruption is a shifted space, a case change, or one doubled or dropped character — an edit of at most one once the name is lowercased and its spaces stripped. The header sits at exactly the address `unit × start + bias` predicts, holds a declared run, and names its records for the bank, so all three of "where the directory points", "what the header is called" and "what the audio is" agree that it is the same bank.
+
+So a directory entry that no header names exactly binds the header at its predicted address, when that header's name is within one normalised edit of the entry's and no other entry already owns it ([ADR-0031](../adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md)). The near-name gate is load-bearing, not cosmetic: `ditto-drums`'s `E3 Main Code` and `E3X Main Code` slots — real operating-system banks with no audio — predict addresses that fall on the `Ditto Drums    X` and `DAVE W  KIT1   X` headers, a dozen edits from their own names, and binding by address alone would hand each OS slot another bank's records. `elements1mb` and `heavy` are pinned by this recovery in `tests/test_discs.py`; it binds nothing on any of the ten reference discs.
+
 An earlier revision of this doc gave `0x38` as the bank size and claimed `0x30 + 0x34 == 0x38`. **That sum holds on 0 of the 114 located banks** across the four EIII/ESI discs, and nothing checked it. `0x38` reads a constant 8 388 608 on every `EMULATOR 3X` and `EMU SI-32` bank — including a 256 KiB one — which is the sampler's memory size and not a property of the bank; on `EMULATOR THREE` banks it reads 0 on 60 of 90 and a small number unrelated to the bank's extent on the rest. Do not use it for anything.
 
 ### A bank's region holds more than the bank
@@ -589,12 +605,12 @@ Whole-disc listings, with the samples the record declares stereo:
 | `eiiix-2` | 46 | 1 337 | 592 |
 | `emu-classics` | 22 | 1 516 | 185 |
 | `vintage` | 16 | 993 | 2 |
-| `ditto-drums` | 48 | 948 | 0 |
+| `ditto-drums` | 48 | 979 | 0 |
 | `eiv-analogia` | 12 | 449 | 279 |
 | `eiv-studio` | 230 | 2 822 | 320 |
 | `eiv-vitous` | 44 | 828 | 828 |
 
-**2 843 of 19 371**, and a stereo sample is still one sample: the counts above do not move when the channel count is read, only the file's shape does.
+**2 843 of 19 402**, and a stereo sample is still one sample: the counts above do not move when the channel count is read, only the file's shape does. `ditto-drums` gained 31 with D24 — its `PERCUSSION#1   X` recovered from a mistyped header name, from 948 — and two discs not in this reference table were pinned for the first time by the same recovery: `elements1mb` (102 volumes, 1 465 samples, `Electric Grand X`'s 9 recovered) and `heavy` (68 volumes, 870 samples, three banks recovered) ([ADR-0031](../adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md)).
 
 Samples carrying a loop, of those totals:
 
@@ -606,12 +622,12 @@ Samples carrying a loop, of those totals:
 | `eiiix-2` | 1 337 | 892 | 67% |
 | `emu-classics` | 1 516 | 1 133 | 75% |
 | `vintage` | 993 | 846 | 85% |
-| `ditto-drums` | 948 | 14 | 1% |
+| `ditto-drums` | 979 | 14 | 1% |
 | `eiv-analogia` | 449 | 6 | 1% |
 | `eiv-studio` | 2 822 | 2 214 | 78% |
 | `eiv-vitous` | 828 | 198 | 24% |
 
-**10 878 of 19 371.** These are D23's numbers: the whole-extent "no loop" is now refused at both ends rather than only where it starts at frame 0, so the loop-over-the-whole-file that every disc writes with a small fixed inset stops being emitted — `ditto-drums` from 948 to 14, `eiv-analogia` from 449 to 6, `eiv-vitous` from 826 to 198 ([ADR-0030](../adr/0030-the-whole-extent-no-loop-is-refused-at-both-ends.md), and "The whole-extent 'no loop'" above). The D21 revision's figures were `esi32-gm` 1 778, `protozoa` 5 244, `eiiix-1` 1 215, `eiiix-2` 1 264, `emu-classics` 1 435, `vintage` 953, `ditto-drums` 948, `eiv-analogia` 449, `eiv-studio` 2 551, `eiv-vitous` 826 — every one of them counting the no-loops. The **sample** counts, the stereo counts and every payload digest are unchanged across D23: only loop emission moved, which is what says the read path was not touched.
+**10 878 of 19 402** — `ditto-drums`'s 31 newly recovered records carry no loop (percussion one-shots), so the loop total is unchanged and only the sample total moved. These are D23's numbers: the whole-extent "no loop" is now refused at both ends rather than only where it starts at frame 0, so the loop-over-the-whole-file that every disc writes with a small fixed inset stops being emitted — `ditto-drums` from 948 to 14, `eiv-analogia` from 449 to 6, `eiv-vitous` from 826 to 198 ([ADR-0030](../adr/0030-the-whole-extent-no-loop-is-refused-at-both-ends.md), and "The whole-extent 'no loop'" above). The D21 revision's figures were `esi32-gm` 1 778, `protozoa` 5 244, `eiiix-1` 1 215, `eiiix-2` 1 264, `emu-classics` 1 435, `vintage` 953, `ditto-drums` 948, `eiv-analogia` 449, `eiv-studio` 2 551, `eiv-vitous` 826 — every one of them counting the no-loops. The **sample** counts, the stereo counts and every payload digest are unchanged across D23: only loop emission moved, which is what says the read path was not touched.
 
 These are the regression baseline: any change to the shared record parser is a bug if they move. **They are now asserted by `tests/test_discs.py`, pinned by disc size** — a table in a document is a note, not a test, and two of these numbers were wrong for a release with a green suite. The suite also pins the **SHA-256 of every sample payload per disc**, because a count table cannot see a payload that shifted by a byte while staying the same length, and the **stereo counts** beside them, because the third condition of the gate is exactly the kind of thing a later simplification removes. On a stereo sample the suite additionally de-interleaves what was written and requires it to reproduce the disc's two blocks byte for byte: the audio moved, and it must be the same audio.
 
@@ -630,6 +646,7 @@ Each of the seven EIII/ESI discs lists one index bank with a note and no samples
 - Sample records are found, not chained; the chain has gaps.
 - The bank signature is not always `EMULATOR`. `protozoa` writes `EMU SI-32 v3` on two banks, and a bank nobody locates hands its region to the bank in front of it.
 - One bank name can have two headers. `esi32-gm`'s duplicates sit *below* the directory's copy and `protozoa`'s sits *above* it, so neither "first" nor "last" is a rule.
+- A header's `+16` name can be a mistyped copy of the directory's — `Electric Grand X` written `Eelectric GrandX`. Bind it by the address the placement predicts, gated on the name being within one normalised edit and unclaimed; never by address alone, or `ditto-drums`'s `E3 Main Code` binds the header its arithmetic lands on ([ADR-0031](../adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md)).
 - A bank's region holds more than the bank. Everything past `0x30 + 74 + 0x34` is the previous occupant's, and it is inside the region, so no bound between banks excludes it.
 - The payload is little-endian. A sector-aligned measurement says otherwise and is wrong.
 - The E-IV **sample directory** is big-endian, alone in the format. The trap runs both ways.
