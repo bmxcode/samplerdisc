@@ -63,6 +63,24 @@ MIN_LOOP_FRAMES = 64
 #: sampler fills the pointers with the sample's own bounds when nothing set
 #: them. Emitting it would tell a DAW to loop the entire file, which is not
 #: what the disc means and is worse than saying nothing.
+#:
+#: The bounds are written **inset by a small fixed amount at both ends**, not at
+#: exactly the record's start and end -- ``loop_start = start + C1``,
+#: ``loop_end = end - C2`` for a per-disc constant of a handful of bytes:
+#: ``ditto-drums`` writes ``(12, 12)`` on 898 of its records (frame 6 to six
+#: frames from the end), the EIIIX discs ``(4, 4)``, `esi32-gm` and `protozoa`
+#: ``(12, 10)``. So the guard allows the same slack at the **start** as at the
+#: end. Measured against all ten reference discs, the whole-extent population is
+#: a filled-in "no loop" and not a real loop that happens to span the sample:
+#: 70-100 % of it ends in silence (the loop end sits below 15 % of the sample's
+#: peak) where a real loop does so only 13-33 % of the time, its bounds are the
+#: record's own extent inset by that fixed constant where a real loop's start is
+#: at an arbitrary musical position, and it carries a uniquely-splicing loop
+#: point on 0.2-11 % of records where a real loop does on 33-56 %. The join and
+#: uniqueness are the shape/join oracle of docs/formats/emu3.md; the end-energy
+#: is what carries the discs the oracle has no power on -- a whole-extent loop
+#: has almost no audio before its start, so the windowed correlation cannot
+#: score it (ADR-0030).
 FULL_EXTENT_SLACK = 16
 
 #: The channel pointer sets, in the order they are tried.
@@ -230,7 +248,12 @@ def _loops(pointers: dict[str, int], frames: int) -> tuple[SampleLoop, ...]:
         extent = min((end - start) // 2, frames)
         if b - a < MIN_LOOP_FRAMES:
             continue
-        if a == 0 and b >= extent - FULL_EXTENT_SLACK:
+        # The whole-extent "no loop", refused at both ends. Several discs write
+        # those bounds inset by a fixed few bytes rather than at exactly frame 0,
+        # so the start carries the same slack as the end -- see FULL_EXTENT_SLACK
+        # and ADR-0030. Refusing the start-0 case alone shipped a loop over the
+        # entire file on 934 of `ditto-drums`'s 948 records.
+        if a <= FULL_EXTENT_SLACK and b >= extent - FULL_EXTENT_SLACK:
             continue
         return (SampleLoop(start=a, end=b),)
     return ()

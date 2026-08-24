@@ -577,6 +577,15 @@ def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
 #: was measured is a gate that has come loose, and one disappearing is the
 #: decode silently failing on a disc nobody looked at.
 #:
+#: **D23 moved every loop count and no digest.** The whole-extent "no loop" is
+#: now refused at both ends, not only where it starts at frame 0, so the loops
+#: over the entire file that ten discs wrote with a small fixed inset stop being
+#: emitted: `ditto-drums` 948 -> 14, `eiiix-1` 1 215 -> 743, `eiv-vitous`
+#: 826 -> 198, `eiv-analogia` 449 -> 6. The measurement is in ADR-0030 and the
+#: "Loop points" section of the format doc; the discs' *sample* counts, stereo
+#: counts and every payload digest are unchanged, which is what says only loop
+#: emission moved and the read path did not (ADR-0030).
+#:
 #: The stereo counts are D18's pin and they are the records whose own pointer
 #: block declares two channels *and* closes the left one where the right one
 #: opens (ADR-0026). Under D21's extent they are the same four numbers on the
@@ -599,16 +608,16 @@ def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
 #: the ones D21 was measured against. `ditto-drums` is the whole shape of the
 #: bug on one disc: 74 samples before, 948 after.
 _EMU3 = {
-    "esi32-gm": (93_077_504, 10, 2635, 1778, 28, "35a6c6edfc6f292a"),
-    "protozoa": (131_690_496, 16, 6595, 5244, 8, "3530e1e972f100ab"),
-    "eiiix-1": (304_128_000, 46, 1248, 1215, 601, "c73db948bf4f61cb"),
-    "eiiix-2": (304_435_200, 46, 1337, 1264, 592, "8bfcddf6d8dbd806"),
-    "emu-classics": (526_723_072, 22, 1516, 1435, 185, "e1398c11a9e7cb02"),
-    "vintage": (527_030_272, 16, 993, 953, 2, "fbcc378dd173f96c"),
-    "ditto-drums": (308_121_600, 48, 948, 948, 0, "3c756586711810de"),
-    "eiv-analogia": (293_912_576, 12, 449, 449, 279, "5d8faa38572914cb"),
-    "eiv-studio": (399_077_376, 230, 2822, 2551, 320, "8802808655deea30"),
-    "eiv-vitous": (532_443_136, 44, 828, 826, 828, "66c179be5b78cbd2"),
+    "esi32-gm": (93_077_504, 10, 2635, 1350, 28, "35a6c6edfc6f292a"),
+    "protozoa": (131_690_496, 16, 6595, 3482, 8, "3530e1e972f100ab"),
+    "eiiix-1": (304_128_000, 46, 1248, 743, 601, "c73db948bf4f61cb"),
+    "eiiix-2": (304_435_200, 46, 1337, 892, 592, "8bfcddf6d8dbd806"),
+    "emu-classics": (526_723_072, 22, 1516, 1133, 185, "e1398c11a9e7cb02"),
+    "vintage": (527_030_272, 16, 993, 846, 2, "fbcc378dd173f96c"),
+    "ditto-drums": (308_121_600, 48, 948, 14, 0, "3c756586711810de"),
+    "eiv-analogia": (293_912_576, 12, 449, 6, 279, "5d8faa38572914cb"),
+    "eiv-studio": (399_077_376, 230, 2822, 2214, 320, "8802808655deea30"),
+    "eiv-vitous": (532_443_136, 44, 828, 198, 828, "66c179be5b78cbd2"),
 }
 
 

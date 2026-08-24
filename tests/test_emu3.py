@@ -636,6 +636,45 @@ def test_a_loop_spanning_the_whole_extent_is_not_a_loop():
     assert _sample(5000, (0, 5000)).loops == ()
 
 
+def test_a_whole_extent_loop_inset_a_few_frames_is_still_not_a_loop():
+    """The format writes its "no loop" bounds inset by a fixed few bytes at
+    *both* ends, not at exactly frame 0 (ADR-0030).
+
+    `ditto-drums` writes ``(12, 12)`` bytes -- frame 6 to six frames from the
+    end -- on 898 of its records, the EIIIX discs ``(4, 4)``, `esi32-gm` and
+    `protozoa` ``(12, 10)``. Refusing only the frame-0 form shipped a loop over
+    the entire file on 934 of `ditto-drums`'s 948 records. Measured across all
+    ten reference discs the inset whole-extent population is a filled-in "no
+    loop" -- it ends in silence and carries no uniquely-splicing loop point --
+    so the guard carries the same slack at the start as at the end.
+    """
+    frames = 5000
+    # extent is frames - 1 here (the end pointer names the last word), so the
+    # far end must clear extent - FULL_EXTENT_SLACK.
+    assert _sample(frames, (2, frames - 8)).loops == ()  # EIIIX-style (4, 4)
+    assert _sample(frames, (6, frames - 7)).loops == ()  # ditto-style (12, 12)
+
+
+def test_a_near_whole_loop_inset_past_the_slack_is_kept():
+    """The guard is targeted: a loop whose start clears the slack, or whose end
+    stops short of it, is a real loop and survives.
+
+    Only a span within FULL_EXTENT_SLACK of *both* bounds is the "no loop"; a
+    genuine sustain loop that begins well inside the sample, or ends well short
+    of it, is the `narrow` population the measurement calibrated against and is
+    emitted unchanged.
+    """
+    frames = 5000
+
+    def bounds(loop):
+        return [(s.start, s.end) for s in _sample(frames, loop).loops]
+
+    # start past the slack, end at the extent: a real loop.
+    assert bounds((200, frames - 7)) == [(200, frames - 7)]
+    # start inside the slack but end well short of the extent: also a real loop.
+    assert bounds((6, 3000)) == [(6, 3000)]
+
+
 def test_a_loop_shorter_than_the_floor_is_dropped():
     assert _sample(5000, (1200, 1200 + MIN_LOOP_FRAMES - 1)).loops == ()
     assert _sample(5000, (1200, 1200 + MIN_LOOP_FRAMES)).loops != ()
