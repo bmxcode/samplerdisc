@@ -4,7 +4,39 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 
 ## Unreleased
 
+### Fixed
+
+- **An E-mu record was being closed by the wrong channel, and most EIII/ESI samples were 46 frames short.** The 92-byte sample record carries a start, an end, a loop start and a loop end **per channel**, and this project took the record's length from `+34` — which is the *right* channel's end pointer. It closes the record only where the right-hand set is what describes the audio, and on 10 274 of the 15 272 EIII/ESI records here the left-hand set is. **Anyone who extracted an EIII or ESI disc before this should do it again.** ([docs/formats/emu3.md](docs/formats/emu3.md), [ADR-0029](docs/adr/0029-a-record-is-closed-by-the-channel-it-declares.md), [#39](https://github.com/bmxcode/samplerdisc/issues/39))
+
+  Four shapes the right-hand set takes when it is not describing the record, each of which loses something different:
+
+  | Shape | What `+34` gives | Records |
+  |---|---|---:|
+  | `start_R = 0`, `end_R = end_L − 92` — the same channel counted from the payload's start | an extent **92 bytes short**, so the sample loses its last 46 frames | 7 005 |
+  | `start_R = end_R = 0` — the unused side zeroed | an extent of 2, shorter than the header, so the record is dropped | 872 |
+  | a fixed memory frame — 1 MiB on `E-mu Classics`, 2 MiB on `EIIIX Vol. 1` | an address past the whole bank, so the record is dropped | 95 |
+  | `start_R = 92` with the left set not opening the audio | nothing: the record is never found | 1 429 |
+
+  **Every EIII/ESI count moves, and the four reference discs move most:**
+
+  | Disc | Samples | With a loop |
+  |---|---|---|
+  | `ESI-32 General Midi` | 2 265 → **2 635** | 107 → **1 778** |
+  | `Protozoa` | 5 852 → **6 595** | 1 689 → **5 244** |
+  | `EIIIX Vol. 1` | 1 189 → **1 248** | 1 157 → **1 215** |
+  | `EIIIX Vol. 2` | 1 333 → **1 337** | 1 260 → **1 264** |
+
+  **The loop counts move because a loop end that used to run past the audio now fits.** [ADR-0025](docs/adr/0025-the-loop-is-decoded-the-root-key-is-not.md) refused those rather than clamping them back, and refusing is what made the wrong extent visible as a missing loop instead of a wrong one. The 838 loops that newly appear on `ESI-32 General Midi` score **+0.87** on the splice shape test against a control of +0.01, and the newly *found* records score +0.90 — a false hit inside PCM does not carry a loop that splices.
+
+  **Two independent fields say the new extent is right.** The stride to the next record follows `end_L + 2` on 2 093 of `ESI-32 General Midi`'s records and `end_R + 2` on 30. And the bank header's own declared run — a different structure entirely — now ends exactly on the last record of **173 of 186 banks**, against 86 before, with **no bank left one 92-byte header short** on any disc; [ADR-0021](docs/adr/0021-a-bank-owns-the-run-its-header-declares.md) had recorded that population as a loose fit.
+
+  **The three E-IV discs are byte-for-byte unchanged** — 449, 2 822 and 828 samples, same payload digests. They size a record from their own big-endian sample directory and never read `+34`, so they are the control that says nothing shared was disturbed. The stereo counts are unchanged on every disc that had them, too.
+
+  **`Protozoa`'s trombones resolve.** [ADR-0026](docs/adr/0026-the-record-declares-the-channel-count.md) found six records whose first half was byte for byte a whole one-channel record of the same name in another bank, with nothing matching the second half. There was no second half: read at its declared length, `Proteus1PresetsX`'s `Trom B2` is byte-identical to `Vintage PresetsX`'s. The 65 records that "declared two channels and were not stereo" were all of them sized at twice their length, and that population is now **zero** across ten discs.
+
 ### Added
+
+- **Three EIIIX/ESI discs join the reference set, and twelve banks that read as empty now extract.** `E-mu Classics`, `Vintage` and `Ditto Drums` each claimed a bank and returned nothing with no explanation, which is the [ADR-0012](docs/adr/0012-a-probe-must-confirm-a-file.md) signature this project treats as a bug rather than a quirk. None was an index bank; all twelve are the record-extent fault above. `Ditto Drums` shows the whole of it on one disc — **74 samples before, 948 after** — and `Vintage`'s `Juno Synths` is a bank whose every record declares its one channel on the right, so nothing found any of it. ([#39](https://github.com/bmxcode/samplerdisc/issues/39))
 
 - **Eight AKAI images are short of the disc they were made from, and their displaced partitions are now read.** Whole 32 KB blocks are missing from these `.mdx` files — the container decodes every block it holds, and the file is not a complete copy of the disc — so every partition after a gap sits that much nearer the front than the disk's own partition table places it. **39 partitions are found there**, carrying **432 volumes, 17 180 files and 15 808 samples** that nothing could reach before. The collection goes from 89 156 samples to **104 921**, and AKAI from 56 425 to **72 190**. ([docs/formats/akai-fs.md](docs/formats/akai-fs.md), [ADR-0028](docs/adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md), [#25](https://github.com/bmxcode/samplerdisc/issues/25))
 

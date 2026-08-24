@@ -8,9 +8,14 @@ import struct
 from samplerdisc.container.flat import FlatImage
 from samplerdisc.fs.emu3 import (
     BANK_MAGICS,
+    OFF_SAMPLE_END_L,
+    OFF_SAMPLE_END_R,
     OFF_SAMPLE_START_L,
+    OFF_SAMPLE_START_R,
+    SAMPLE_HEADER_LEN,
     Emu3Backend,
     is_plausible_name,
+    record_extent,
 )
 from samplerdisc.fs.probe import find_origin
 from samplerdisc.sample.emu3 import DATA_START, MIN_LOOP_FRAMES
@@ -200,6 +205,106 @@ def test_an_unexplained_empty_bank_gets_no_note(tmp_path):
     volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "u.iso"), 0)}
     assert volumes["Full Arco String"].files == []
     assert not volumes["Full Arco String"].note
+
+
+# --- the record extent (ADR-0029) ---------------------------------------
+
+
+def _extent_header(start_l: int = 0, end_l: int = 0, start_r: int = 0, end_r: int = 0) -> bytes:
+    """A 92-byte record header carrying just the four extent pointers."""
+    head = bytearray(SAMPLE_HEADER_LEN)
+    for offset, value in (
+        (OFF_SAMPLE_START_L, start_l),
+        (OFF_SAMPLE_END_L, end_l),
+        (OFF_SAMPLE_START_R, start_r),
+        (OFF_SAMPLE_END_R, end_r),
+    ):
+        struct.pack_into("<I", head, offset, value)
+    return bytes(head)
+
+
+def test_the_extent_comes_from_the_set_that_opens_the_audio():
+    """``+34`` is the right channel's end, not the record's length.
+
+    Four shapes the right-hand set takes on the reference discs when it is not
+    describing the record it sits in, and all four broke a reader that took
+    ``+34`` for a length: 7 005 records where it is the left set counted from
+    the payload rather than the record, 872 with the side zeroed, 95 naming a
+    fixed memory frame, and 1 371 that declare their one channel on the right.
+    Together they are why `ditto-drums` read 74 samples where it holds 948.
+    """
+    payload = 4096
+    end = SAMPLE_HEADER_LEN + payload - 2
+
+    # mirror-92: the right set is the left set counted from the payload start.
+    assert record_extent(_extent_header(start_l=92, end_l=end, end_r=end - 92)) == end + 2
+    # zeroed: the unused side is all zeros, and +34 would give an extent of 2.
+    assert record_extent(_extent_header(start_l=92, end_l=end)) == end + 2
+    # a fixed allocation frame, which +34 would put past the whole bank.
+    frame = 1 << 20
+    assert (
+        record_extent(
+            _extent_header(start_l=92, end_l=end, start_r=92 + frame, end_r=92 + 2 * frame - 2)
+        )
+        == end + 2
+    )
+    # the one channel declared on the right, which the left-hand signature
+    # never sees at all.
+    assert record_extent(_extent_header(start_r=92, end_r=end)) == end + 2
+
+
+def test_a_two_channel_record_runs_to_the_end_of_its_second_block():
+    """The one case where ``+34`` is the record's far end.
+
+    The right block opens exactly where the left one closes and the two are
+    the same length -- ADR-0026's gate, stated from the pointers alone so that
+    it does not need the payload size it is being used to compute.
+    """
+    half = 2048
+    split = SAMPLE_HEADER_LEN + half
+    assert (
+        record_extent(
+            _extent_header(start_l=92, end_l=split - 2, start_r=split, end_r=split + half - 2)
+        )
+        == split + half
+    )
+
+
+def test_a_record_where_neither_set_opens_the_audio_is_refused():
+    """Refused, not guessed at. A header too short for the block likewise:
+    a record that was not read must not present as one that declared nothing.
+    """
+    assert record_extent(_extent_header(end_l=4096)) is None
+    assert record_extent(b"\x00" * 30) is None
+
+
+def test_a_bank_of_right_declared_records_is_not_an_empty_bank(tmp_path):
+    """`vintage`'s ``Juno Synths``, in miniature.
+
+    Every record in that bank puts 0 in ``start_L`` and 92 in ``start_R``, so
+    a walk whose signature is 92 at ``+22`` finds nothing and the bank claims
+    a volume and returns no files -- the ADR-0012 signature, and issue #39.
+    """
+    data = bytearray(fixtures.emu3_disc(ONE_FOLDER))
+    at = data.index(b"Piano E0") - 2
+    struct.pack_into("<I", data, at + OFF_SAMPLE_START_L, 0)
+    struct.pack_into("<I", data, at + OFF_SAMPLE_START_R, SAMPLE_HEADER_LEN)
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "right.iso"), 0)}
+    found = {f.name: f.size for f in volumes["Proteus1Presets"].files}
+    assert found == {"Piano E0": 4096, "Piano A0": 2048}
+
+
+def test_a_record_with_its_unused_side_zeroed_keeps_its_length(tmp_path):
+    """872 records on `ditto-drums` zero the side they do not use, and ``+34``
+    then gives an extent of 2 -- shorter than the header, so the record is
+    dropped and nine of that disc's banks read as empty.
+    """
+    data = bytearray(fixtures.emu3_disc(ONE_FOLDER))
+    at = data.index(b"Piano E0") - 2
+    struct.pack_into("<I", data, at + OFF_SAMPLE_END_R, 0)
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, bytes(data), "zero.iso"), 0)}
+    found = {f.name: f.size for f in volumes["Proteus1Presets"].files}
+    assert found == {"Piano E0": 4096, "Piano A0": 2048}
 
 
 #: Four banks, because the placement fit below needs three names it can trust
@@ -623,7 +728,7 @@ def _blocks(left: bytes, right: bytes, pointers=None, **kwargs):
 
 
 def test_a_two_channel_record_is_interleaved_not_concatenated():
-    """The defect this deliverable exists for: 2 656 of the 14 738 E-mu
+    """The defect this deliverable exists for: 2 843 of the 19 371 E-mu
     samples came out as a mono file twice as long as the sound."""
     sample = _blocks(b"\x01\x00" * 500, b"\x02\x00" * 500)
     assert sample.channels == 2

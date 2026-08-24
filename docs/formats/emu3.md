@@ -1,10 +1,10 @@
 # E-mu `EMU3`
 
-The filesystem E-mu wrote on CD-ROMs for the Emulator III, EIIIX, ESI-32, ESI-4000 and Emulator IV. The archives file these as separate generations; the disc does not. All seven reference discs write `EMU3` at byte 0 and share one directory format.
+The filesystem E-mu wrote on CD-ROMs for the Emulator III, EIIIX, ESI-32, ESI-4000 and Emulator IV. The archives file these as separate generations; the disc does not. All ten reference discs write `EMU3` at byte 0 and share one directory format.
 
 The *bank interior* is not shared. EIII/ESI banks carry a bank header and are located by it. E-IV banks carry none at all — not one `EMULATOR` string on any of the three E-IV discs — and reach their samples through an `E3S1` sample directory instead ([ADR-0020](../adr/0020-read-e-iv-through-its-sample-directory.md)).
 
-Verified against seven discs:
+Verified against ten discs:
 
 | Short name | File | Size |
 |---|---|---|
@@ -12,11 +12,18 @@ Verified against seven discs:
 | `protozoa` | `E-MU Formula 4000 Series Vol. 5 – Protozoa.iso` | 131 690 496 |
 | `eiiix-1` | `E-MU - EIIIX Sound Library Vol. 1 – Emulator Standards (EIIIX CD-ROM).iso` | 304 128 000 |
 | `eiiix-2` | `E-MU - EIIIX Sound Library Vol. 2 – More Emulator Standards (EIIIX CD-ROM).iso` | 304 435 200 |
+| `emu-classics` | `Vol. 07 – E-mu Classics.iso` | 526 723 072 |
+| `vintage` | `Vol. 08 – Vintage.iso` | 527 030 272 |
+| `ditto-drums` | `Vol. 16 – Twenty Six Studio Drum Kits and Percussion ESI-32 (aka Ditto Drums).iso` | 308 121 600 |
 | `eiv-analogia` | `Producer Series Vol. 6 – Analogia Project (CD 2) (E-MU E-IV CD-ROM).iso` | 293 912 576 |
 | `eiv-studio` | `Producer Series Vol. 1 – Studio Essentials (E-MU E-IV CD-ROM).iso` | 399 077 376 |
 | `eiv-vitous` | `Miroslav Vitous … String Ensembles (EMU E-IV CD-ROM).iso` | 532 443 136 |
 
 `eiv-analogia` and `eiv-studio` are both Producer Series and may share a mastering run; `eiv-vitous` is a different publisher and is the independence check. Where a constant holds on Producer Series and not on Vitous, Vitous is right.
+
+The last three arrived with [issue #39](https://github.com/bmxcode/samplerdisc/issues/39) and are the discs the record extent below was established against. They are the same series as `esi32-gm` — `Vol. NN` of one publisher's ESI/EIIIX library — and `ditto-drums` is the one that shows the whole of the record-extent bug on a single disc: 74 samples read before it, 948 after.
+
+**Two of these discs share a file size with another image in the archive**, which the disc-backed suite's size-based pin used to treat as one disc filed twice: `emu-classics` with `Vol. 03 – Orchestral` at 526 723 072, and `eiv-studio` with `Producer Series Vol. 2 – More Studio Essentials` at 399 077 376. A whole publisher's series mastered in one run is where "sizes are distinct" stops holding. The pin falls back to a digest of the image's first megabyte, which covers the `EMU3` header, the folder table and the first bank directory — the parts that actually differ.
 
 Addressing is in **512-byte blocks**, not the 2048-byte cooked sector.
 
@@ -186,7 +193,7 @@ A record starts **two bytes before its name**; those two bytes are `00 00` on ev
 | 22 | 4 | u32 LE `start_L` — **92 on every record measured**, and the signature the walk scans for |
 | 26 | 4 | u32 LE `start_R` |
 | 30 | 4 | u32 LE `end_L` |
-| 34 | 4 | u32 LE `end_R` — the same field as the record length, **two short** of the distance to the next (EIII only) |
+| 34 | 4 | u32 LE `end_R` |
 | 38 | 4 | u32 LE `loop_start_L` |
 | 42 | 4 | u32 LE `loop_start_R` |
 | 46 | 4 | u32 LE `loop_end_L` |
@@ -194,7 +201,9 @@ A record starts **two bytes before its name**; those two bytes are `00 00` on ev
 | 54 | 4 | u32 LE **sample rate** |
 | 92 | … | sample data |
 
-The signature — 92 at `+22`, a plausible rate, sixteen printable name bytes — is specific enough to scan megabytes of audio without false hits. On `esi32-gm`'s `8M GeneralMidi X` bank it yields **452 records with 452 distinct names** totalling 7.00 MiB inside a bank declaring 8 MiB.
+The signature — 92 at `+22` **or** at `+26`, a plausible rate, sixteen printable name bytes — is specific enough to scan megabytes of audio without false hits. On `esi32-gm`'s `8M GeneralMidi X` bank it yields **531 records with 531 distinct names** totalling 8 248 316 bytes, which is the bank's declared run to the byte.
+
+Either start, because either set may be the one that opens the audio — see below. **76 of that bank's 531 records declare their one channel on the right**, and scanning for `+22` alone leaves every one of them, and all of `vintage`'s `Juno Synths`, invisible.
 
 ### The eight pointers
 
@@ -214,16 +223,76 @@ Counts per disc, over every sample the walk yields:
 
 | Disc | two channels, confirmed | two channels, contradicted | one channel, left set | one channel, right set | neither |
 |---|---|---|---|---|---|
-| `esi32-gm` | 28 | 0 | 2 230 | 0 | 7 |
-| `eiiix-1` | 601 | 40 | 380 | 0 | 168 |
-| `eiiix-2` | 592 | 6 | 680 | 0 | 55 |
-| `protozoa` | 8 | 19 | 5 791 | 0 | 34 |
+| `esi32-gm` | 28 | 0 | 2 247 | 353 | 7 |
+| `protozoa` | 8 | 0 | 5 927 | 595 | 65 |
+| `eiiix-1` | 601 | 0 | 380 | 0 | 267 |
+| `eiiix-2` | 592 | 0 | 680 | 0 | 65 |
+| `emu-classics` | 185 | 0 | 1 179 | 73 | 79 |
+| `vintage` | 2 | 0 | 633 | 350 | 8 |
+| `ditto-drums` | 0 | 0 | 941 | 0 | 7 |
 | `eiv-analogia` | 279 | 0 | 146 | 8 | 16 |
 | `eiv-studio` | 320 | 0 | 1 882 | 542 | 78 |
 | `eiv-vitous` | 828 | 0 | 0 | 0 | 0 |
-| **total** | **2 656** | **65** | **11 109** | **550** | **358** |
+| **total** | **2 843** | **0** | **14 015** | **1 921** | **592** |
 
-**"Contradicted" is a shape of its own and it must be rejected**, not counted as stereo: the record declares `start_R` half a payload on and then closes its left channel somewhere else. See "Stereo" below for what those 65 records turn out to hold. The "neither" column is records whose `start_R` is none of the three values — not a right-hand single channel, which is an ordinary record and is counted as one here. An earlier revision of this table folded those 550 into "neither", giving 620 for `eiv-studio` and 24 for `eiv-analogia`.
+**"Contradicted" is a shape of its own and it must be rejected**, not counted as stereo: the record declares `start_R` half a payload on and then closes its left channel somewhere else. **It occurs on none of the ten discs.** An earlier revision of this table gave 65 — 40 on `eiiix-1`, 19 on `protozoa`, 6 on `eiiix-2` — and every one of them was a record sized at twice its length, because the extent came from the wrong pointer. Given the right extent they are not half-payload splits at all. The gate's third condition is kept, and is now exercised only synthetically; see "Stereo" below ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)).
+
+The "neither" column is records whose `start_R` is none of the three values — not a right-hand single channel, which is an ordinary record and is counted as one here. An earlier revision of this table folded those 550 into "neither", giving 620 for `eiv-studio` and 24 for `eiv-analogia`.
+
+### The set that opens the audio is the set that closes it
+
+**This is the whole rule, and it applies to locating a record, sizing it and reading its loop.** The audio begins immediately after the 92-byte header, so the set that describes it opens at 92; the record runs to that set's own end pointer, two bytes on. Only a confirmed two-channel record runs to `end_R`, because there the payload is both blocks.
+
+`+34` was read as the record's length for four deliverables, and it is the **right channel's end**. It closes the record only where the right-hand set is what describes the record, and on 10 274 of the 15 272 EIII/ESI records here the left-hand set is. Four shapes the right-hand set takes when it is not describing this record, each of which breaks a reader that takes `+34` as a length:
+
+| Shape | What the right-hand set holds | Reading `+34` as the length gives | Count |
+|---|---|---|---|
+| **mirror-92** | `start_R = 0`, `end_R = end_L − 92` — the same channel counted from the payload's start rather than the record's | an extent **92 bytes short**, so every sample loses its last 46 frames | 7 005 |
+| **zeroed** | `start_R = end_R = 0` | an extent of 2, shorter than the header, so the record is dropped entirely | 872 |
+| **fixed frame** | `start_R = 92 + F`, `end_R = 92 + 2F − 2` for a constant allocation frame `F` — 1 MiB on `emu-classics`, 2 MiB on `eiiix-1` | an address past the whole bank region, so the record is dropped as unreadable | 95 |
+| **right-declared** | `start_R = 92` with the left set not opening the audio — `start_L = 0` on 1 371 of them | nothing: the record is never found, because the left-hand signature does not match it | 1 429 |
+
+Per disc, by which set opens the audio:
+
+| Disc | left only | both | right only | of which two-channel |
+|---|---:|---:|---:|---:|
+| `esi32-gm` | 2 280 | 2 | 353 | 28 |
+| `protozoa` | 4 303 | 1 685 | 607 | 8 |
+| `eiiix-1` | 850 | 380 | 18 | 601 |
+| `eiiix-2` | 655 | 680 | 2 | 592 |
+| `emu-classics` | 669 | 748 | 99 | 185 |
+| `vintage` | 569 | 74 | 350 | 2 |
+| `ditto-drums` | 948 | 0 | 0 | 0 |
+| **total** | **10 274** | **3 569** | **1 429** | **1 416** |
+
+Where **both** sets open at 92 the two ends disagree by a few bytes in either direction, and the larger is the one the stride follows — 920 records on `protozoa` where `end_L` is 8 bytes past `end_R`, 90 where it is 8 bytes short of it. The mirror is not always exactly 92 either: on 886 left-only records it is within a few bytes of it or arbitrary. Neither matters, because the rule never reads the set that did not open the audio.
+
+**The two-channel exception, stated from the pointers alone:**
+
+```
+start_L == 92  and  start_R == end_L + 2  and  end_R - start_R == end_L - start_L
+```
+
+which is [ADR-0026](../adr/0026-the-record-declares-the-channel-count.md)'s three conditions without reference to the payload size — necessary, because the payload size is what is being computed from it.
+
+#### Two measurements settle this, and neither is the pointer block agreeing with itself
+
+**The stride to the next record.** `end_L + 2` equals the distance to the next record on 2 093 of `esi32-gm`'s records; `end_R + 2` equals it on 30.
+
+**The bank header's declared run — a different field in a different structure.** [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md) measured a bank's last record ending exactly at `0x30 + 74 + 0x34` on 72 banks, and *"exactly 92 bytes — one sample header — short of it"* on 19 more, and took the second population for a loose fit. It is this, seen from the bank header:
+
+| Disc | banks with records | last record ends exactly at the run's end | reading `+34` as the length |
+|---|---:|---:|---:|
+| `esi32-gm` | 7 | **7** | 2 |
+| `protozoa` | 15 | **15** | 0 |
+| `eiiix-1` | 44 | **39** | 35 |
+| `eiiix-2` | 44 | **39** | 37 |
+| `emu-classics` | 19 | **16** | 8 |
+| `vintage` | 13 | **13** | 4 |
+| `ditto-drums` | 44 | **44** | 0 |
+| **total** | **186** | **173** | **86** |
+
+No bank on any disc is left 92 bytes short. `tests/test_discs.py` asserts these counts, because they are the independent half of the evidence and are exactly the sort of thing a later simplification removes without noticing.
 
 **Do not derive one channel's pointers from the other's.** `loop_start_R == loop_start_L + P/2` holds exactly on `eiv-vitous`'s 828 records and on 1.2% of `esi32-gm`'s. Read the set whose start is 92 and use it.
 
@@ -262,9 +331,28 @@ The **end** cannot be isolated the same way: `+46` and `+30` sit six frames apar
 
 Same disc, same shape, separated only by whether the end fits. A clamped end is a loop point the disc did not state, so a record whose loop end lies past its audio yields **no** loop ([ADR-0025](../adr/0025-the-loop-is-decoded-the-root-key-is-not.md)).
 
-That is most of why the reference disc yields fewest. On about 2 200 of `esi32-gm`'s records `end_L` runs roughly 45 frames past the payload its own length field produces, and 95% of the disc is refused on it.
+That used to be most of why the reference disc yielded fewest, and the reason was not the loop rule. **The reader was 92 bytes short.** On about 2 200 of `esi32-gm`'s records `end_L` ran roughly 45 frames past the payload its own length field produced, and 95% of the disc was refused on it — because that length field is `end_R`, the right channel's end, and those records declare their audio on the left. An earlier revision of this doc left it open: *"Either the reader is 90 bytes short on those samples or the extent field means something else."* It was the reader ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)).
 
-**Which of the two is right is open.** If the record's extent is correct, the reader is 90 bytes short on those samples. Scanning candidate ends across ±96 frames and taking the shape-test peak does *not* confirm it: the peak lands within ±2 frames of the declared end on **10%** of `esi32-gm`'s records and 20% of `protozoa`'s, where a uniform peak would give about 3%. Better than chance, nowhere near an answer. Nothing is changed on the strength of it.
+With the extent taken from the channel the record declares, the same loop ends fit inside the payload **without being clamped**, and `esi32-gm` goes from 107 loops of 2 265 samples to 1 778 of 2 635, `protozoa` from 1 689 to 5 244. That the counts move is not evidence. The newly admitted loops were scored the same way as the rest, with the same controls, and they splice:
+
+| Disc | group | scored | shape *r* | control | join | seamless | control seamless |
+|---|---|---|---|---|---|---|---|
+| `esi32-gm` | loop newly admitted | 838 | **+0.87** | +0.01 | 1.25 | 87% | 36% |
+| `esi32-gm` | record newly found | 130 | **+0.90** | −0.03 | 1.36 | 80% | 29% |
+| `protozoa` | loop already produced | 905 | +0.85 | +0.02 | 1.35 | 83% | 38% |
+| `protozoa` | loop newly admitted | 1 082 | **+0.82** | −0.01 | 1.07 | 90% | 32% |
+| `protozoa` | record newly found | 330 | **+0.77** | −0.06 | 0.90 | 87% | 34% |
+| `eiiix-1` | loop already produced | 413 | +0.96 | +0.02 | 1.03 | 90% | 36% |
+| `eiiix-1` | record newly found | 133 | **+0.99** | −0.10 | 0.84 | 94% | 23% |
+| `vintage` | record newly found | 250 | **+0.94** | −0.03 | 1.50 | 85% | 23% |
+
+The window is the 256 frames *before* the loop start and before the loop end rather than after them: a loop of period `P` makes `x[t] ≈ x[t − P]`, and unlike the forward pairing that one still exists on a loop running to the last frame of the sample — which here is most of them.
+
+The **record newly found** rows are the right-declared and zeroed-right-set records, and they answer the obvious worry about widening a signature that scans through megabytes of audio. A false hit inside PCM does not carry a loop that splices at +0.9 against a control at zero.
+
+The scan for a better end that an earlier revision reported — a peak within ±2 frames of the declared end on 10% of `esi32-gm`'s records against about 3% for chance — was measuring the 92-byte shortfall, and is not repeated.
+
+**934 of `ditto-drums`'s 948 loops span the whole sample**, starting at frame 6 and ending seven frames from the end. That is the format's "no loop" — the sample's own bounds, written with a small inset — and the guard here refuses a whole-extent loop only where it starts at exactly 0. It is not new and not this deliverable's to fix: `eiiix-1` ships 460 of them and `eiiix-2` 320, and folding a second loop rule in would move the loop counts for two unrelated reasons at once.
 
 ### There is no root key
 
@@ -366,21 +454,28 @@ end_L + 2 == start_R
 
 `P` is the payload the record's own length field produces, and `end_L + 2` is where the left channel closes — the pointer names the first byte of the last word, so the extent runs two bytes past it.
 
-**The third condition is not decoration.** 2 721 records across the seven discs satisfy the first two and **65 fail the third**: 19 on `protozoa`, 40 on `eiiix-1`, 6 on `eiiix-2`. They declare a left channel that overlaps the right block — `protozoa` writes `end_L` exactly 8 bytes past `start_R` on 18 records — or one that stops well short of it, as `eiiix-1`'s `LP Up Stroke` does at 24 766 bytes of a 36 402-byte half.
+**The third condition used to reject 65 records, and it now rejects none — because those 65 were a symptom of a different bug.** An earlier revision recorded that 2 721 records across seven discs satisfied the first two conditions and 65 failed the third: 19 on `protozoa`, 40 on `eiiix-1`, 6 on `eiiix-2`, each declaring a left channel that overlapped the right block or stopped well short of it. Every one of them was sized from `end_R` — the right channel's end — on a record that declares its audio on the left, so `P` came out at twice the record's length and `start_R` landed on `start_L + P/2` by arithmetic. Given the extent the record actually declares, none of the ten discs holds a contradicted record ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)).
 
-Those 65 are not stereo, and `protozoa` says what six of them are. `Trom B2`, `Trom E3` and `Trom A3` are each written in two banks, and in all six records the **first half is byte for byte the whole of a one-channel record of the same name** in `Vintage PresetsX` — 16 756 bytes of `Trom B2` against a 33 512-byte payload. Nothing on the disc matches the second half. The payload is twice the sound, so `start_R` lands on `start_L + P/2` by arithmetic rather than by declaration, and `end_L` is what gives it away: it closes the audio 8 bytes *past* the halfway point instead of on it.
+`protozoa`'s trombones are the case that closes it. `Trom B2`, `Trom E3` and `Trom A3` are each written in two banks, and this doc recorded that the **first half of each is byte for byte a whole one-channel record of the same name** in `Vintage PresetsX` — 16 756 bytes against a 33 512-byte payload — with nothing on the disc matching the second half. With the right extent, `Proteus1PresetsX`'s `Trom B2` is 16 764 bytes and is **byte-identical to `Vintage PresetsX`'s and `Vintage InstrmtX`'s**, as are `Trom E3`, `Trom C5`, `Trom D4` and `Trom G4`. There was never a second half; the record was being read twice its length.
 
-**2 656 records pass all three**, which is what this project writes as stereo:
+**The condition stays.** It is what makes the two-channel test exact when the extent is computed from the pointers alone — that test is this one restated — and a gate is not deleted for going quiet. It is now exercised synthetically only, and that is recorded rather than glossed.
+
+**2 843 records pass all three**, which is what this project writes as stereo:
 
 | Disc | stereo | of samples |
 |---|---|---|
-| `esi32-gm` | 28 | 2 265 |
-| `eiiix-1` | 601 | 1 189 |
-| `eiiix-2` | 592 | 1 333 |
-| `protozoa` | 8 | 5 852 |
+| `esi32-gm` | 28 | 2 635 |
+| `protozoa` | 8 | 6 595 |
+| `eiiix-1` | 601 | 1 248 |
+| `eiiix-2` | 592 | 1 337 |
+| `emu-classics` | 185 | 1 516 |
+| `vintage` | 2 | 993 |
+| `ditto-drums` | 0 | 948 |
 | `eiv-analogia` | 279 | 449 |
 | `eiv-studio` | 320 | 2 822 |
 | `eiv-vitous` | 828 | 828 |
+
+The four discs that had stereo before have exactly the numbers they had, which is the check that changing how long a record is did not change what shape it is.
 
 ### Measured directly, the selected halves are one performance
 
@@ -411,6 +506,8 @@ The instrument matters here, and the obvious one is confounded. Median RMS-envel
 
 The confirmed records score with the positive control on all seven discs; the 65 the third condition rejects score with the negative control. `protozoa`'s eight are too few to establish anything on their own and rest on the other six discs.
 
+Those last two rows were measured against the extent `+34` produces, and that population no longer exists — with the record sized from the channel it declares, no disc holds a contradicted record ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)). They are kept because they are what the third condition was established on: the halves it rejected were unrelated audio, measured, and that is why the condition is still there.
+
 ### The first block is the left channel
 
 Structural: the pointer block is ordered `(start_L, start_R)` and `start_L` addresses the first block.
@@ -419,7 +516,7 @@ The only content evidence is weak and agrees with it. Of `eiv-analogia`'s twelve
 
 ### A one-channel record that is really stereo does not occur here
 
-The inverse error was looked for. **Not one of the 12 017 records that do not declare the two-channel shape declares an extent of half its payload**, which is the structural signature it would leave. The 439 whose halves correlate above 0.9 by envelope show a midpoint z-jump of −0.27 to −0.41 — no discontinuity where a block join would be — and they are the decaying single notes above.
+The inverse error was looked for. **Not one of the 12 017 records that did not declare the two-channel shape declared an extent of half its payload**, which is the structural signature it would leave. The 439 whose halves correlate above 0.9 by envelope show a midpoint z-jump of −0.27 to −0.41 — no discontinuity where a block join would be — and they are the decaying single notes above.
 
 `eiiix-2` is the disc to check, because an earlier revision of this section gave it the weakest separation in the table at 0.59 for one-channel records. Under these instruments its high-envelope one-channel records score fine structure **−0.021**, which is the negative control, and its one-channel envelope median re-measures at **0.114** over 603 scored records. Both figures are recorded; the 0.59 is not reproduced by the measurement here and is not relied on either way.
 
@@ -427,11 +524,11 @@ The inverse error was looked for. **Not one of the 12 017 records that do not de
 
 `(pointer − start) / 2` is a per-channel frame index either way: in the double-length mono file this format produced before D18 it landed in the left block, and in the interleaved file it is the frame number. All seven per-disc loop counts are unchanged across the fix, which is the check that the two decodes of one pointer block agree.
 
-The two records anywhere whose declared loop end lies past its own channel — `Mbira A3` and `Mbira F3` on `eiiix-1` — are both among the 65 the third condition rejects, so they stay mono and keep their loops.
+The two records anywhere whose declared loop end lay past its own channel — `Mbira A3` and `Mbira F3` on `eiiix-1` — were both among the 65 the third condition rejected, so they stayed mono and kept their loops. Both are ordinary one-channel records under D21's extent, and both still keep them.
 
 ### Name pairing is the other mechanism, and it is the rare one
 
-E-IV discs *also* pair separate mono records into stereo by name, the way the rest of the collection does ([ADR-0017](../adr/0017-the-stereo-side-marker-is-a-character-class.md)). Both mechanisms are real and they do not overlap: **12** samples across all seven discs are name-paired — six pairs, all on `eiv-analogia` — against **2 656** whose own record declares two channels, and no sample is both. An earlier revision of this doc gave name pairing as the answer to how these discs do stereo, which is the rare case given as the rule.
+E-IV discs *also* pair separate mono records into stereo by name, the way the rest of the collection does ([ADR-0017](../adr/0017-the-stereo-side-marker-is-a-character-class.md)). Both mechanisms are real and they do not overlap: **14** samples across all ten discs are name-paired — six pairs on `eiv-analogia` and one on `ditto-drums` — against **2 843** whose own record declares two channels, and no sample is both. An earlier revision of this doc gave name pairing as the answer to how these discs do stereo, which is the rare case given as the rule.
 
 ## The payload is little-endian
 
@@ -451,45 +548,55 @@ Beware the near-miss: comparing "LE from *n*" against "BE from *n+1*" cannot dis
 |---|---|
 | Bank header at | 842 752 |
 | First sample record at | bank + 138 317 |
-| Sample records | 452 |
-| Distinct names | 452 |
-| Total record bytes | 7 345 200 (7.00 MiB) |
+| Sample records | 531 |
+| Distinct names | 531 |
+| Total record bytes | 8 248 316 |
 | Bank declares (`0x30`, `0x34`) | sample area at 138 243, run of 8 248 316 |
 | First record | `Piano E0`, rate 12 000, 146 852 bytes of PCM |
+
+**The records fill the declared run exactly**, which they did not before D21: this table gave 452 records and 7 345 200 bytes, 903 116 short of a run nothing accounted for. 76 of the 531 declare their one channel on the right and were invisible to a left-hand signature; the rest were 92 bytes short each ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)).
 
 Whole-disc listings, with the samples the record declares stereo:
 
 | Disc | Volumes | Samples | Stereo |
 |---|---|---|---|
-| `esi32-gm` | 10 | 2 265 | 28 |
-| `eiiix-1` | 46 | 1 189 | 601 |
-| `eiiix-2` | 46 | 1 333 | 592 |
-| `protozoa` | 16 | 5 852 | 8 |
+| `esi32-gm` | 10 | 2 635 | 28 |
+| `protozoa` | 16 | 6 595 | 8 |
+| `eiiix-1` | 46 | 1 248 | 601 |
+| `eiiix-2` | 46 | 1 337 | 592 |
+| `emu-classics` | 22 | 1 516 | 185 |
+| `vintage` | 16 | 993 | 2 |
+| `ditto-drums` | 48 | 948 | 0 |
 | `eiv-analogia` | 12 | 449 | 279 |
 | `eiv-studio` | 230 | 2 822 | 320 |
 | `eiv-vitous` | 44 | 828 | 828 |
 
-**2 656 of 14 738**, and a stereo sample is still one sample: the counts above do not move when the channel count is read, only the file's shape does.
+**2 843 of 19 371**, and a stereo sample is still one sample: the counts above do not move when the channel count is read, only the file's shape does.
 
 Samples carrying a loop, of those totals:
 
 | Disc | Samples | With a loop | |
 |---|---|---|---|
-| `esi32-gm` | 2 265 | 107 | 5% |
-| `eiiix-1` | 1 189 | 1 157 | 97% |
-| `eiiix-2` | 1 333 | 1 260 | 95% |
-| `protozoa` | 5 852 | 1 689 | 29% |
+| `esi32-gm` | 2 635 | 1 778 | 67% |
+| `protozoa` | 6 595 | 5 244 | 80% |
+| `eiiix-1` | 1 248 | 1 215 | 97% |
+| `eiiix-2` | 1 337 | 1 264 | 95% |
+| `emu-classics` | 1 516 | 1 435 | 95% |
+| `vintage` | 993 | 953 | 96% |
+| `ditto-drums` | 948 | 948 | 100% |
 | `eiv-analogia` | 449 | 449 | 100% |
 | `eiv-studio` | 2 822 | 2 551 | 90% |
 | `eiv-vitous` | 828 | 826 | 100% |
 
-**8 039 of 14 738.** The two low ones are the discs that declare a loop end past the audio they carry, which is refused rather than clamped.
+**16 663 of 19 371.** `esi32-gm`'s 5% and `protozoa`'s 29% were what a 92-byte-short extent looked like from the loop side: those discs declare a loop end that runs to the very end of the audio, so losing 46 frames off the end lost the loop with them. `ditto-drums`'s 100% is not as good as it looks — 934 of its 948 span the whole sample, which is the format's "no loop" written with a small inset, and the guard here does not yet catch that form.
 
 These are the regression baseline: any change to the shared record parser is a bug if they move. **They are now asserted by `tests/test_discs.py`, pinned by disc size** — a table in a document is a note, not a test, and two of these numbers were wrong for a release with a green suite. The suite also pins the **SHA-256 of every sample payload per disc**, because a count table cannot see a payload that shifted by a byte while staying the same length, and the **stereo counts** beside them, because the third condition of the gate is exactly the kind of thing a later simplification removes. On a stereo sample the suite additionally de-interleaves what was written and requires it to reproduce the disc's two blocks byte for byte: the audio moved, and it must be the same audio.
 
-`esi32-gm`'s 2 424 and `protozoa`'s 6 788 are what the previous revision of this table gave, and both counted another bank's records; [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md) has the accounting. `esi32-gm` is the instructive one: it was believed clean, and its last bank ran to the end of the image and was credited with 193 records belonging to the two banks in front of it.
+**These are D21's numbers and the previous revision's are all wrong**, on every EIII/ESI disc: `esi32-gm` 2 265, `protozoa` 5 852, `eiiix-1` 1 189 and `eiiix-2` 1 333, each of them a record extent taken from the wrong channel's end pointer ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)). The three E-IV rows are unchanged and are the control: those discs size a record from their own big-endian directory and never read `+34`.
 
-Each of the four EIII/ESI discs lists one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract; `esi32-gm`, `eiiix-1` and `eiiix-2` also list the sampler's own code banks — `E3 Main Code`, `E3X Main Code` — which carry no bank header and are noted as such. On `eiv-studio`, 100 of the 230 banks have no confirmed sample directory and are listed with a note rather than guessed at. That disc carries 901 `E4P1` presets, and preset-only banks are the likely explanation — it is not established, so it is not claimed.
+`esi32-gm`'s 2 424 and `protozoa`'s 6 788 are what the revision before *that* gave, and both counted another bank's records; [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md) has the accounting. `esi32-gm` is the instructive one: it was believed clean, and its last bank ran to the end of the image and was credited with 193 records belonging to the two banks in front of it.
+
+Each of the seven EIII/ESI discs lists one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract; `esi32-gm`, `eiiix-1` and `eiiix-2` also list the sampler's own code banks — `E3 Main Code`, `E3X Main Code` — which carry no bank header and are noted as such. On `eiv-studio`, 100 of the 230 banks have no confirmed sample directory and are listed with a note rather than guessed at. That disc carries 901 `E4P1` presets, and preset-only banks are the likely explanation — it is not established, so it is not claimed.
 
 ## Traps
 
@@ -507,12 +614,15 @@ Each of the four EIII/ESI discs lists one index bank with a note and no samples,
 - Each folder's bank directory must be bounded by the next folder's start block; they sit two blocks apart on `eiv-studio`.
 - On E-IV the record's own length field is unusable and the directory's is authoritative. The EIII rule matches 0 of 5 349 consecutive pairs.
 - An E-IV sample directory can appear twice. Deduplicate by address or every one of its records is listed twice.
-- The paired length fields **are** a channel count, and the measurement that said otherwise tested interleaved stereo when the format splits into blocks. 2 656 samples are stereo.
-- A channel count is not enough on its own. 65 records declare `start_R` half a payload on and then close `end_L` somewhere else; their halves are unrelated audio, and on `protozoa` the second half is another bank's record. Require `end_L + 2 == start_R`.
+- The paired length fields **are** a channel count, and the measurement that said otherwise tested interleaved stereo when the format splits into blocks. 2 843 samples are stereo.
+- A channel count is not enough on its own. Require `end_L + 2 == start_R`. It rejected 65 records when the extent came from `+34`; it rejects none now, and it is what makes the extent's own two-channel test exact.
 - The two halves of a decaying note correlate at 0.94 by RMS envelope, so that measure cannot tell a stereo pair from a single note. Divide the envelope by its own trend, or correlate the waveform at a lag.
-- Name pairing is the *rare* mechanism here, not the rule: 12 samples across seven discs against 2 656 declaring two channels in the record.
+- Name pairing is the *rare* mechanism here, not the rule: 14 samples across ten discs against 2 843 declaring two channels in the record.
 - The sample record's fields are at `+22`, `+26`, `+30` … `+50`, not at `+24`, `+28`, `+32` … A four-byte stride begun at `+18` straddles two real fields at every step and reads as nine-digit noise.
-- `+22` is a start pointer, not a header length. It reads 0 where a record declares no left channel, and requiring 92 drops a fifth of `eiv-studio`.
+- `+22` is a start pointer, not a header length. It reads 0 where a record declares no left channel, and requiring 92 drops a fifth of `eiv-studio` and every right-declared record on an EIII disc — 1 371 of them.
+- **`+34` is not the record length.** It is the right channel's end, and it closes the record only where the right-hand set describes it: it is 92 bytes short on a mirror-92 record, zero on a record with the side unused, and a memory-frame address on some banks. Read the end of the set whose start is 92 ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)).
+- A record may declare its one channel on the **right** on an EIII disc too, not only on E-IV. Scan for 92 at `+26` as well as at `+22`, or `vintage`'s `Juno Synths` reads as an empty bank.
+- A bank's declared run is an independent check on the record extent, and it was already in this doc reading as a loose fit. If the last record of a bank stops one 92-byte header short of `0x30 + 74 + 0x34`, the extent is wrong, not the run.
 - A loop end past the payload must be **refused**, not clamped back the way AKAI and Roland clamp theirs. Clamping turns a splice correlation of +0.86 into −0.10 on `protozoa`'s own records.
 - There is no root key in the sample record. No byte tracks the note in the sample's name above chance, and `+58` — the field that looks most like one — is the sample rate.
 
@@ -522,4 +632,4 @@ That disc was the awkward one throughout, and every awkwardness turned out to be
 
 Its two `4k` banks carry the third bank signature; nothing located them, so `Orbit Presets  X` and `Phatt Presets  X` were handed their regions and reported their records a second time. Its `Phatt Presets  X` is written twice, so the copy at the end of the image was discarded as a duplicate name and `Protozoa       X` ran to EOF. And every one of its banks carries the tail of a previous occupant inside its own region, which no bound between banks can reach.
 
-The bank's own `0x30`/`0x34` answers all three, and the check is that every record the bound drops can be shown to be another bank's, at a constant shift — 264 of 264, 70 of 70, 59 of 59, 42 of 42, and so on for all fifteen located banks. `protozoa` now yields 16 volumes and 5 852 samples, with `Orbit Presets 4k` and `Phatt Presets 4K` extracting 535 and 239 under their own names where they previously listed empty. ([issue #15](https://github.com/bmxcode/samplerdisc/issues/15), [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md))
+The bank's own `0x30`/`0x34` answers all three, and the check is that every record the bound drops can be shown to be another bank's, at a constant shift — 264 of 264, 70 of 70, 59 of 59, 42 of 42, and so on for all fifteen located banks. `protozoa` now yields 16 volumes and 6 595 samples, with `Orbit Presets 4k` and `Phatt Presets 4K` extracting 558 and 255 under their own names where they previously listed empty. (Those were 5 852, 535 and 239 between ADR-0021 and ADR-0029; the difference is the record extent, not the bank bound.) ([issue #15](https://github.com/bmxcode/samplerdisc/issues/15), [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md))

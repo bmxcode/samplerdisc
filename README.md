@@ -49,7 +49,7 @@ out/AKAI.S3000.Sound.Library.1/
 
 Extraction writes one WAV per sample, grouped by volume. Where a disc stores stereo as split mono files — the AKAI `-L` / `-R` convention — you also get a joined stereo WAV, and the mono originals are kept alongside it rather than replaced.
 
-Some samples are stereo on the disc itself rather than paired by name: an E-mu record declares its own channel count, and 2 656 of the 14 738 E-mu samples here declare two. Those come out as one stereo WAV under the sample's own name — not in `stereo/`, which means "rebuilt from two files", and with no mono halves to keep, because nothing was guessed at ([ADR-0026](docs/adr/0026-the-record-declares-the-channel-count.md)).
+Some samples are stereo on the disc itself rather than paired by name: an E-mu record declares its own channel count, and 2 843 of the 19 371 E-mu samples here declare two. Those come out as one stereo WAV under the sample's own name — not in `stereo/`, which means "rebuilt from two files", and with no mono halves to keep, because nothing was guessed at ([ADR-0026](docs/adr/0026-the-record-declares-the-channel-count.md)).
 
 The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM and so does WAV, so there is no resampling, no bit-depth change and no dithering anywhere in the process. Loop points, root key and tuning from the disc are written into the WAV's standard `smpl` chunk, so a DAW that understands them picks them up and one that doesn't sees an ordinary WAV.
 
@@ -73,35 +73,35 @@ Compressed `.mdx` is the piece no other open-source tool reads today. The format
 
 ## Tested against
 
-79 disc images from three archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds), [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds) and [Best Service ProSamples](https://archive.org/details/best-service-pro-samples-vol.-12-dance-vocals-akai-1-cd). Fifty-two flat `.iso`/`.bin`, seventeen compressed `.mdx`, five raw CD images, two `.nrg`, one `.mds`/`.mdf` pair, two audio CDs.
+82 disc images from three archive.org collections — [retro-sample-cds](https://archive.org/details/retro-sample-cds), [archive-oldschoolscds](https://archive.org/details/archive-oldschoolscds) and [Best Service ProSamples](https://archive.org/details/best-service-pro-samples-vol.-12-dance-vocals-akai-1-cd). Fifty-five flat `.iso`/`.bin`, seventeen compressed `.mdx`, five raw CD images, two `.nrg`, one `.mds`/`.mdf` pair, two audio CDs.
 
 | | |
 |---|---|
-| Discs converted | 72 of 79 |
-| Samples | 104 921 |
-| Stereo pairs rejoined | 17 309 |
+| Discs converted | 75 of 82 |
+| Samples | 109 554 |
+| Stereo pairs rejoined | 17 310 |
 | Audio CD tracks | 161 |
 | Duplicate audio suppressed | 5 719 |
 | Entries not the file their entry placed | 104 |
 | Entries skipped (damage) | 23 |
-| Time | 72 s |
+| Time | 70 s |
 
 By filesystem:
 
 | | Discs | Samples | Stereo pairs | Skipped |
 |---|---:|---:|---:|---:|
 | AKAI | 44 | 72 190 | 15 962 | 127 |
-| E-mu `EMU3` | 7 | 14 738 | 6 | 0 |
+| E-mu `EMU3` | 10 | 19 371 | 7 | 0 |
 | ISO 9660 | 15 | 11 601 | — | 0 |
 | Roland `S770 MR25A` | 5 | 6 392 | 1 341 | 0 |
 
-"Stereo pairs" counts files joined from an `-L`/`-R` pair by name. E-mu's six are the only ones on those discs, and they are a different and much rarer thing than the 2 656 samples whose record declares two channels.
+"Stereo pairs" counts files joined from an `-L`/`-R` pair by name. E-mu's seven are the only ones on those discs, and they are a different and much rarer thing than the 2 843 samples whose record declares two channels.
 
-Every WAV was checked against the disc it came from — **70 of 70 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 104 921 payloads, zero mismatches. The E-mu stereo samples are compared with their channels put back the way the disc stored them, since their WAV holds the same bytes interleaved; `tests/test_discs.py` asserts that de-interleaving reproduces the disc's two blocks exactly, per sample, on all seven discs. The two audio CDs are not in that count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
+Every WAV was checked against the disc it came from — **73 of 73 discs match exactly**, comparing multisets of SHA-256 over the PCM per disc rather than going via filenames, so duplicate names cannot mask a mismatch and no path is guessed. 109 554 payloads, zero mismatches; the ten E-mu discs were re-measured for D21 and match on all 19 371. The E-mu stereo samples are compared with their channels put back the way the disc stored them, since their WAV holds the same bytes interleaved; `tests/test_discs.py` asserts that de-interleaving reproduces the disc's two blocks exactly, per sample, on all ten discs. The two audio CDs are not in that count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
 
-122 391 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **275 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, six are on a Proteus library that ships `Dead Air` as a sample, and two are on a Roland disc. That is what the discs hold, not something the decoder did.
+127 025 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **301 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, 24 are unused slots on the `Ditto Drums` ESI-32 disc, six are on a Proteus library that ships `Dead Air` as a sample, two are on a Roland disc, and one each on `E-mu Classics` and `Vintage`. That is what the discs hold, not something the decoder did.
 
-Sample rates run from 6 000 to 49 999 Hz across 1 071 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
+Sample rates run from 6 000 to 50 000 Hz across 1 145 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
 
 The 127 AKAI entries not written are two different faults. **104 are payloads that are not the file the directory placed there** — their header carries another file's id, valid flag or name — and 103 of those 104 are a run to the end of one volume, on nine discs; the other 35 AKAI discs have none. That is what a rip losing a run of blocks looks like from inside a directory, and it does not need a partition to go missing: `Best Service - Alpha Dance II` declares six partitions and holds all six, and still loses 21 of `AC.DRUMLOOPS`'s 22 samples. Each is refused with a line naming every field that disagrees and the entry that placed it, rather than being written out under a name that is not its own ([ADR-0027](docs/adr/0027-a-payload-must-be-the-file-its-entry-placed.md)). Every one of those 103 is sitting intact, under its own name, a whole number of container blocks earlier in the image — the same fault as the displaced partitions below, one level down, and not yet recovered ([#35](https://github.com/bmxcode/samplerdisc/issues/35)).
 
@@ -127,6 +127,7 @@ These discs are also the only place in this project where the correct output is 
 - **`CUES` chunks in NRG** are not parsed; only `CUEX`. No disc using the older form was to hand to check the layout against.
 - **An audio CD with no cue sheet cannot be split into tracks.** `samplerdisc info` tells you when a disc's content looks like Red Book audio, and `extract --assume-audio-cd` writes the whole stream as one WAV, but the track boundaries live in a cue, not in the bytes.
 - **AIFF-C, and 8-bit AIFF, are refused rather than read.** AIFF-C may be compressed, and compressed data written out as PCM plays as noise while reporting nothing wrong. 8-bit AIFF is signed where 8-bit WAV is unsigned, so carrying it would change every sample value rather than reorder its bytes — which is the one thing this tool does not do ([ADR-0024](docs/adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)).
+- **An E-mu loop that spans the whole sample is only refused where it starts at frame 0.** The format writes the sample's own bounds into the loop pointers when nothing set them, and several discs write them with a small inset instead — frame 6 to seven frames from the end. The `Ditto Drums` ESI-32 disc does it on **934 of its 948** samples, so those WAVs carry a `smpl` chunk telling a DAW to loop the entire file. A DAW that ignores `smpl` is unaffected, and the audio is right either way.
 - **EXS24 and HALion instruments are kept, not read.** `--keep-originals` writes the `.exs` and `.fxp` files out byte for byte; turning them into a playable instrument is ConvertWithMoss's job.
 - **AKAI S900, floppy images and the DD partition.** Use [akaiutil](https://sourceforge.net/projects/akaiutil/).
 
