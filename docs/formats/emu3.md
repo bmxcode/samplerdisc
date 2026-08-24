@@ -352,7 +352,30 @@ The **record newly found** rows are the right-declared and zeroed-right-set reco
 
 The scan for a better end that an earlier revision reported — a peak within ±2 frames of the declared end on 10% of `esi32-gm`'s records against about 3% for chance — was measuring the 92-byte shortfall, and is not repeated.
 
-**934 of `ditto-drums`'s 948 loops span the whole sample**, starting at frame 6 and ending seven frames from the end. That is the format's "no loop" — the sample's own bounds, written with a small inset — and the guard here refuses a whole-extent loop only where it starts at exactly 0. It is not new and not this deliverable's to fix: `eiiix-1` ships 460 of them and `eiiix-2` 320, and folding a second loop rule in would move the loop counts for two unrelated reasons at once.
+### The whole-extent "no loop" is written with a small inset, at both ends
+
+A loop spanning the sample's whole declared extent is the format's **"no loop"**: the sampler fills the four loop pointers with the sample's own bounds when nothing set them, and emitting it writes a `smpl` chunk telling a DAW to loop the entire file. The bounds are not written at exactly frame 0 and the last frame — they are **inset by a small fixed amount at both ends**, `loop_start = start + C1` and `loop_end = end − C2` for a per-disc constant of a handful of bytes. `ditto-drums` writes `(12, 12)` on 898 of its records — frame 6 to six frames from the end — the two EIIIX discs write `(4, 4)`, and `esi32-gm`, `protozoa`, `eiv-vitous` and `eiv-analogia` write `(12, 10)`. A real loop's start is at an arbitrary musical position instead: on the loops this project already ships, the byte inset from the record's own start is a scattered 44, 136, 11 204, 52 536, never a fixed few.
+
+Refusing only the frame-0 form shipped a loop over the entire file on **934 of `ditto-drums`'s 948 records**, and on nine other discs besides. Whether that inset population is a filled-in "no loop" or a real loop that happens to span the sample had to be measured — a sustained organ or string can legitimately loop over nearly its whole length, and deleting those to catch drum hits would destroy real loop points. It was measured against all ten reference discs, and the population is a "no loop" on every one.
+
+The join and shape oracle above is the wrong instrument here, exactly as expected: a whole-extent loop starts within a few frames of 0 and ends within a few of the last, so there is almost no audio before its start and none after its end for the windowed correlation to work on. Two measurements that **do** apply to it separate the populations cleanly. The **end energy** — the RMS in a 64-frame window at the loop end, as a fraction of the sample's peak — is below 15 % on 70–100 % of the inset population, where a real loop ends that quietly on only 13–33 %: a loop is not a loop when it ends in silence. And where a record is loud enough at both ends to score, the join's **uniqueness** — that it splices where a random start against the same end does not, the signature of a chosen loop point — holds on 0–11 % of the inset population against 33–56 % of the real loops.
+
+| Disc | refused | inset ends quiet | inset uniquely-splices | real-loop control |
+|---|---:|---:|---:|---:|
+| `esi32-gm` | 428 | 70 % | 11 % | 37 % |
+| `protozoa` | 1 762 | 72 % | 10 % | 37 % |
+| `eiiix-1` | 472 | 98 % | 1 % | 49 % |
+| `eiiix-2` | 372 | 97 % | 2 % | 41 % |
+| `emu-classics` | 302 | 88 % | 3 % | 36 % |
+| `vintage` | 107 | 82 % | 5 % | 46 % |
+| `ditto-drums` | 934 | 100 % | 0 % | 43 % |
+| `eiv-analogia` | 443 | 97 % | 1 % | 33 % |
+| `eiv-studio` | 337 | 87 % | 4 % | 41 % |
+| `eiv-vitous` | 628 | 100 % | — | 56 % |
+
+The last column is the same uniqueness measured on the loops this project already ships on that disc — the calibration of what a real loop looks like on this instrument — and the inset population sits far below it every time. `eiv-vitous` and `eiv-studio` are the check that matters most: [ADR-0025](../adr/0025-the-loop-is-decoded-the-root-key-is-not.md) validated their loops by the shape test at +0.68 and +0.86, and those validated loops are the *real-loop* column here — they are kept. What is refused on those two discs is a separate whole-extent population that ends in silence. `eiv-analogia`'s loops never had independent evidence — ADR-0025 recorded that only 34 scored and those showed nothing — so refusing 443 of its 449 whole-extent "loops" takes nothing that was ever established.
+
+So the guard refuses a loop whose bounds lie within `FULL_EXTENT_SLACK` frames of **both** ends, not only the start-0 case ([ADR-0030](../adr/0030-the-whole-extent-no-loop-is-refused-at-both-ends.md)). It is a structural rule — the loop is the record's own extent — justified by content, not a content test in the parser. It does not claim to catch every "no loop" a future generation might write, and on `esi32-gm` and `protozoa` a minority of the refused records (about 10 %) splice uniquely and could conceivably be a near-whole-extent loop the disc intended; they are refused with the rest because they are structurally the record's own bounds inset by that same fixed constant, and telling them apart would need a content measurement this project keeps out of the parser ([ADR-0025](../adr/0025-the-loop-is-decoded-the-root-key-is-not.md)).
 
 ### There is no root key
 
@@ -577,18 +600,18 @@ Samples carrying a loop, of those totals:
 
 | Disc | Samples | With a loop | |
 |---|---|---|---|
-| `esi32-gm` | 2 635 | 1 778 | 67% |
-| `protozoa` | 6 595 | 5 244 | 80% |
-| `eiiix-1` | 1 248 | 1 215 | 97% |
-| `eiiix-2` | 1 337 | 1 264 | 95% |
-| `emu-classics` | 1 516 | 1 435 | 95% |
-| `vintage` | 993 | 953 | 96% |
-| `ditto-drums` | 948 | 948 | 100% |
-| `eiv-analogia` | 449 | 449 | 100% |
-| `eiv-studio` | 2 822 | 2 551 | 90% |
-| `eiv-vitous` | 828 | 826 | 100% |
+| `esi32-gm` | 2 635 | 1 350 | 51% |
+| `protozoa` | 6 595 | 3 482 | 53% |
+| `eiiix-1` | 1 248 | 743 | 60% |
+| `eiiix-2` | 1 337 | 892 | 67% |
+| `emu-classics` | 1 516 | 1 133 | 75% |
+| `vintage` | 993 | 846 | 85% |
+| `ditto-drums` | 948 | 14 | 1% |
+| `eiv-analogia` | 449 | 6 | 1% |
+| `eiv-studio` | 2 822 | 2 214 | 78% |
+| `eiv-vitous` | 828 | 198 | 24% |
 
-**16 663 of 19 371.** `esi32-gm`'s 5% and `protozoa`'s 29% were what a 92-byte-short extent looked like from the loop side: those discs declare a loop end that runs to the very end of the audio, so losing 46 frames off the end lost the loop with them. `ditto-drums`'s 100% is not as good as it looks — 934 of its 948 span the whole sample, which is the format's "no loop" written with a small inset, and the guard here does not yet catch that form.
+**10 878 of 19 371.** These are D23's numbers: the whole-extent "no loop" is now refused at both ends rather than only where it starts at frame 0, so the loop-over-the-whole-file that every disc writes with a small fixed inset stops being emitted — `ditto-drums` from 948 to 14, `eiv-analogia` from 449 to 6, `eiv-vitous` from 826 to 198 ([ADR-0030](../adr/0030-the-whole-extent-no-loop-is-refused-at-both-ends.md), and "The whole-extent 'no loop'" above). The D21 revision's figures were `esi32-gm` 1 778, `protozoa` 5 244, `eiiix-1` 1 215, `eiiix-2` 1 264, `emu-classics` 1 435, `vintage` 953, `ditto-drums` 948, `eiv-analogia` 449, `eiv-studio` 2 551, `eiv-vitous` 826 — every one of them counting the no-loops. The **sample** counts, the stereo counts and every payload digest are unchanged across D23: only loop emission moved, which is what says the read path was not touched.
 
 These are the regression baseline: any change to the shared record parser is a bug if they move. **They are now asserted by `tests/test_discs.py`, pinned by disc size** — a table in a document is a note, not a test, and two of these numbers were wrong for a release with a green suite. The suite also pins the **SHA-256 of every sample payload per disc**, because a count table cannot see a payload that shifted by a byte while staying the same length, and the **stereo counts** beside them, because the third condition of the gate is exactly the kind of thing a later simplification removes. On a stereo sample the suite additionally de-interleaves what was written and requires it to reproduce the disc's two blocks byte for byte: the audio moved, and it must be the same audio.
 
@@ -624,6 +647,7 @@ Each of the seven EIII/ESI discs lists one index bank with a note and no samples
 - A record may declare its one channel on the **right** on an EIII disc too, not only on E-IV. Scan for 92 at `+26` as well as at `+22`, or `vintage`'s `Juno Synths` reads as an empty bank.
 - A bank's declared run is an independent check on the record extent, and it was already in this doc reading as a loose fit. If the last record of a bank stops one 92-byte header short of `0x30 + 74 + 0x34`, the extent is wrong, not the run.
 - A loop end past the payload must be **refused**, not clamped back the way AKAI and Roland clamp theirs. Clamping turns a splice correlation of +0.86 into −0.10 on `protozoa`'s own records.
+- The whole-extent "no loop" is written **inset by a fixed few bytes at both ends**, not at frame 0. Refusing only the start-0 case shipped a loop over the entire file on 934 of `ditto-drums`'s 948 records. It ends in silence and carries no uniquely-splicing loop point, and is refused within `FULL_EXTENT_SLACK` of both bounds (ADR-0030).
 - There is no root key in the sample record. No byte tracks the note in the sample's name above chance, and `+58` — the field that looks most like one — is the sample rate.
 
 ## What `protozoa` taught, in one place
