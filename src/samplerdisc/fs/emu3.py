@@ -105,9 +105,9 @@ SAMPLE_AREA_PREAMBLE = 74
 OFF_BANK_SAMPLE_BYTES = 0x34
 
 #: Sample record, relative to its own start. A record begins two bytes before
-#: its name; those two bytes are zero on every record after the first.
+#: its name; those two bytes are zero on every record after the first on the
+#: EIII discs, and are not on `ditto-drums`, so nothing is tested on them.
 SAMPLE_NAME_OFFSET = 2
-OFF_SAMPLE_RECORD_LEN = 34
 OFF_SAMPLE_RATE = 54
 
 #: The eight-pointer block, and the reason the fields either side of it read as
@@ -124,9 +124,12 @@ OFF_SAMPLE_RATE = 54
 #: ``OFF_SAMPLE_START_R`` instead, which is a different value of a working
 #: field rather than a broken one.
 #:
-#: ``OFF_SAMPLE_END_R`` and ``OFF_SAMPLE_RECORD_LEN`` are one field under two
-#: names, and that also explains ``RECORD_LEN_BIAS``: the pointer names the
-#: first byte of the *last* word, so the record ends two bytes further on.
+#: An earlier revision of this module gave ``+34`` a second name,
+#: ``OFF_SAMPLE_RECORD_LEN``, and took the record's extent from it
+#: unconditionally. It is the **right channel's** end, and it closes the record
+#: only where the right-hand set is what describes this record's audio. Four
+#: shapes on seven discs say otherwise, and ``record_extent`` below is the rule
+#: that replaced it (ADR-0029).
 OFF_SAMPLE_START_L = 22
 OFF_SAMPLE_START_R = 26
 OFF_SAMPLE_END_L = 30
@@ -154,10 +157,10 @@ POINTER_KEYS = (
     ("start_r", "end_r", "loop_start_r", "loop_end_r"),
 )
 
-#: Records sit back to back and each declares its own length two short of the
-#: distance to the next, verified across a 12-record chain. See the pointer
-#: block above for why two: ``+34`` addresses the last word, not past it.
-RECORD_LEN_BIAS = 2
+#: An end pointer names the first byte of the *last* word rather than one past
+#: it, so the extent it closes runs two bytes further on. ``END_POINTER_BIAS``
+#: in sample/emu3.py is the same fact seen from the loop side.
+END_POINTER_BIAS = 2
 
 #: Every EIII/ESI sample header measured is this long. Treated as a validity
 #: check rather than a constant, since it is read from the record.
@@ -245,6 +248,66 @@ def sample_pointers(head: bytes) -> tuple[tuple[str, int], ...]:
         for keys, offsets in zip(POINTER_KEYS, POINTER_SETS, strict=True)
         for key, offset in zip(keys, offsets, strict=True)
     )
+
+
+def record_extent(head: bytes) -> int | None:
+    """How far the record runs from its own start, or ``None`` if it says nothing.
+
+    **The set that opens the audio is the set that closes it.** A record's
+    audio begins immediately after its 92-byte header, so the pointer set
+    describing it starts at ``SAMPLE_HEADER_LEN`` -- which is the rule
+    ``sample/emu3.py`` already used to pick a loop, and never applied to the
+    extent. Taking ``+34`` as the record length instead is right only where the
+    right-hand set happens to describe this record, and four shapes across the
+    seven EIII/ESI reference discs say it does not (ADR-0029):
+
+    * ``start_r == start_l - 92`` with ``end_r == end_l - 92`` -- the same
+      channel written from the payload's start rather than the record's. The
+      extent taken from ``+34`` is **92 bytes short**, on 2 127 records of
+      `esi32-gm` and 3 965 of `protozoa`.
+    * ``start_r == end_r == 0`` -- the unused side zeroed. ``+34`` gives an
+      extent of 2, which is shorter than the header, so the record is rejected
+      outright: 872 records on `ditto-drums`, nine of its ten silent banks.
+    * ``start_r == 92 + F`` and ``end_r == 92 + 2F - 2`` for a constant memory
+      frame ``F`` -- 1 MiB on `emu-classics`, 2 MiB on `eiiix-1`. ``+34`` then
+      names an address past the whole bank region and the record is dropped as
+      unreadable.
+    * the one channel declared on the **right**: ``start_r == 92`` and the
+      left set not opening the audio, which on 1 371 of the 1 429 is
+      ``start_l == 0`` exactly. docs/formats/emu3.md records 542 of
+      `eiv-studio`'s that way; the EIII walk never looked, so 353 on
+      `esi32-gm`, 607 on `protozoa` and all of `vintage`'s ``Juno Synths``
+      were never listed at all.
+
+    The exception is a genuine two-channel record, where the payload is both
+    blocks and the far end is the right channel's: the right block opens
+    exactly where the left one closes and the two are the same length. That is
+    ADR-0026's gate stated from the pointer side instead of the payload side --
+    the same three conditions, without needing the size the caller is asking
+    for, so there is no circularity here.
+
+    ``None`` for a header too short to hold the block, or one where neither set
+    opens the audio. Both are refusals rather than guesses: a record that was
+    not read must not present as one that declared nothing.
+    """
+    if len(head) < OFF_SAMPLE_END_R + 4:
+        return None
+    start_l, start_r, end_l, end_r = struct.unpack_from("<4I", head, OFF_SAMPLE_START_L)
+    if (
+        start_l == SAMPLE_HEADER_LEN
+        and start_r == end_l + END_POINTER_BIAS
+        and end_r - start_r == end_l - start_l
+    ):
+        return end_r + END_POINTER_BIAS
+    # Both sets open the audio on many EIII records, and then they disagree
+    # about where it ends by a few bytes in either direction. The stride to the
+    # next record follows the larger on every disc measured.
+    declared = [
+        end for start, end in ((start_l, end_l), (start_r, end_r)) if start == SAMPLE_HEADER_LEN
+    ]
+    if not declared:
+        return None
+    return max(declared) + END_POINTER_BIAS
 
 
 class _Bank(NamedTuple):
@@ -788,10 +851,19 @@ class Emu3Backend:
         records are found rather than followed.
 
         The signature is specific enough to survive a scan through megabytes of
-        audio: the header-length field must equal exactly ``SAMPLE_HEADER_LEN``,
-        the rate must be plausible, and sixteen bytes must be printable. On the
-        reference bank that yields 452 records with 452 distinct, sensible
-        names totalling 7.00 MiB inside a bank declaring 8 MiB.
+        audio: one of the two start pointers must open the audio at exactly
+        ``SAMPLE_HEADER_LEN``, the rate must be plausible, and sixteen bytes
+        must be printable. On the reference bank that yields 531 records with
+        531 distinct, sensible names totalling 8 248 316 bytes, which is that
+        bank's declared run to the byte.
+
+        **Either** start, not only the left one. A record may declare its one
+        channel on the right, with the left zeroed, and scanning for the left
+        pointer alone makes those invisible rather than wrong -- all of
+        `vintage`'s ``Juno Synths``, and 980 records across the four EIII/ESI
+        reference discs that were never listed (ADR-0029). The two anchors are
+        deduplicated by address, and the result is yielded in address order so
+        that which anchor found a record cannot change what is written.
 
         Specific is not the same as exclusive, which is why ``span`` matters
         as much as the signature does. A bank's region holds whatever the
@@ -804,41 +876,46 @@ class Emu3Backend:
         first, last = span
         window = image.read(offset + bank_at, max(limit - bank_at, 0))
         needle = struct.pack("<I", SAMPLE_HEADER_LEN)
+        found: dict[int, File] = {}
         for match in re.finditer(re.escape(needle), window):
-            at = match.start() - OFF_SAMPLE_START_L
-            if not first <= at < last:
-                continue
-            record = self._parse_record(window[at : at + SAMPLE_HEADER_LEN])
-            if record is None:
-                continue
-            name, header_len, record_len, rate = record
-            if at + record_len > len(window):
-                continue
-            yield File(
-                name=name,
-                kind="sample",
-                size=record_len - header_len,
-                start_block=bank_at + at + header_len,
-                raw_type=rate,
-                meta=sample_pointers(window[at : at + SAMPLE_HEADER_LEN]),
-            )
+            for anchor in (OFF_SAMPLE_START_L, OFF_SAMPLE_START_R):
+                at = match.start() - anchor
+                if at < 0 or at in found or not first <= at < last:
+                    continue
+                record = self._parse_record(window[at : at + SAMPLE_HEADER_LEN])
+                if record is None:
+                    continue
+                name, extent, rate = record
+                if at + extent > len(window):
+                    continue
+                found[at] = File(
+                    name=name,
+                    kind="sample",
+                    size=extent - SAMPLE_HEADER_LEN,
+                    start_block=bank_at + at + SAMPLE_HEADER_LEN,
+                    raw_type=rate,
+                    meta=sample_pointers(window[at : at + SAMPLE_HEADER_LEN]),
+                )
+        for at in sorted(found):
+            yield found[at]
 
-    def _parse_record(self, head: bytes) -> tuple[str, int, int, int] | None:
+    def _parse_record(self, head: bytes) -> tuple[str, int, int] | None:
         raw = head[SAMPLE_NAME_OFFSET : SAMPLE_NAME_OFFSET + ENTRY_NAME_LEN]
         if not is_plausible_name(raw):
             return None
         name = decode_name(raw)
         if not name:
             return None
-        (header_len,) = struct.unpack_from("<I", head, OFF_SAMPLE_START_L)
-        (declared,) = struct.unpack_from("<I", head, OFF_SAMPLE_RECORD_LEN)
-        (rate,) = struct.unpack_from("<I", head, OFF_SAMPLE_RATE)
-        record_len = declared + RECORD_LEN_BIAS
-        if header_len != SAMPLE_HEADER_LEN or record_len <= header_len:
+        # The header length is the constant 92, not something read out of the
+        # record: ``+22`` is a start pointer and reads 0 where the record
+        # declares its channel on the right (ADR-0029).
+        extent = record_extent(head)
+        if extent is None or extent <= SAMPLE_HEADER_LEN:
             return None
+        (rate,) = struct.unpack_from("<I", head, OFF_SAMPLE_RATE)
         if not MIN_RATE <= rate <= MAX_RATE:
             return None
-        return name, header_len, record_len, rate
+        return name, extent, rate
 
     def read_file(self, image: SectorImage, offset: int, entry: File) -> bytes:
         return image.read(offset + entry.start_block, entry.size)

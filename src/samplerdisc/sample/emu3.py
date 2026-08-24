@@ -13,9 +13,10 @@ start. Those become the WAV's smpl chunk. There is no root key anywhere in the
 The same block declares a **channel count**, and where it declares two the
 payload is a *block* split -- all of the left channel, then all of the right,
 not interleaved. Read as one mono stream that is a file twice as long as the
-sound, which is what this project shipped for 2 656 of the 14 738 E-mu samples
-until D18. The two halves are interleaved here, in the sample layer, so what
-``pcm`` holds is what a WAV data chunk holds either way (ADR-0026).
+sound, which is what this project shipped for 2 656 of the E-mu samples until
+D18 (2 843 of 19 371 under D21's record extent). The two halves are
+interleaved here, in the sample layer, so what ``pcm`` holds is what a WAV data
+chunk holds either way (ADR-0026).
 
 The endianness is worth a note, because it was got wrong first. Sampling this
 data at 2048-byte sector boundaries makes it read as big-endian, convincingly
@@ -42,12 +43,12 @@ class NotASample(_NotASample):
 DATA_START = 92
 
 #: An end pointer names the first byte of the *last* word rather than one past
-#: it, so the extent it closes runs two bytes further. ``RECORD_LEN_BIAS`` in
-#: fs/emu3.py is the same fact, seen from the record-length side.
+#: it, so the extent it closes runs two bytes further. ``END_POINTER_BIAS`` in
+#: fs/emu3.py is the same constant, used there to close the record itself.
 END_POINTER_BIAS = 2
 
 #: A stereo payload splits into two equal blocks, so it holds a whole number of
-#: frames on both channels only when it divides by four. Every one of the 2 656
+#: frames on both channels only when it divides by four. Every one of the 2 843
 #: records the gate below selects does; the check is here because a payload
 #: that did not would be split half a sample out and sound like tape hiss.
 STEREO_ALIGNMENT = 4
@@ -153,7 +154,7 @@ def _is_block_split(pointers: dict[str, int], size: int) -> bool:
     `eiiix-1`, 6 on `eiiix-2` -- declaring a left channel that overlaps the
     right block or stops short of it. They are not stereo: their halves score
     0.01 on fine structure and 0.01 on best-lag correlation, which is the
-    negative control of two unrelated records, while the 2 656 that pass score
+    negative control of two unrelated records, while the 2 843 that pass score
     with the known-true stereo pairs ADR-0017 joins by name. Six of
     `protozoa`'s are identified exactly: the first half of each is, byte for
     byte, the whole of a one-channel record of the same name in another bank,
@@ -162,6 +163,14 @@ def _is_block_split(pointers: dict[str, int], size: int) -> bool:
     those come out with an unaccounted-for second sound in the right channel,
     and two `eiiix-1` records declare a loop that then ends past their own
     left channel.
+
+    This test and ``fs/emu3.py``'s ``record_extent`` are one statement seen
+    from two sides. That one, from the pointer block alone, decides how long
+    the record is; this one, given the payload that produced, decides how to
+    read it. They have to agree, or a record sized as two channels comes out
+    written as one. Nothing in the code forces that -- the per-disc **stereo
+    counts** in tests/test_discs.py are what hold them together, which is why
+    they are pinned separately from the sample counts (ADR-0029).
     """
     if size % STEREO_ALIGNMENT:
         return False

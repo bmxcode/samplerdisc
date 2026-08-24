@@ -114,6 +114,33 @@ def _pinned_sizes() -> set[int]:
     }
 
 
+#: How much of an image is hashed to tell two of one size apart, and the digest
+#: for each pinned disc that needs it.
+#:
+#: Size alone named a disc across the 79 images this suite was built on, and it
+#: stopped doing so the moment a whole publisher's series arrived at once: `Vol.
+#: 03 - Orchestral` and `Vol. 07 - E-mu Classics` are both exactly 526 723 072
+#: bytes, and both `Studio Essentials` discs are 399 077 376. Same mastering
+#: run, same disc geometry, different libraries.
+#:
+#: The tiebreak stays a property of the disc rather than of its filename
+#: (ADR-0004): the first megabyte covers the ``EMU3`` header, the folder table
+#: and the first bank directory, which is what actually differs. It is
+#: consulted **only** where two images share a size, so every other pin is
+#: unchanged and no disc needs one until its size collides with something.
+_HEAD_BYTES = 1 << 20
+_HEAD_DIGEST = {
+    "emu-classics": "3882c2319cc27871",
+    "eiv-studio": "f1f1c805136d4881",
+}
+
+
+@lru_cache(maxsize=256)
+def _head_digest(path: Path) -> str:
+    with path.open("rb") as handle:
+        return hashlib.sha256(handle.read(_HEAD_BYTES)).hexdigest()[:16]
+
+
 @lru_cache(maxsize=1)
 def _by_size() -> dict[int, tuple[Path, ...]]:
     """The collection indexed by file size, built once per run."""
@@ -144,9 +171,13 @@ def _pinned_disc(label: str, size: int) -> Path:
     """
     matches = _by_size().get(size, ())
     if len(matches) > 1:
-        # Sizes are distinct across all 79 images measured. Two files of
-        # exactly one size are far more likely a disc filed twice than a
-        # coincidence, and picking either would make the run order-dependent.
+        # Two files of one size are usually a disc filed twice, and picking
+        # either would make the run order-dependent. Where they are genuinely
+        # different discs off one mastering run, _HEAD_DIGEST says which is
+        # which -- and a label with no digest still fails rather than guessing.
+        wanted = _HEAD_DIGEST.get(label)
+        matches = tuple(p for p in matches if _head_digest(p) == wanted) if wanted else matches
+    if len(matches) > 1:
         listed = ", ".join(str(p.name) for p in matches)
         pytest.fail(f"{label}: {len(matches)} images are exactly {size} bytes: {listed}")
     if matches:
@@ -544,24 +575,37 @@ def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
 #: The loop counts are pinned as tightly as the sample counts, for the reason
 #: the noted-volume counts are on the AKAI table: a loop appearing where none
 #: was measured is a gate that has come loose, and one disappearing is the
-#: decode silently failing on a disc nobody looked at. `esi32-gm` yields the
-#: fewest by far -- 107 of 2 265 -- because that disc declares a loop end past
-#: the audio it carries on almost every record, and those are refused rather
-#: than clamped (ADR-0025).
+#: decode silently failing on a disc nobody looked at.
 #:
-#: The stereo counts are D18's pin and they are **not** the count of records
-#: satisfying ``start_R == start_L + P/2``, which is 2 721. It is that set
-#: minus the 65 whose own ``end_L`` contradicts the split -- 19 on `protozoa`,
-#: 40 on `eiiix-1`, 6 on `eiiix-2` -- which measure as unrelated audio and are
-#: written mono. The two numbers differing on exactly three discs is what the
-#: gate's third condition is for, so a change that loses it fails here rather
-#: than shipping `protozoa`'s trombones with another bank's record in the
-#: right channel (ADR-0026).
+#: The stereo counts are D18's pin and they are the records whose own pointer
+#: block declares two channels *and* closes the left one where the right one
+#: opens (ADR-0026). Under D21's extent they are the same four numbers on the
+#: four discs that had them -- 28, 8, 601, 592 -- which is the check that
+#: changing how long a record is did not change what shape it is. The gate's
+#: third condition now rejects **nothing** on any of the ten discs: the 65
+#: records it used to catch were records sized from the wrong pointer, and the
+#: right size stops them looking like a split at all (ADR-0029).
+#:
+#: **The four EIII/ESI rows moved in D21 and every digest with them.** The
+#: record's extent came from ``+34``, which is the right channel's end pointer
+#: and closes the record only where the right-hand set describes it. It does
+#: not on 6 092 records of `esi32-gm` and `protozoa`, which came out 92 bytes
+#: short, and it silently loses every record that declares its one channel on
+#: the right. The three E-IV rows are byte-identical across the change, which
+#: is what says the shared parts were not disturbed: those discs size a record
+#: from their own big-endian directory and never touch ``+34`` (ADR-0029).
+#:
+#: `emu-classics`, `vintage` and `ditto-drums` are the discs of issue #39 and
+#: the ones D21 was measured against. `ditto-drums` is the whole shape of the
+#: bug on one disc: 74 samples before, 948 after.
 _EMU3 = {
-    "esi32-gm": (93_077_504, 10, 2265, 107, 28, "b7964228d84cfc50"),
-    "protozoa": (131_690_496, 16, 5852, 1689, 8, "ac4b74a601955ca1"),
-    "eiiix-1": (304_128_000, 46, 1189, 1157, 601, "c26ee8fb959b3f91"),
-    "eiiix-2": (304_435_200, 46, 1333, 1260, 592, "2d5d002be060cc52"),
+    "esi32-gm": (93_077_504, 10, 2635, 1778, 28, "35a6c6edfc6f292a"),
+    "protozoa": (131_690_496, 16, 6595, 5244, 8, "3530e1e972f100ab"),
+    "eiiix-1": (304_128_000, 46, 1248, 1215, 601, "c73db948bf4f61cb"),
+    "eiiix-2": (304_435_200, 46, 1337, 1264, 592, "8bfcddf6d8dbd806"),
+    "emu-classics": (526_723_072, 22, 1516, 1435, 185, "e1398c11a9e7cb02"),
+    "vintage": (527_030_272, 16, 993, 953, 2, "fbcc378dd173f96c"),
+    "ditto-drums": (308_121_600, 48, 948, 948, 0, "3c756586711810de"),
     "eiv-analogia": (293_912_576, 12, 449, 449, 279, "5d8faa38572914cb"),
     "eiv-studio": (399_077_376, 230, 2822, 2551, 320, "8802808655deea30"),
     "eiv-vitous": (532_443_136, 44, 828, 826, 828, "66c179be5b78cbd2"),
@@ -670,10 +714,10 @@ def test_protozoa_gives_each_bank_its_own_records() -> None:
         origin = find_origin(image)
         assert origin is not None
         volumes = {v.name: v for v in origin.backend.volumes(image, origin.offset)}
-        assert len(volumes["Orbit Presets  X"].files) == 535
-        assert len(volumes["Orbit Presets 4k"].files) == 535
-        assert len(volumes["Phatt Presets  X"].files) == 470
-        assert len(volumes["Phatt Presets 4K"].files) == 239
+        assert len(volumes["Orbit Presets  X"].files) == 558
+        assert len(volumes["Orbit Presets 4k"].files) == 558
+        assert len(volumes["Phatt Presets  X"].files) == 493
+        assert len(volumes["Phatt Presets 4K"].files) == 255
         # The index bank: empty because the disc made it empty, and saying so
         # is what tells that apart from a bound that failed.
         assert volumes["Protozoa       X"].files == []
@@ -687,6 +731,152 @@ def test_protozoa_gives_each_bank_its_own_records() -> None:
                     f"{entry.name} at {entry.start_block} is listed by "
                     f"{seen[entry.start_block]!r} and by {volume.name!r}"
                 )
+
+
+#: The banks of [issue #39](https://github.com/bmxcode/samplerdisc/issues/39),
+#: with the samples each yields and the right-hand pointer set that hid them.
+#: Twelve banks across three discs claimed a volume, returned nothing and gave
+#: no reason, which is the ADR-0012 signature -- and none of them was an index
+#: bank, so ``OFF_BANK_SAMPLE_BYTES`` had nothing to say about any of them.
+#:
+#: They are pinned by the **shape** and not only by the count, because the
+#: count alone would pass again the moment a record was found for the wrong
+#: reason. Each shape is a different way for ``+34`` -- the right channel's end
+#: pointer -- not to describe the record it sits in (ADR-0029):
+#:
+#: * ``zeroed`` -- the unused side is all zeros, so ``+34`` gives an extent of
+#:   2 and the record is rejected as shorter than its own header.
+#: * ``frame`` -- the right-hand set names a fixed memory frame rather than
+#:   this record, so ``+34`` points past the whole bank region.
+#: * ``right`` -- the record's one channel is declared on the right, with the
+#:   left zeroed, so the walk's left-hand signature never sees it.
+_EMU3_SILENT_BANKS = {
+    "emu-classics": (("Vox Haunt      X", 14, "frame"),),
+    "vintage": (("Juno Synths", 44, "right"),),
+    "ditto-drums": (
+        ("TAMJAZ KIT10   X", 28, "zeroed"),
+        ("PERCUSSION#2   X", 42, "zeroed"),
+        ("TIMPANI HDML   X", 3, "zeroed"),
+        ("TIMPANI SFML   X", 3, "zeroed"),
+        ("VIBRAPHONE     X", 4, "zeroed"),
+        ("MARIMBA        X", 26, "zeroed"),
+        ("XYLOPHONE      X", 12, "zeroed"),
+        ("CONCERT BELL   X", 5, "zeroed"),
+        ("TUBULAR BELL   X", 3, "zeroed"),
+        ("OCTABONS       X", 8, "zeroed"),
+    ),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EMU3_SILENT_BANKS))
+def test_emu3_banks_that_declared_a_sample_area_and_yielded_nothing(label: str) -> None:
+    """Issue #39, pinned by the mechanism rather than by the totals.
+
+    Every one of these banks declares a non-zero sample area, so none of them
+    could be explained the way an index bank is (ADR-0021). What they have in
+    common is a right-hand pointer set that says nothing about the record it
+    sits in, and a walk that took the record's extent from it anyway.
+
+    The shape is asserted on the records themselves, so the day this stops
+    holding it says which of the three ways it stopped.
+    """
+    from samplerdisc.fs.emu3 import SAMPLE_HEADER_LEN
+
+    size = _EMU3[label][0]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        volumes = {v.name: v for v in origin.backend.volumes(image, origin.offset)}
+        for name, expected, shape in _EMU3_SILENT_BANKS[label]:
+            files = volumes[name].files
+            assert len(files) == expected, f"{label}/{name}: {len(files)} samples"
+            for entry in files:
+                start_l, start_r = entry.get("start_l"), entry.get("start_r")
+                end_r = entry.get("end_r")
+                if shape == "zeroed":
+                    assert (start_l, start_r, end_r) == (SAMPLE_HEADER_LEN, 0, 0)
+                elif shape == "right":
+                    assert (start_l, start_r) == (0, SAMPLE_HEADER_LEN)
+                else:
+                    # A fixed allocation frame: the right-hand set opens one
+                    # frame past the audio and closes at the end of a second,
+                    # the same two numbers on every record of the bank.
+                    assert start_l == SAMPLE_HEADER_LEN
+                    frame = start_r - SAMPLE_HEADER_LEN
+                    assert frame > 0 and frame & (frame - 1) == 0
+                    assert end_r == SAMPLE_HEADER_LEN + 2 * frame - 2
+
+
+#: Banks whose last record must end exactly at ``0x30 + 74 + 0x34``, out of the
+#: banks that yield records at all. This is the independent half of D21's
+#: evidence: the bank header's declared run is a different field, written by a
+#: different part of the mastering, from the record's own pointer block, and
+#: the two now agree to the byte on 173 of 186 banks. Before D21 they agreed on
+#: 86, and 33 of the rest missed by exactly one 92-byte sample header -- which
+#: is what ADR-0021 recorded as a loose fit and is really this bug.
+_EMU3_RUN_ENDS = {
+    "esi32-gm": (7, 7),
+    "protozoa": (15, 15),
+    "eiiix-1": (44, 39),
+    "eiiix-2": (44, 39),
+    "emu-classics": (19, 16),
+    "vintage": (13, 13),
+    "ditto-drums": (44, 44),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EMU3_RUN_ENDS))
+def test_an_emu3_banks_records_fill_the_run_its_header_declares(label: str) -> None:
+    """The bank header and the record pointers must agree about where the
+    records stop.
+
+    The bank is located from its own first record rather than by scanning the
+    disc: the header that owns a record is the one whose declared sample area,
+    plus the 74-byte preamble, lands exactly on it. That is self-checking --
+    a wrong header disagrees rather than being believed -- and it means this
+    test says nothing about how the walk found the bank, only about whether
+    the two independent statements of the bank's extent match.
+    """
+    from samplerdisc.fs.emu3 import (
+        BANK_MAGICS,
+        OFF_BANK_SAMPLE_BYTES,
+        OFF_BANK_SAMPLE_START,
+        SAMPLE_AREA_PREAMBLE,
+        SAMPLE_HEADER_LEN,
+    )
+
+    back = 1 << 20
+    size, expected_banks, expected_exact = _EMU3[label][0], *_EMU3_RUN_ENDS[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        banks = exact = 0
+        for volume in origin.backend.volumes(image, origin.offset):
+            if not volume.files:
+                continue
+            first = min(f.start_block for f in volume.files) - SAMPLE_HEADER_LEN
+            window = image.read(origin.offset + max(first - back, 0), min(first, back))
+            base = max(first - back, 0)
+            located = None
+            for at in range(len(window)):
+                if not any(window.startswith(magic, at) for magic in BANK_MAGICS):
+                    continue
+                head = window[at : at + OFF_BANK_SAMPLE_BYTES + 4]
+                if len(head) < OFF_BANK_SAMPLE_BYTES + 4:
+                    continue
+                area, run = struct.unpack_from("<II", head, OFF_BANK_SAMPLE_START)
+                if base + at + area + SAMPLE_AREA_PREAMBLE == first:
+                    located = (base + at, area, run)
+            if located is None:
+                continue  # an E-IV bank, reached through its sample directory
+            bank_at, area, run = located
+            banks += 1
+            last = max(f.start_block + f.size for f in volume.files)
+            exact += last - bank_at == area + SAMPLE_AREA_PREAMBLE + run
+        assert banks == expected_banks
+        assert exact == expected_exact, (
+            f"{label}: {exact} of {banks} banks end where their header says"
+        )
 
 
 #: AKAI discs pinned by size, with the volumes, files and *noted* volumes each

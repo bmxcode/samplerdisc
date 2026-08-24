@@ -914,7 +914,7 @@ def _emu3_pointers(head: bytearray, payload_bytes: int, loop, stereo: bool = Fal
     ``stereo`` writes the two-channel form: the payload is a block split, all
     of the left channel then all of the right, and both pointer sets are
     written -- the right one a mirror of the left, half a payload on. That is
-    what 2 656 records across the seven reference discs hold (ADR-0026).
+    what 2 843 records across the ten reference discs hold (ADR-0026).
     """
     from samplerdisc.fs.emu3 import (
         OFF_SAMPLE_END_L,
@@ -1017,6 +1017,7 @@ def emu3_disc(
         EIV_CHAIN_STRIDE,
         EIV_MAGIC,
         EIV_RECORD_OFFSET,
+        END_POINTER_BIAS,
         ENTRY_LEN,
         MAGIC,
         OFF_BANK_SAMPLE_BYTES,
@@ -1025,10 +1026,9 @@ def emu3_disc(
         OFF_EIV_LENGTH,
         OFF_EIV_NAME,
         OFF_EIV_POSITION,
+        OFF_SAMPLE_END_R,
         OFF_SAMPLE_RATE,
-        OFF_SAMPLE_RECORD_LEN,
         OFF_SAMPLE_START_L,
-        RECORD_LEN_BIAS,
         SAMPLE_AREA_PREAMBLE,
         SAMPLE_HEADER_LEN,
     )
@@ -1124,7 +1124,7 @@ def emu3_disc(
                 head = bytearray(SAMPLE_HEADER_LEN)
                 head[2:18] = name16(sample_name)
                 struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
-                struct.pack_into("<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS)
+                struct.pack_into("<I", head, OFF_SAMPLE_END_R, record_len - END_POINTER_BIAS)
                 struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
                 _emu3_pointers(
                     head, len(pcm), (loops or {}).get(sample_name), sample_name in stereo
@@ -1152,10 +1152,9 @@ def emu3_disc(
                     head = bytearray(SAMPLE_HEADER_LEN)
                     head[2:18] = name16(stale_name)
                     struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
-                    struct.pack_into(
-                        "<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS
-                    )
+                    struct.pack_into("<I", head, OFF_SAMPLE_END_R, record_len - END_POINTER_BIAS)
                     struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+                    _emu3_pointers(head, len(pcm), None)
                     image[stale : stale + SAMPLE_HEADER_LEN] = head
                     image[stale + SAMPLE_HEADER_LEN : stale + record_len] = pcm
                     stale += record_len + 16
@@ -1178,8 +1177,9 @@ def emu3_disc(
         head = bytearray(SAMPLE_HEADER_LEN)
         head[2:18] = name16("Older Revision")
         struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
-        struct.pack_into("<I", head, OFF_SAMPLE_RECORD_LEN, record_len - RECORD_LEN_BIAS)
+        struct.pack_into("<I", head, OFF_SAMPLE_END_R, record_len - END_POINTER_BIAS)
         struct.pack_into("<I", head, OFF_SAMPLE_RATE, 22000)
+        _emu3_pointers(head, len(pcm), None)
         image[record_at : record_at + SAMPLE_HEADER_LEN] = head
         image[record_at + SAMPLE_HEADER_LEN : record_at + record_len] = pcm
         struct.pack_into("<I", image, stray + OFF_BANK_SAMPLE_START, area - stray)

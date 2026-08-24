@@ -252,8 +252,8 @@ def extract_volume(
         if channels == 1:
             # Only mono files can be halves of an -L/-R pair: ``interleave``
             # takes two mono buffers, and a sample that is already stereo is
-            # not one side of anything. No sample on the seven E-mu discs is
-            # both -- 2 656 declare two channels, 12 are name-paired, and the
+            # not one side of anything. No sample on the ten E-mu discs is
+            # both -- 2 843 declare two channels, 14 are name-paired, and the
             # two sets do not intersect -- so this changes nothing today and
             # is here so it cannot start to (ADR-0026).
             parsed[entry.name] = sample
