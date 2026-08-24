@@ -158,7 +158,11 @@ def extract_volume(
     """
     made = False
     originals_made = False
-    parsed: dict[str, _Pairable] = {}
+    #: Mono samples in the order they were walked, each with the filesystem name
+    #: the stereo heuristic pairs on. A list, not a name-keyed dict: two entries
+    #: can share a name, and a dict would drop one before the pairing ever saw
+    #: the collision -- the silent wrong join of issue #11.
+    mono: list[tuple[str, _Pairable]] = []
     #: sha256 of each WAV payload written, against the name it was written
     #: from and whether it carried a smpl chunk, so a duplicate can say which
     #: file already holds the audio and whether it holds the metadata too.
@@ -256,7 +260,7 @@ def extract_volume(
             # both -- 2 843 declare two channels, 14 are name-paired, and the
             # two sets do not intersect -- so this changes nothing today and
             # is here so it cannot start to (ADR-0026).
-            parsed[entry.name] = sample
+            mono.append((entry.name, sample))
         yield Extracted(
             volume=volume.name,
             name=entry.name,
@@ -275,20 +279,26 @@ def extract_volume(
         yield _convert_aiff(image, backend, origin, volume, entry, out_dir, written_audio)
 
     if join_stereo:
-        yield from _join_pairs(volume, parsed, out_dir)
+        yield from _join_pairs(volume, mono, out_dir)
 
 
 def _join_pairs(
-    volume: Volume, parsed: dict[str, _Pairable], out_dir: str
+    volume: Volume, mono: list[tuple[str, _Pairable]], out_dir: str
 ) -> Iterator[Skipped | Joined]:
-    pairs = find_pairs(list(parsed))
-    if not pairs:
+    result = find_pairs(mono)
+    for amb in result.ambiguous:
+        # Two lefts for one base, or three files: a pairing was possible and
+        # refused rather than guessed. The mono halves are already written, so
+        # nothing is lost by declining -- the report is what makes the choice
+        # visible instead of silent (ADR-0007, issue #11).
+        yield Skipped(volume.name, amb.base, amb.reason, volume.partition)
+    if not result.pairs:
         return
     stereo_dir = os.path.join(out_dir, "stereo")
     made = False
-    for pair in pairs:
-        left = parsed[pair.left]
-        right = parsed[pair.right]
+    for pair in result.pairs:
+        left = pair.left
+        right = pair.right
         if left.rate != right.rate:
             # Different rates means these are not two halves of one sound,
             # whatever the names say.

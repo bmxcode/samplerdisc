@@ -23,6 +23,13 @@ import re
 import sys
 from array import array
 from dataclasses import dataclass
+from typing import Generic, TypeVar
+
+#: What each name carries alongside it -- the parsed sample, to ``extract`` --
+#: threaded through the heuristic untouched so a matched pair hands back the
+#: object itself rather than a name to look up again. Keeping it opaque is what
+#: lets this stay in brand-neutral core: the pairing knows names, nothing more.
+T = TypeVar("T")
 
 #: A trailing side letter behind a separator, optionally with padding around
 #: it. Both name forms are fixed width and space-padded, so the side marker is
@@ -36,10 +43,36 @@ _SIDE = re.compile(r"^(?P<base>.*?)\s*[-\x7f]\s*(?P<side>[LR])\s*$", re.IGNORECA
 
 
 @dataclass(frozen=True)
-class Pair:
+class Pair(Generic[T]):
     base: str
-    left: str
-    right: str
+    #: The payloads the two halves arrived carrying, not their names: a matched
+    #: pair hands back the samples themselves, so ``extract`` never looks one up
+    #: by a name that a second entry may share (issue #11).
+    left: T
+    right: T
+
+
+@dataclass(frozen=True)
+class Ambiguous:
+    """A base whose halves could not be paired without a guess.
+
+    Two files marked ``-L`` and one marked ``-R`` is not a pair. Before this was
+    reported it was silently dropped, and a duplicate name upstream could defeat
+    the drop and weld two unrelated sounds together (issue #11). Reported, it
+    becomes a ``Skipped`` -- the same way ``extract`` handles every other
+    ambiguity it will not resolve on its own.
+    """
+
+    base: str
+    reason: str
+
+
+@dataclass(frozen=True)
+class Pairing(Generic[T]):
+    """The two outcomes of pairing: the clean matches, and the refusals."""
+
+    pairs: list[Pair[T]]
+    ambiguous: list[Ambiguous]
 
 
 def split_side(name: str) -> tuple[str, str] | None:
@@ -53,17 +86,24 @@ def split_side(name: str) -> tuple[str, str] | None:
     return base, match.group("side").upper()
 
 
-def find_pairs(names: list[str]) -> list[Pair]:
+def find_pairs(items: list[tuple[str, T]]) -> Pairing[T]:
     """Match -L names to -R names, preserving the order the left ones arrived in.
 
-    A base with two lefts and no right, or three files, is not a pair. Being
-    conservative costs the user a manual join; being loose silently welds two
-    unrelated sounds together.
+    Each item is ``(name, payload)``; only the name drives the match, so this
+    stays a pure name heuristic, and the payload rides along so a matched pair
+    hands back the two objects rather than names to resolve again.
+
+    A base with exactly one left and one right pairs. Both sides present in any
+    other count -- two lefts and a right, three files -- is *ambiguous* and
+    reported rather than resolved: being conservative costs the user a manual
+    join, and being loose silently welds two unrelated sounds together, which
+    without the mono originals is unrecoverable (ADR-0007). A lone half with no
+    opposite is neither -- it stays an unpaired mono sample, as it always has.
     """
-    lefts: dict[str, list[str]] = {}
-    rights: dict[str, list[str]] = {}
+    lefts: dict[str, list[T]] = {}
+    rights: dict[str, list[T]] = {}
     order: list[str] = []
-    for name in names:
+    for name, payload in items:
         parsed = split_side(name)
         if parsed is None:
             continue
@@ -71,15 +111,26 @@ def find_pairs(names: list[str]) -> list[Pair]:
         bucket = lefts if side == "L" else rights
         if base not in lefts and base not in rights:
             order.append(base)
-        bucket.setdefault(base, []).append(name)
+        bucket.setdefault(base, []).append(payload)
 
-    pairs = []
+    pairs: list[Pair[T]] = []
+    ambiguous: list[Ambiguous] = []
     for base in order:
         left = lefts.get(base, [])
         right = rights.get(base, [])
         if len(left) == 1 and len(right) == 1:
             pairs.append(Pair(base=base, left=left[0], right=right[0]))
-    return pairs
+        elif left and right:
+            ambiguous.append(
+                Ambiguous(
+                    base=base,
+                    reason=(
+                        f"{len(left)} files marked -L and {len(right)} marked -R; "
+                        "refusing to guess the pair"
+                    ),
+                )
+            )
+    return Pairing(pairs=pairs, ambiguous=ambiguous)
 
 
 def interleave(left: bytes, right: bytes) -> bytes:
