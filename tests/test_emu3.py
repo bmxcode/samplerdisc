@@ -424,6 +424,110 @@ def test_a_bank_with_neither_header_nor_directory_is_listed_with_a_note(tmp_path
     assert all(v.note for v in volumes)
 
 
+# --- a mistyped header name (ADR-0031) ----------------------------------
+
+
+def test_near_name_matches_the_mistyped_headers_and_nothing_else():
+    """The five real corruptions match; the two OS-slot collisions do not.
+
+    Every recovery on the real discs is a shifted space, a case change or one
+    doubled/dropped character -- normalised away, an edit of at most one. The
+    ``E3 Main Code``/``E3X Main Code`` slots whose arithmetic lands on another
+    bank's header are a dozen edits off, which is the margin the gate lives in.
+    """
+    from samplerdisc.fs.emu3 import _near_name
+
+    for directory, header in (
+        ("Electric Grand X", "Eelectric GrandX"),
+        ("PERCUSSION#1   X", "PERCUSSION #1  X"),
+        ("HvyGtr FX5     X", "HvyGtr FX5    XX"),
+        ("Misc Gtr FX 2MbX", "Misc Gtr FX 2mbX"),
+        ("HvGtrFdBkTxtr2Mb", "HvGtrFdBkTxtr2M"),
+    ):
+        assert _near_name(directory, header), (directory, header)
+    assert not _near_name("E3 Main Code", "Ditto Drums    X")
+    assert not _near_name("E3X Main Code", "DAVE W  KIT1   X")
+
+
+def test_bank_offsets_recovers_a_mistyped_header_only_when_unclaimed():
+    """The recovery binds a near-named header the placement predicts, and only
+    then (ADR-0031).
+
+    Three exactly-named banks pin the fit at ``unit == 100``. ``Delta``'s
+    header is mistyped ``Deltaa`` at the address it predicts and is recovered;
+    ``Echo``'s predicted address holds an unrelated name and is not; and
+    ``Alphaa`` -- near ``Alpha`` but predicting an address ``Alpha`` already
+    owns -- is refused, because a bank may never take a header another entry
+    already claims.
+    """
+    from samplerdisc.fs.emu3 import _Bank
+
+    backend = Emu3Backend()
+    headers = [
+        (100, "Alpha"),
+        (200, "Beta"),
+        (300, "Gamma"),
+        (400, "Deltaa"),
+        (500, "Zulu Foxtrot"),
+    ]
+    banks = [
+        _Bank("Alpha", "", 1, 1),
+        _Bank("Beta", "", 2, 1),
+        _Bank("Gamma", "", 3, 1),
+        _Bank("Delta", "", 4, 1),
+        _Bank("Echo", "", 5, 1),
+        _Bank("Alphaa", "", 1, 1),
+    ]
+    found = backend._bank_offsets(banks, headers)
+    assert found["Delta"] == 400  # mistyped header, recovered by its address
+    assert "Echo" not in found  # predicted address holds a far name
+    assert "Alphaa" not in found  # would steal Alpha's header, refused
+    assert found["Alpha"] == 100  # the claim it would have stolen is intact
+
+
+def test_a_mistyped_bank_header_is_recovered_end_to_end(tmp_path):
+    """A bank whose header name the mastering mistyped reads its records.
+
+    ``Gutar Leads  X`` carries a real ``EMULATOR`` header at the address its
+    directory placement predicts, but the header's own name is one edit off, so
+    keying ``located`` on exact-name equality listed it empty with a note. The
+    address plus the near-name gate binds it. ``OS Reserved  X`` sits at an
+    address whose header carries an unrelated name -- the OS-slot shape -- and
+    stays noted, which is what proves the gate is not merely accepting whatever
+    header the arithmetic reaches.
+    """
+    banks = [
+        (
+            "Default Folder",
+            [
+                ("Piano Grand  X", [("Grand C1", 20000, 512)]),
+                ("Strings Warm X", [("Str A2", 22000, 512)]),
+                ("Brass Bright X", [("Brs D3", 24000, 512)]),
+                ("Gutar Leads  X", [("Lead E1", 26000, 512)]),
+                ("OS Reserved  X", [("Unread", 28000, 256)]),
+            ],
+        )
+    ]
+    image = image_of(
+        tmp_path,
+        fixtures.emu3_disc(
+            banks,
+            header_names={
+                "Gutar Leads  X": "Gutarr Leads X",  # one edit: recovered
+                "OS Reserved  X": "Zebra Marimba X",  # unrelated: not recovered
+            },
+        ),
+        "mistyped.iso",
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    assert [f.name for f in volumes["Gutar Leads  X"].files] == ["Lead E1"]
+    assert not volumes["Gutar Leads  X"].note
+    assert volumes["OS Reserved  X"].files == []
+    assert volumes["OS Reserved  X"].note == "no bank header found for this bank; listed only"
+    # The banks that pinned the fit are untouched.
+    assert [f.name for f in volumes["Piano Grand  X"].files] == ["Grand C1"]
+
+
 # --- E-IV ---------------------------------------------------------------
 
 
