@@ -72,11 +72,39 @@ def test_probe_rejects_zeros_and_noise(tmp_path):
 
 
 def test_origin_probe_resolves_to_emu3(tmp_path):
+    """One half of ADR-0005: the header sits at byte 0 of the cooked stream.
+
+    This is the common case and it resolves at offset 0, so on its own it never
+    exercises a non-zero origin -- the test below does that.
+    """
     image = image_of(tmp_path, fixtures.emu3_disc(ONE_FOLDER))
     origin = find_origin(image)
     assert origin is not None
     assert origin.backend.name == "emu3"
     assert origin.offset == 0
+
+
+def test_origin_resolves_when_the_pregap_is_inside_the_cooked_stream(tmp_path):
+    """The other half of ADR-0005: the pregap genuinely in the stream.
+
+    ``test_origin_probe_resolves_to_emu3`` resolves at 0 and so never exercises
+    a non-zero origin. Here the 150 zeroed sectors really are in the reported
+    stream -- a hybrid disc or a raw rip -- and the resolved origin must be the
+    byte the header sits on, not zero. Getting it wrong reads as an empty disc.
+    """
+    pregap = b"\x00" * (150 * 2048)
+    image = image_of(tmp_path, pregap + fixtures.emu3_disc(ONE_FOLDER), "gap.iso")
+    origin = find_origin(image)
+    assert origin is not None
+    assert origin.backend.name == "emu3"
+    assert origin.offset == 150 * 2048
+    # And the samples resolve from the resolved origin exactly as at offset 0.
+    # The bug this guards: the bank-header and E-IV scans returned addresses
+    # relative to the file rather than the origin, so at a non-zero origin the
+    # banks listed and every one came back empty -- the silent empty-disc
+    # failure ADR-0005 exists to prevent, reached this time from inside the fs.
+    banks = {v.name: v for v in origin.backend.volumes(image, origin.offset)}
+    assert [f.name for f in banks["Proteus1Presets"].files] == ["Piano E0", "Piano A0"]
 
 
 # --- the folder table ---------------------------------------------------
@@ -573,6 +601,35 @@ def test_an_eiv_bank_reports_only_its_own_samples(tmp_path):
         "Rattle Traps",
     ]
     assert [f.name for f in volumes["Orchestralcolorz"].files] == ["Strings"]
+
+
+def test_eiv_samples_resolve_when_the_pregap_is_inside_the_cooked_stream(tmp_path):
+    """ADR-0005 for the E-IV path, which locates records by a whole-image scan.
+
+    That scan and the ``E3S1`` directory bind records at addresses the reader
+    later reads at ``offset + address``. Keyed from the file rather than the
+    origin, a 150-sector pregap left in the stream shifts every record so the
+    bind lands past it and each bank comes back empty -- a folder that lists and
+    yields nothing. Here the origin is non-zero and the samples must still come
+    out.
+    """
+    pregap = b"\x00" * (150 * 2048)
+    image = image_of(tmp_path, pregap + fixtures.emu3_disc(EIV_FOLDERS, eiv=True), "gap.iso")
+    origin = find_origin(image)
+    assert origin is not None
+    assert origin.backend.name == "emu3"
+    assert origin.offset == 150 * 2048
+    volumes = {v.name: v for v in origin.backend.volumes(image, origin.offset)}
+    scroggins = volumes["Scroggins Secret"].files
+    assert [f.name for f in scroggins] == ["Stage Door", "All Nines"]
+    # The listing alone is not enough here: E-IV records are read from an
+    # in-memory scan window, so a bank still *lists* under the file-relative
+    # scan. The PCM is what exposes the bug -- ``read_file`` adds the origin to
+    # the record address, so a scan keyed from the file read 1 024 zero bytes
+    # out of the pregap: a silent empty sample of the right length, not an error.
+    expected = fixtures.stereo_audio_block(frames=512 // 2)[: 512 * 2]
+    assert origin.backend.read_file(image, origin.offset, scroggins[0]) == expected
+    assert not any(v.note for v in volumes.values())
 
 
 def test_a_single_sample_eiv_bank_still_binds(tmp_path):

@@ -393,10 +393,16 @@ class _EivEntry(NamedTuple):
     name: str
 
 
-def _eiv_scan(image: SectorImage) -> dict[int, bytes]:
-    """Every ``E3S1`` tag in the image, with the bytes that follow it."""
+def _eiv_scan(image: SectorImage, offset: int) -> dict[int, bytes]:
+    """Every ``E3S1`` tag in the image, with the bytes that follow it.
+
+    Keyed by address relative to ``offset`` -- the filesystem origin -- and
+    scanned from there, for the reason _bank_headers() is: the addresses feed
+    reads taken at ``offset + address``, and the filesystem does not always
+    begin at byte 0 (ADR-0005).
+    """
     found: dict[int, bytes] = {}
-    position = 0
+    position = offset
     carry = b""
     while position < image.size:
         chunk = image.read(position, _SCAN_CHUNK)
@@ -408,7 +414,7 @@ def _eiv_scan(image: SectorImage) -> dict[int, bytes]:
             at = match.start()
             window = haystack[at : at + _EIV_WINDOW]
             if len(window) == _EIV_WINDOW or base + at + len(window) >= image.size:
-                found[base + at] = window
+                found[base + at - offset] = window
         carry = haystack[-_EIV_WINDOW:]
         position += len(chunk)
     return found
@@ -644,6 +650,13 @@ class Emu3Backend:
     def _bank_headers(self, image: SectorImage, offset: int) -> list[tuple[int, str]]:
         """Every bank header on the image, as ``(address, bank name)``.
 
+        Addresses are relative to ``offset`` -- the filesystem origin, not the
+        start of the file -- so that the scan agrees with every read below,
+        which is taken at ``offset + address``. The scan itself begins at
+        ``offset``: a header sitting in a pregap or an earlier track ahead of
+        the filesystem is not this filesystem's, and byte 0 is not where the
+        filesystem always starts (ADR-0005).
+
         Duplicates are kept. A disc writes the same bank twice -- an older
         revision left in an unallocated region, or a copy running off the end
         of the image -- and which of them a directory entry means is decided
@@ -654,7 +667,7 @@ class Emu3Backend:
         """
         found: list[tuple[int, str]] = []
         pattern = re.compile(b"|".join(re.escape(magic) for magic in BANK_MAGICS))
-        position = 0
+        position = offset
         carry = b""
         while position < image.size:
             chunk = image.read(position, _SCAN_CHUNK)
@@ -666,7 +679,7 @@ class Emu3Backend:
                 at = match.start()
                 raw = haystack[at + OFF_BANK_NAME : at + OFF_BANK_NAME + BANK_NAME_LEN]
                 if len(raw) == BANK_NAME_LEN and is_plausible_name(raw):
-                    found.append((base + at, decode_name(raw)))
+                    found.append((base + at - offset, decode_name(raw)))
             carry = haystack[-64:]
             position += len(chunk)
         return sorted(set(found))
@@ -785,15 +798,16 @@ class Emu3Backend:
         start, length = struct.unpack_from("<II", head, OFF_BANK_SAMPLE_START)
         return start, start + SAMPLE_AREA_PREAMBLE + length
 
-    def _eiv(self, image: SectorImage, banks: list[_Bank]):
+    def _eiv(self, image: SectorImage, offset: int, banks: list[_Bank]):
         """Locate E-IV sample directories and bind them to banks by address.
 
         Returns ``(tags, bound)`` where ``bound`` maps a bank's ``start`` to
         the ``(base, entries)`` proven to live at the address that start
-        predicts. A bank absent from the map has no confirmed samples and
+        predicts. Every address here is relative to ``offset``, the filesystem
+        origin, so a bank absent from the map has no confirmed samples and
         stays listed with its note.
         """
-        tags = _eiv_scan(image)
+        tags = _eiv_scan(image, offset)
         bases, corroborated = _eiv_bases(tags, _eiv_chains(_eiv_entries(tags)))
         if not corroborated:
             return tags, {}
@@ -855,7 +869,7 @@ class Emu3Backend:
         eiv_tags: dict[int, bytes] = {}
         eiv_bound: dict[int, tuple[int, list[_EivEntry]]] = {}
         if any(bank.name not in located for bank in banks):
-            eiv_tags, eiv_bound = self._eiv(image, banks)
+            eiv_tags, eiv_bound = self._eiv(image, offset, banks)
         for bank in banks:
             volume = Volume(name=bank.name, start_block=bank.start)
             at = located.get(bank.name)

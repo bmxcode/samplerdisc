@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 import struct
 import wave
 
@@ -11,6 +12,7 @@ from samplerdisc.container.flat import FlatImage
 from samplerdisc.extract import Extracted, Skipped, extract_disc, safe_name, unique_path
 from samplerdisc.fs.akai import SAMPLE_HEADER_LEN, AkaiBackend
 from samplerdisc.fs.iso9660 import Iso9660Backend
+from samplerdisc.fs.roland_s7xx import RolandS7xxBackend
 from samplerdisc.sample.akai import NotASample, parse
 from samplerdisc.wav import Loop, write_wav
 from tests import fixtures
@@ -80,6 +82,42 @@ def test_unique_path_avoids_collisions(tmp_path):
     second = unique_path(str(tmp_path), "KICK")
     assert first != second
     assert second.endswith("KICK_2.wav")
+
+
+def _wav_pcm(path: str) -> bytes:
+    """The raw PCM of a written mono WAV, read back through its own frames."""
+    with wave.open(path) as w:
+        return w.readframes(w.getnframes())
+
+
+def test_names_differing_only_in_case_extract_to_distinct_files_by_content(tmp_path):
+    """Two names that differ only in case must not fold into one file (issue #4).
+
+    A case-insensitive filesystem (macOS) resolves ``C_6E`` and ``C_6e`` onto
+    one path, so ``unique_path`` writes the second under a ``_2`` suffix -- both
+    survive, and the two libraries' audio stays apart. The hazard the issue
+    files is a *verifier* that then looks a WAV up by its sanitised name and
+    reads the wrong one; the guard is to check by content. This pins that end to
+    end: extraction yields two distinct files, and the audio read back from them
+    is exactly the two clusters the disc wrote -- neither lost to the fold,
+    verified as a multiset of PCM rather than by name. It holds on both a
+    case-insensitive and a case-sensitive filesystem, differing only in whether
+    the second file wears the ``_2`` suffix.
+    """
+    lower = fixtures.roland_sample("C_6E", (2,))
+    upper = fixtures.roland_sample("C_6e", (3,))
+    path = tmp_path / "case.iso"
+    path.write_bytes(fixtures.roland_s7xx_disc([lower, upper]))
+    out = tmp_path / "out"
+    results = list(extract_disc(FlatImage(path), RolandS7xxBackend(), 0, str(out)))
+
+    written = [r.path for r in results if isinstance(r, Extracted)]
+    assert len(written) == 2
+    # Two files on disk, not one silently overwriting the other.
+    assert len({os.path.basename(p) for p in written}) == 2
+    assert sorted(_wav_pcm(p) for p in written) == sorted(
+        [fixtures.roland_cluster(2), fixtures.roland_cluster(3)]
+    )
 
 
 # --- extraction ---------------------------------------------------------
