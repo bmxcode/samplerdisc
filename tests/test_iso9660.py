@@ -87,6 +87,40 @@ def test_origin_probe_selects_iso9660_for_an_iso_disc(tmp_path, payload):
     assert origin.backend.name == "iso9660"
 
 
+def test_origin_resolves_when_the_pregap_is_inside_the_cooked_stream(tmp_path, payload):
+    """ADR-0005 for the hybrid case it names, asserted rather than assumed.
+
+    The container hands over a cooked stream with the 150 zeroed sectors still
+    in it -- a hybrid disc with an ISO track ahead of the real filesystem, or a
+    raw rip -- so the origin probe, not an assumption of byte 0, must resolve to
+    the byte the primary volume descriptor sits on. Getting it wrong reads as an
+    empty disc, not an error.
+
+    This also pins the assumption that directory-record LBAs are relative to the
+    resolved origin: the backend reads ``origin + extent * SECTOR_SIZE``, and the
+    fixture's extents count from its own byte 0, so they land only if the origin
+    is threaded through. The read-back is the assertion that matters -- an
+    extent-vs-origin bug can list every file and still read pregap zeros, which
+    is exactly how the EMU3 bug in PR #49 hid behind a listing that looked whole.
+    """
+    pregap = b"\x00" * (150 * 2048)
+    body = fixtures.make_iso9660({"KICK.WAV": payload, "SNARE.WAV": payload}, label="HYBRID LIB")
+    path = tmp_path / "gap.iso"
+    path.write_bytes(pregap + body)
+    image = FlatImage(path)
+
+    origin = find_origin(image)
+    assert origin is not None
+    assert origin.backend.name == "iso9660"
+    assert origin.offset == 150 * 2048
+
+    volume = next(iter(origin.backend.volumes(image, origin.offset)))
+    assert volume.name == "HYBRID LIB"
+    assert [f.name for f in volume.files] == ["KICK.WAV", "SNARE.WAV"]
+    for entry in volume.files:
+        assert BACKEND.read_file(image, origin.offset, entry) == payload
+
+
 # Vintage Pro's SamplePool holds 1 061 files under 1 001 short names: MagicISO
 # caps the 8.3 name at twelve characters total and lets the "~1000" counter eat
 # the extension, so every index from 1000 up masters as VINTA~1000.E. Three
