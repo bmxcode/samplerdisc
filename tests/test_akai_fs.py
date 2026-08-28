@@ -114,7 +114,14 @@ def test_probe_rejects_zeros_and_noise(tmp_path):
 
 
 def test_origin_probe_finds_a_partition_behind_a_pregap(tmp_path):
-    """The whole point of ADR-0005, end to end."""
+    """ADR-0005 through the container path.
+
+    This exercises the *container*, not the origin probe: ``NrgImage`` reads the
+    DAOX track start and hands ``FlatImage`` the range past the 150-sector
+    pregap, so the probe sees the header at offset 0 of the cooked stream and
+    resolves there. The origin probe over a pregap left *in* the stream is the
+    next test.
+    """
     from samplerdisc.container.nrg import NrgImage
 
     path = tmp_path / "disc.nrg"
@@ -128,7 +135,14 @@ def test_origin_probe_finds_a_partition_behind_a_pregap(tmp_path):
 
 
 def test_origin_probe_finds_a_partition_offset_into_the_image(tmp_path):
-    """A hybrid disc: something else occupies the first sectors."""
+    """ADR-0005 through the origin probe itself.
+
+    A hybrid disc: something else occupies the first sectors, and unlike the
+    NRG case above the zeros are genuinely in the reported stream. So the origin
+    must be resolved to a non-zero offset by the probe scanning sectors, not
+    stripped by the container beforehand -- ``origin.offset == len(padding)`` is
+    what says the probe did the work.
+    """
     padding = b"\x00" * (8 * 2048)
     image = image_of(tmp_path, padding + simple_partition())
     origin = find_origin(image)
