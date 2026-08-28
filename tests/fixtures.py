@@ -955,6 +955,7 @@ def emu3_disc(
     second_header: str | None = None,
     header_names: dict[str, str] | None = None,
     eiv: bool = False,
+    form_banks: tuple[str, ...] = (),
     duplicate_sample_dir: bool = False,
     folder_flags: int | None = None,
     total_blocks: int = 4096,
@@ -1003,6 +1004,16 @@ def emu3_disc(
     directory. The bank slot is 1 MiB, so the allocation unit the reader has to
     recover is 2048 blocks.
 
+    ``form_banks`` names E-IV banks written as a native ``FORM/E4B0`` IFF bank
+    file instead of a flat record run: presets and samples in one container,
+    each sample an ``E3S1`` chunk (tag, big-endian size, then the record). Such
+    a bank has no flat sample directory, so it binds only through the FORM at
+    the address the allocation fit predicts (ADR-0032). A form bank given no
+    samples writes a FORM with an ``E4P1`` preset chunk and no ``E3S1`` -- the
+    ``Credits``/preset-only banks, which are correctly located and sample-free.
+    The fit still needs corroboration, so a disc using this must also carry two
+    or more flat multi-sample banks.
+
     ``duplicate_sample_dir`` writes the E-IV sample directory a second time,
     which real discs do: two chains then resolve to one base, and listing both
     reports each record twice.
@@ -1020,6 +1031,8 @@ def emu3_disc(
         BANK_MAGICS,
         BLOCK,
         EIV_CHAIN_STRIDE,
+        EIV_FORM_MAGIC,
+        EIV_FORM_TYPE,
         EIV_MAGIC,
         EIV_RECORD_OFFSET,
         END_POINTER_BIAS,
@@ -1080,6 +1093,34 @@ def emu3_disc(
             bank_dir += record
 
             at = data_at + slot * index
+            if eiv and bank_name in form_banks:
+                # A native FORM/E4B0 bank: presets and samples in one IFF
+                # container, each sample an E3S1 chunk. It has no flat sample
+                # directory, so nothing is added to ``sample_dir``; the reader
+                # finds the FORM at the address the fit predicts, which is this
+                # slot's start (base - EIV_RECORD_OFFSET), block aligned.
+                def e3s1_chunk(sample_name: str, rate: int, frames: int) -> bytes:
+                    pcm = stereo_audio_block(frames=frames // 2)[: frames * 2]
+                    head = bytearray(SAMPLE_HEADER_LEN)
+                    head[2:18] = name16(sample_name)
+                    struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
+                    struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+                    _emu3_pointers(
+                        head, len(pcm), (loops or {}).get(sample_name), sample_name in stereo
+                    )
+                    record = bytes(head) + pcm
+                    return EIV_MAGIC + struct.pack(">I", len(record)) + record
+
+                # An E4P1 preset chunk stands in for the presets a real bank
+                # carries; the reader steps over it to reach the samples.
+                body = bytearray(EIV_FORM_TYPE)
+                body += b"E4P1" + struct.pack(">I", 8) + b"\x00" * 8
+                for sample_name, rate, frames in samples:
+                    body += e3s1_chunk(sample_name, rate, frames)
+                form = EIV_FORM_MAGIC + struct.pack(">I", len(body)) + bytes(body)
+                image[at : at + len(form)] = form
+                index += 1
+                continue
             if eiv:
                 # The running offset counts from a base the reader has to
                 # recover; the records themselves are located only through it.

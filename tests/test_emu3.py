@@ -10,10 +10,12 @@ from samplerdisc.fs.emu3 import (
     BANK_MAGICS,
     OFF_SAMPLE_END_L,
     OFF_SAMPLE_END_R,
+    OFF_SAMPLE_RATE,
     OFF_SAMPLE_START_L,
     OFF_SAMPLE_START_R,
     SAMPLE_HEADER_LEN,
     Emu3Backend,
+    _form_e3s1_chunks,
     is_plausible_name,
     record_extent,
 )
@@ -720,7 +722,153 @@ def test_folder_entries_need_not_carry_the_0xffff_flags(tmp_path):
     assert len(list(BACKEND.volumes(image, 0))) == 3
 
 
-# --- loop points (D17, ADR-0025) ----------------------------------------
+# --- FORM/E4B0 banks (D25, ADR-0032) ------------------------------------
+
+
+#: Flat banks alone fix the allocation fit; the FORM banks carry no flat
+#: directory and bind only through the FORM at the address that fit predicts --
+#: exactly as on the real discs, where the fit rests on the flat sample banks.
+#: Two multi-sample banks corroborate the unit and a single-sample bank pins it
+#: (a lone pair fits several units at some bias). ``Studio Snare`` embeds two
+#: samples as ``E3S1`` chunks; ``Credits`` is a FORM with a preset chunk and no
+#: sample -- the residual case.
+EIV_FORM_FOLDERS = [
+    (
+        "Studio Kits",
+        [
+            ("Live Room", [("Kick Axis", 44100, 512), ("Snare Top", 44100, 256)]),
+            ("Room Verb", [("Tom Floor", 24000, 300), ("Hat Tight", 44100, 128)]),
+            ("Studio Snare", [("Snare 01", 44100, 400), ("Snare 02", 22000, 220)]),
+            # The single-sample flat bank sits a slot past the FORM so its base
+            # is one the true unit alone explains -- a half-unit fit would need a
+            # bank start this disc does not have, which is what pins the fit.
+            ("Perc Kit", [("Shaker", 32000, 200)]),
+            ("Credits", []),
+        ],
+    ),
+]
+FORM_BANKS = ("Studio Snare", "Credits")
+
+
+def test_a_form_e4b0_bank_extracts_its_e3s1_chunk_samples(tmp_path):
+    """The D25 recovery: a native FORM/E4B0 bank is not empty.
+
+    Its samples are ``E3S1`` chunks inside the IFF container rather than a flat
+    record run, so the chained-directory reader bound nothing and listed it
+    empty. The same per-disc allocation fit the flat banks establish predicts
+    the FORM's address, and the chunk body is the record the rest of the path
+    already reads (ADR-0032).
+    """
+    image = image_of(
+        tmp_path, fixtures.emu3_disc(EIV_FORM_FOLDERS, eiv=True, form_banks=FORM_BANKS), "form.iso"
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    snare = volumes["Studio Snare"]
+    assert [f.name for f in snare.files] == ["Snare 01", "Snare 02"]
+    assert [f.raw_type for f in snare.files] == [44100, 22000]
+    assert not snare.note
+    # The flat banks that corroborate the fit are untouched by the new path.
+    assert [f.name for f in volumes["Live Room"].files] == ["Kick Axis", "Snare Top"]
+    # And the payload comes back verbatim, so it is really read, not just listed.
+    expected = fixtures.stereo_audio_block(frames=400 // 2)[: 400 * 2]
+    assert BACKEND.read_file(image, 0, snare.files[0]) == expected
+
+
+def test_a_form_bank_sample_is_sized_by_its_chunk(tmp_path):
+    """The IFF chunk size is the record length, as the directory's BE length is
+    for a flat bank -- the record's own ``+34`` is unusable on E-IV either way.
+    """
+    image = image_of(
+        tmp_path, fixtures.emu3_disc(EIV_FORM_FOLDERS, eiv=True, form_banks=FORM_BANKS), "form.iso"
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    first = volumes["Studio Snare"].files[0]
+    assert first.size == 400 * 2
+    assert len(BACKEND.read_file(image, 0, first)) == first.size
+
+
+def test_a_sample_free_form_bank_is_noted_not_silent(tmp_path):
+    """A FORM the disc placed here that holds no sample chunk -- the ``Credits``
+    text banks and a few preset banks -- is correctly located and genuinely
+    empty, and must say so with a note of its own rather than the generic one,
+    now that a bank without a flat directory may still carry audio (ADR-0012).
+    """
+    image = image_of(
+        tmp_path, fixtures.emu3_disc(EIV_FORM_FOLDERS, eiv=True, form_banks=FORM_BANKS), "form.iso"
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    credits = volumes["Credits"]
+    assert credits.files == []
+    assert credits.note == "the bank holds presets or text and no samples; listed only"
+    assert "no sample directory" not in credits.note
+
+
+#: The FORM bank last, so truncating it leaves the three flat banks that pin
+#: the allocation fit intact -- the cut is meant to damage the FORM, not the fit.
+EIV_TRUNC_FOLDERS = [
+    (
+        "Studio Kits",
+        [
+            ("Live Room", [("Kick Axis", 44100, 512), ("Snare Top", 44100, 256)]),
+            ("Room Verb", [("Tom Floor", 24000, 300), ("Hat Tight", 44100, 128)]),
+            ("Perc Kit", [("Shaker", 32000, 200)]),
+            ("Studio Snare", [("Snare 01", 44100, 400), ("Snare 02", 22000, 220)]),
+        ],
+    ),
+]
+
+
+def test_a_truncated_form_bank_degrades_to_its_whole_samples(tmp_path):
+    """Damaged input degrades, it does not crash (ADR-0012).
+
+    Cutting the image partway through the FORM's second sample chunk drops that
+    sample -- its body is not wholly present -- and keeps the first, without
+    raising and without reading past the end of the image.
+    """
+    data = fixtures.emu3_disc(EIV_TRUNC_FOLDERS, eiv=True, form_banks=("Studio Snare",))
+    # The FORM is the last bank; find its second sample and cut into it, so the
+    # flat banks that pin the fit are untouched and only the FORM is damaged.
+    second = data.find(b"Snare 02")
+    assert second != -1
+    truncated = data[: second + 32]  # inside the record, before its PCM ends
+    volumes = {v.name: v for v in BACKEND.volumes(image_of(tmp_path, truncated, "cut.iso"), 0)}
+    assert [f.name for f in volumes["Studio Snare"].files] == ["Snare 01"]
+
+
+def _form_bytes(chunks: list[bytes], declared_size: int | None = None) -> bytes:
+    body = b"E4B0" + b"".join(chunks)
+    size = len(body) if declared_size is None else declared_size
+    return b"FORM" + struct.pack(">I", size) + body
+
+
+def _e3s1_chunk(name: str, pcm: bytes, rate: int = 44100) -> bytes:
+    head = bytearray(SAMPLE_HEADER_LEN)
+    head[2 : 2 + len(name)] = name.encode("ascii")
+    struct.pack_into("<I", head, OFF_SAMPLE_START_L, SAMPLE_HEADER_LEN)
+    struct.pack_into("<I", head, OFF_SAMPLE_RATE, rate)
+    record = bytes(head) + pcm
+    return b"E3S1" + struct.pack(">I", len(record)) + record
+
+
+def test_the_form_walk_recovers_the_last_chunk_past_an_understated_size(tmp_path):
+    """The declared FORM size understates the container by a few bytes on every
+    reference disc: the last ``E3S1`` chunk's body ends just past it and only
+    garbage follows. So the size bounds where a chunk may *begin*, not where its
+    body may end -- the last chunk is recovered, and the garbage that follows is
+    not walked into.
+    """
+    two = [_e3s1_chunk("First", b"\x11\x22" * 40), _e3s1_chunk("Second", b"\x33\x44" * 60)]
+    # Understate by four, as the discs do, then append a chunk that decodes as
+    # an enormous size -- the next region's bytes, seen as a chunk header.
+    body_len = len(b"E4B0") + sum(len(c) for c in two)
+    blob = _form_bytes(two, declared_size=body_len - 4)
+    blob += b"\xff\xff\xff\xff" + struct.pack(">I", 1 << 30) + b"\x00" * 64
+    image = image_of(tmp_path, blob + b"\x00" * 4096, "understated.iso")
+    chunks = list(_form_e3s1_chunks(image, 0))
+    assert len(chunks) == 2  # both recovered, garbage not walked
+    records = [image.read(off, length) for off, length in chunks]
+    assert records[0][2:7] == b"First"
+    assert records[1][2:8] == b"Second"
 
 
 def _pointers(frames, loop=None, *, channel="l", other_zero=True):

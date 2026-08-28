@@ -200,6 +200,29 @@ EIV_CHAIN_STRIDE = 10
 #: to place one -- ADR-0015's objection to arithmetic on ``start`` stands.
 EIV_UNITS = (256, 512, 1024, 2048, 4096, 8192)
 
+#: An E-IV bank also occurs as a native ``FORM/E4B0`` IFF bank file -- presets
+#: and samples in one container -- rather than as a flat run of records indexed
+#: by a chained ``E3S1`` directory. Each embedded sample is an ``E3S1`` IFF
+#: *chunk*: the four-byte tag, a big-endian u32 size, then an ordinary sample
+#: record (the 92-byte header and its PCM). The chunk size plays the part the
+#: directory's big-endian length plays for a flat bank, and the record inside
+#: is exactly what the flat path reads at ``EIV_RECORD_OFFSET`` -- so the same
+#: record, pointer, loop and stereo path applies unchanged.
+#:
+#: The single per-disc allocation fit predicts a FORM bank's base as it does a
+#: flat bank's: the ``FORM`` tag sits at ``BLOCK * (unit * start + bias)``,
+#: exactly where a flat bank's first ``E3S1`` record prefix would. Only the
+#: interior differs. See docs/formats/emu3.md, "The FORM/E4B0 bank" (ADR-0032).
+EIV_FORM_MAGIC = b"FORM"
+EIV_FORM_TYPE = b"E4B0"
+OFF_FORM_SIZE = 4
+OFF_FORM_TYPE = 8
+FORM_HEADER_LEN = 12
+
+#: An IFF chunk header: a four-byte id and a big-endian u32 size. The E-IV
+#: sample record is the body that follows it.
+IFF_CHUNK_HEADER = 8
+
 _SCAN_CHUNK = 1 << 23
 
 #: Enough to cover a directory entry (32) and a record's header reached at
@@ -583,6 +606,48 @@ def _eiv_unit(
     return best[2], best[3]
 
 
+def _form_e3s1_chunks(image: SectorImage, at: int) -> Iterator[tuple[int, int]]:
+    """Walk a ``FORM/E4B0`` bank's top-level ``E3S1`` sample chunks.
+
+    ``at`` is the image-absolute offset of the ``FORM`` tag. Yields
+    ``(record_offset, record_length)`` for each embedded sample -- the absolute
+    offset of the chunk body, which is a sample record, and its declared length.
+
+    The declared FORM size **understates** the container by a few bytes on
+    every reference disc: the last ``E3S1`` chunk's body ends 4 to 12 bytes past
+    it, and only the next region's bytes follow. So the declared size bounds
+    where a chunk may *begin* -- past it lies garbage that decodes as an
+    enormous chunk -- while a chunk's body is bounded by the image alone. A
+    chunk whose body is not wholly present is dropped, so a truncated bank
+    degrades to the samples that survive rather than raising (ADR-0012).
+    """
+    head = image.read(at, FORM_HEADER_LEN)
+    if (
+        len(head) < FORM_HEADER_LEN
+        or head[:4] != EIV_FORM_MAGIC
+        or head[OFF_FORM_TYPE : OFF_FORM_TYPE + 4] != EIV_FORM_TYPE
+    ):
+        return
+    (form_size,) = struct.unpack_from(">I", head, OFF_FORM_SIZE)
+    header_end = min(at + IFF_CHUNK_HEADER + form_size, image.size)
+    position = at + FORM_HEADER_LEN
+    while position + IFF_CHUNK_HEADER <= header_end:
+        header = image.read(position, IFF_CHUNK_HEADER)
+        if len(header) < IFF_CHUNK_HEADER:
+            return
+        tag = header[:4]
+        (size,) = struct.unpack_from(">I", header, 4)
+        if size <= 0:
+            return
+        body = position + IFF_CHUNK_HEADER
+        if body + size > image.size:
+            return  # tail damage: the chunk body is not wholly present.
+        if tag == EIV_MAGIC:
+            yield body, size
+        # IFF pads an odd chunk to a two-byte boundary.
+        position = body + size + (size & 1)
+
+
 class Emu3Backend:
     name = "emu3"
 
@@ -799,29 +864,52 @@ class Emu3Backend:
         return start, start + SAMPLE_AREA_PREAMBLE + length
 
     def _eiv(self, image: SectorImage, offset: int, banks: list[_Bank]):
-        """Locate E-IV sample directories and bind them to banks by address.
+        """Locate E-IV banks and bind each to the samples at its predicted base.
 
-        Returns ``(tags, bound)`` where ``bound`` maps a bank's ``start`` to
-        the ``(base, entries)`` proven to live at the address that start
-        predicts. Every address here is relative to ``offset``, the filesystem
-        origin, so a bank absent from the map has no confirmed samples and
-        stays listed with its note.
+        Returns ``(tags, bound, form_bound)``. ``bound`` maps a bank's ``start``
+        to the ``(base, entries)`` of the confirmed flat ``E3S1`` directory that
+        lives at the address that start predicts. ``form_bound`` maps a bank's
+        ``start`` to the offset-relative address of a ``FORM/E4B0`` IFF bank
+        sitting there instead -- the native E-IV bank file, whose samples are
+        ``E3S1`` chunks rather than a flat record run (ADR-0032). The single
+        per-disc allocation fit places both; only the interior differs, so a
+        bank binds one way or the other, never both.
+
+        Every address is relative to ``offset``, the filesystem origin. A bank
+        in neither map has no samples the disc lets us reach and stays noted.
         """
         tags = _eiv_scan(image, offset)
         bases, corroborated = _eiv_bases(tags, _eiv_chains(_eiv_entries(tags)))
         if not corroborated:
-            return tags, {}
+            return tags, {}, {}
         fitted = _eiv_unit(sorted(corroborated), sorted(bases), [bank.start for bank in banks])
         if fitted is None:
-            return tags, {}
+            return tags, {}, {}
         unit, bias = fitted
         bound: dict[int, tuple[int, list[_EivEntry]]] = {}
+        form_bound: dict[int, int] = {}
         for bank in banks:
-            base = BLOCK * (unit * bank.start + bias) + EIV_RECORD_OFFSET
+            block = unit * bank.start + bias
+            if block < 0:
+                continue
+            base = BLOCK * block + EIV_RECORD_OFFSET
             entries = bases.get(base)
             if entries is not None:
                 bound[bank.start] = (base, entries)
-        return tags, bound
+                continue
+            # No flat directory here -- but the same address may hold the FORM
+            # tag of a native E-IV bank file. ``base - EIV_RECORD_OFFSET`` is the
+            # block-aligned address a flat bank's first record prefix would sit
+            # at, and it is where the FORM starts.
+            form_at = BLOCK * block
+            head = image.read(offset + form_at, FORM_HEADER_LEN)
+            if (
+                len(head) >= FORM_HEADER_LEN
+                and head[:4] == EIV_FORM_MAGIC
+                and head[OFF_FORM_TYPE : OFF_FORM_TYPE + 4] == EIV_FORM_TYPE
+            ):
+                form_bound[bank.start] = form_at
+        return tags, bound, form_bound
 
     def _eiv_samples(self, tags: dict[int, bytes], base: int, entries) -> Iterator[File]:
         """One bank's samples, sized by the directory rather than the record.
@@ -854,6 +942,42 @@ class Emu3Backend:
                 meta=sample_pointers(window[EIV_RECORD_OFFSET:]),
             )
 
+    def _eiv_form_samples(self, image: SectorImage, offset: int, form_at: int) -> Iterator[File]:
+        """One ``FORM/E4B0`` bank's samples, one per embedded ``E3S1`` chunk.
+
+        The chunk body is an ordinary sample record, so this is the flat path
+        with the IFF chunk header standing in for the ``E3S1`` directory: the
+        chunk's big-endian size is the record length, and the record's own
+        header carries the name, rate and pointer block the rest of the E-mu
+        path reads. A chunk whose record does not parse -- a short body from
+        tail damage, an implausible name, a length that is not a positive even
+        number of PCM bytes -- is dropped, never guessed at (ADR-0012).
+        """
+        for record, length in _form_e3s1_chunks(image, offset + form_at):
+            head = image.read(record, SAMPLE_HEADER_LEN)
+            if len(head) < SAMPLE_HEADER_LEN:
+                continue
+            raw = head[SAMPLE_NAME_OFFSET : SAMPLE_NAME_OFFSET + ENTRY_NAME_LEN]
+            if not is_plausible_name(raw):
+                continue
+            name = decode_name(raw)
+            if not name:
+                continue
+            size = length - SAMPLE_HEADER_LEN
+            if size <= 0 or size % 2:
+                continue
+            (rate,) = struct.unpack_from("<I", head, OFF_SAMPLE_RATE)
+            if not MIN_RATE <= rate <= MAX_RATE:
+                continue
+            yield File(
+                name=name,
+                kind="sample",
+                size=size,
+                start_block=record - offset + SAMPLE_HEADER_LEN,
+                raw_type=rate,
+                meta=sample_pointers(head),
+            )
+
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
         banks = self._banks(image, offset)
         headers = self._bank_headers(image, offset)
@@ -868,15 +992,29 @@ class Emu3Backend:
         # a bank actually needs it. An all-EIII disc never pays for it.
         eiv_tags: dict[int, bytes] = {}
         eiv_bound: dict[int, tuple[int, list[_EivEntry]]] = {}
+        eiv_form: dict[int, int] = {}
         if any(bank.name not in located for bank in banks):
-            eiv_tags, eiv_bound = self._eiv(image, offset, banks)
+            eiv_tags, eiv_bound, eiv_form = self._eiv(image, offset, banks)
         for bank in banks:
             volume = Volume(name=bank.name, start_block=bank.start)
             at = located.get(bank.name)
             if at is None:
                 found = eiv_bound.get(bank.start)
+                form_at = eiv_form.get(bank.start)
                 if found is not None:
                     volume.files = list(self._eiv_samples(eiv_tags, *found))
+                elif form_at is not None:
+                    # A native ``FORM/E4B0`` E-IV bank: its samples are the
+                    # ``E3S1`` chunks inside the IFF container (ADR-0032).
+                    volume.files = list(self._eiv_form_samples(image, offset, form_at))
+                    if not volume.files:
+                        # A FORM the disc placed here that holds no sample
+                        # chunk -- the ``Credits`` text banks and a few
+                        # preset/globals banks. Correctly located and genuinely
+                        # sample-free, which the note must say rather than
+                        # borrowing the "no sample directory" wording, now that
+                        # a bank without a flat directory may still carry audio.
+                        volume.note = "the bank holds presets or text and no samples; listed only"
                 elif located:
                     # A bank the directory lists and no header on the disc
                     # claims. On an EIII/ESI disc that is the sampler's own
@@ -886,10 +1024,10 @@ class Emu3Backend:
                     # E-IV case and named a structure this disc never has.
                     volume.note = "no bank header found for this bank; listed only"
                 else:
-                    # An E-IV bank with no confirmed sample directory. Real,
-                    # correctly named, and not guessed at -- the note is what
-                    # tells this apart from a probe that matched garbage
-                    # (ADR-0012), and the disc-backed suite asserts it.
+                    # An E-IV bank with neither a confirmed sample directory nor
+                    # a FORM at its predicted base. Real, correctly named, and
+                    # not guessed at -- the note is what tells this apart from a
+                    # probe that matched garbage (ADR-0012).
                     volume.note = "no sample directory found for this bank; listed only"
             else:
                 after = [b for b in boundaries if b > at]

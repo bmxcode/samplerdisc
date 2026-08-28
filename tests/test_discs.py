@@ -132,6 +132,10 @@ _HEAD_BYTES = 1 << 20
 _HEAD_DIGEST = {
     "emu-classics": "3882c2319cc27871",
     "eiv-studio": "f1f1c805136d4881",
+    # Producer Series Vol. 2 (More Studio Essentials) shares eiv-studio's
+    # 399 077 376-byte size (one mastering run, two libraries), so it too needs
+    # the first-megabyte digest -- their EMU3 headers and bank directories differ.
+    "eiv-studio-vol2": "7914ae592a6999fc",
     # Vol. 10 - Elements of Sound 1MB shares its size with Vol. 11 (the 2MB
     # cut of the same library), so it needs the first-megabyte digest to be
     # told apart -- their bank directories differ.
@@ -619,9 +623,23 @@ _EMU3 = {
     "emu-classics": (526_723_072, 22, 1516, 1133, 185, "e1398c11a9e7cb02"),
     "vintage": (527_030_272, 16, 993, 846, 2, "fbcc378dd173f96c"),
     "ditto-drums": (308_121_600, 48, 979, 14, 0, "47b17bcd6028ec29"),
+    # D25 reads the E-IV banks stored as native ``FORM/E4B0`` IFF files, whose
+    # samples are ``E3S1`` chunks inside the container rather than a flat record
+    # run indexed by a chained directory (ADR-0032). Those banks bound nothing
+    # before and were listed empty; now they extract. `eiv-analogia` is the
+    # control -- it has no such bank, so its four fields are byte-for-byte what
+    # D23/D18 left, which is the check that the new path did not touch the old.
+    # `eiv-studio` gains 987 samples (2822 -> 3809), `eiv-vitous` 24 (828 ->
+    # 852). Three more E-IV discs are pinned for the first time by this
+    # recovery, including `eiv-phatt-cd1`, whose one previously-empty bank alone
+    # yields 692 of its 4552. The four residual `Credits`/preset banks that hold
+    # no sample chunk stay noted (see _EMU3 volume/note invariant below).
     "eiv-analogia": (293_912_576, 12, 449, 6, 279, "5d8faa38572914cb"),
-    "eiv-studio": (399_077_376, 230, 2822, 2214, 320, "8802808655deea30"),
-    "eiv-vitous": (532_443_136, 44, 828, 198, 828, "66c179be5b78cbd2"),
+    "eiv-studio": (399_077_376, 230, 3809, 3029, 320, "25fcc612ea458b0e"),
+    "eiv-studio-vol2": (399_077_376, 168, 1665, 1093, 474, "fbe642b97e5cec43"),
+    "eiv-vol5": (524_906_496, 96, 1104, 596, 930, "d81594c686b7b932"),
+    "eiv-phatt-cd1": (629_764_096, 17, 4552, 944, 898, "a96a570c73e8f181"),
+    "eiv-vitous": (532_443_136, 44, 852, 208, 828, "add35582e5187cc7"),
     # D24 recovers a bank whose header carries a mis-typed copy of its
     # directory name (ADR-0031). ``ditto-drums`` gains ``PERCUSSION#1   X``'s
     # 31 records above; these two discs are pinned for the first time by it.

@@ -409,7 +409,7 @@ The E3 keeps root key in its preset, and presets are not read. So an E-mu WAV ca
 
 ## E-IV: the `E3S1` sample directory
 
-E-IV banks have no header to locate them by, so their samples are reached through a directory instead. `E3S1` has **two distinct uses**, which is why the tag count runs at roughly twice the record count:
+E-IV banks have no header to locate them by. Most are reached through a chained `E3S1` sample directory, described here; the rest are native `FORM/E4B0` IFF banks whose samples are `E3S1` chunks, described in "The `FORM/E4B0` bank" below. `E3S1` has **two distinct uses** in the flat layout, which is why the tag count runs at roughly twice the record count:
 
 | Disc | `E3S1` tags | sample records | `E4P1` (presets) | banks |
 |---|---|---|---|---|
@@ -474,6 +474,33 @@ Two chains can resolve to the same base — a bank whose directory is written tw
 The EIII rule — `+34` plus a bias of two equals the distance to the next record — matches on **0 of 522, 0 of 3893 and 0 of 934** consecutive pairs across the three E-IV discs. No other offset survives all three either: `+34` with a bias of four scores 93% on `eiv-vitous` but 18% on `eiv-studio`, and `+30` with a bias of four scores 74% on `eiv-studio` and **0%** on `eiv-vitous`. The directory's big-endian length matches every sample on all three discs, and is the authority.
 
 `OFF_SAMPLE_HEADER_LEN` is not usable as a validity test either. It reads 92 on most E-IV records and **0 on 547 of `eiv-studio`'s** — those carry 92 at `+26` instead. Requiring it drops a fifth of the disc. It is not needed: the directory already says where the record is and what it is called.
+
+## E-IV: the `FORM/E4B0` bank
+
+A flat run of records indexed by a chained directory is not the only way an E-IV bank is stored. Across twelve discs, **170 banks of 788** are named by the folder directory, declare a non-zero length, and hold no flat `E3S1` directory at the address the allocation fit predicts — and every one of them holds a native `FORM/E4B0` IFF bank file there instead ([ADR-0032](../adr/0032-read-the-eiv-form-e4b0-bank-and-its-embedded-samples.md)). The two are told apart by what sits at that address:
+
+| At `512 × (unit × start + bias)` | Bank kind |
+|---|---|
+| a raw `E3S1` record (its 8-byte tag prefix) | flat bank, read through its chained directory |
+| `FORM` … `E4B0` | native IFF bank, read through its chunks |
+
+**The same per-disc allocation fit predicts both.** The `FORM` tag sits at exactly the block-aligned address a flat bank's first record prefix would — `base − 8`. So the fit measured from the flat sample banks (above) places the FORM banks with no new inference; the FORM banks carry no flat chain and cannot vote on it.
+
+### The container
+
+`FORM/E4B0` is IFF: the tag `FORM`, a big-endian u32 size, the form type `E4B0`, then a sequence of chunks. Each chunk is a four-byte id, a big-endian u32 size, and a body; an odd body is padded to a two-byte boundary. The chunks are `TOC1`, `E4Ma`, one or more `E4P1` presets, and one **`E3S1` chunk per sample** — whose body is an ordinary 92-byte sample record and its PCM, the same structure the flat path reads at `EIV_RECORD_OFFSET`. The chunk's big-endian size is the record length, playing the part the directory's big-endian length plays for a flat bank.
+
+`eiv-studio`'s `Stein's Grand` is the worked example: a `FORM/E4B0` of eight `E3S1` chunks after one `E4P1`, `Stein Piano B 0` through `Stein Piano G#3`, 987 such records across that disc's 100 formerly-empty banks.
+
+### The declared size understates the container
+
+The `FORM` size is **short by 4 to 12 bytes** on every reference disc: the last `E3S1` chunk's body ends just past `FORM + 8 + size`, and the bytes after it are the next region's, which decode as a chunk of absurd size. So the declared size bounds where a chunk may *begin* — a chunk header past it is garbage — while a chunk's body is bounded by the image alone. Bounding the body by the declared size instead drops the last sample of most banks: 91 of `eiv-studio`'s alone.
+
+### A `FORM` with no `E3S1` chunk is genuinely sample-free
+
+Eight of the 170 hold a FORM with presets or text and no sample chunk: the four `Credits` text banks (`eiv-3d`, `eiv-studio-vol2` and the two others), and four `E-mu Systems 96` preset/globals banks on `eiv-studio`. These are correctly located and hold no audio, and are noted `the bank holds presets or text and no samples; listed only` — distinct from the `no sample directory` note, which is wrong for a bank that carries audio without a flat directory. The other 162 read: ~2 017 samples across the twelve discs, `eiv-studio` alone gaining 987 (2 822 → 3 809). None duplicates a sample already read from a flat bank.
+
+`E4P1` presets — the key ranges, envelopes and root key — are **not** read, here or anywhere; the deliverable is the audio ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
 
 ## Stereo: the payload is split, not interleaved
 
@@ -607,10 +634,10 @@ Whole-disc listings, with the samples the record declares stereo:
 | `vintage` | 16 | 993 | 2 |
 | `ditto-drums` | 48 | 979 | 0 |
 | `eiv-analogia` | 12 | 449 | 279 |
-| `eiv-studio` | 230 | 2 822 | 320 |
-| `eiv-vitous` | 44 | 828 | 828 |
+| `eiv-studio` | 230 | 3 809 | 320 |
+| `eiv-vitous` | 44 | 852 | 828 |
 
-**2 843 of 19 402**, and a stereo sample is still one sample: the counts above do not move when the channel count is read, only the file's shape does. `ditto-drums` gained 31 with D24 — its `PERCUSSION#1   X` recovered from a mistyped header name, from 948 — and two discs not in this reference table were pinned for the first time by the same recovery: `elements1mb` (102 volumes, 1 465 samples, `Electric Grand X`'s 9 recovered) and `heavy` (68 volumes, 870 samples, three banks recovered) ([ADR-0031](../adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md)).
+**2 843 of 20 413**, and a stereo sample is still one sample: the stereo counts do not move when the channel count is read, only the file's shape does. `ditto-drums` gained 31 with D24 — its `PERCUSSION#1   X` recovered from a mistyped header name, from 948 — and two discs not in this reference table were pinned for the first time by the same recovery: `elements1mb` (102 volumes, 1 465 samples, `Electric Grand X`'s 9 recovered) and `heavy` (68 volumes, 870 samples, three banks recovered) ([ADR-0031](../adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md)). **D25 moved the two E-IV sample counts** — `eiv-studio` 2 822 → 3 809, `eiv-vitous` 828 → 852 — by reading the `FORM/E4B0` banks above; the stereo counts did **not** move, because the recovered records are mono. `eiv-analogia` has no such bank and is the control: its three figures are exactly D18's.
 
 Samples carrying a loop, of those totals:
 
@@ -624,18 +651,18 @@ Samples carrying a loop, of those totals:
 | `vintage` | 993 | 846 | 85% |
 | `ditto-drums` | 979 | 14 | 1% |
 | `eiv-analogia` | 449 | 6 | 1% |
-| `eiv-studio` | 2 822 | 2 214 | 78% |
-| `eiv-vitous` | 828 | 198 | 24% |
+| `eiv-studio` | 3 809 | 3 029 | 80% |
+| `eiv-vitous` | 852 | 208 | 24% |
 
-**10 878 of 19 402** — `ditto-drums`'s 31 newly recovered records carry no loop (percussion one-shots), so the loop total is unchanged and only the sample total moved. These are D23's numbers: the whole-extent "no loop" is now refused at both ends rather than only where it starts at frame 0, so the loop-over-the-whole-file that every disc writes with a small fixed inset stops being emitted — `ditto-drums` from 948 to 14, `eiv-analogia` from 449 to 6, `eiv-vitous` from 826 to 198 ([ADR-0030](../adr/0030-the-whole-extent-no-loop-is-refused-at-both-ends.md), and "The whole-extent 'no loop'" above). The D21 revision's figures were `esi32-gm` 1 778, `protozoa` 5 244, `eiiix-1` 1 215, `eiiix-2` 1 264, `emu-classics` 1 435, `vintage` 953, `ditto-drums` 948, `eiv-analogia` 449, `eiv-studio` 2 551, `eiv-vitous` 826 — every one of them counting the no-loops. The **sample** counts, the stereo counts and every payload digest are unchanged across D23: only loop emission moved, which is what says the read path was not touched.
+**11 703 of 20 413** — D25's `FORM/E4B0` recovery moved `eiv-studio`'s loops 2 214 → 3 029 and `eiv-vitous`'s 198 → 208, on the samples it recovered; the loop is decoded from the same pointer block by the same rule, so a loop that moved would be arithmetic that drifted. `ditto-drums`'s 31 newly recovered records carry no loop (percussion one-shots), so the loop total is unchanged and only the sample total moved. These are D23's numbers: the whole-extent "no loop" is now refused at both ends rather than only where it starts at frame 0, so the loop-over-the-whole-file that every disc writes with a small fixed inset stops being emitted — `ditto-drums` from 948 to 14, `eiv-analogia` from 449 to 6, `eiv-vitous` from 826 to 198 ([ADR-0030](../adr/0030-the-whole-extent-no-loop-is-refused-at-both-ends.md), and "The whole-extent 'no loop'" above). The D21 revision's figures were `esi32-gm` 1 778, `protozoa` 5 244, `eiiix-1` 1 215, `eiiix-2` 1 264, `emu-classics` 1 435, `vintage` 953, `ditto-drums` 948, `eiv-analogia` 449, `eiv-studio` 2 551, `eiv-vitous` 826 — every one of them counting the no-loops. The **sample** counts, the stereo counts and every payload digest are unchanged across D23: only loop emission moved, which is what says the read path was not touched.
 
 These are the regression baseline: any change to the shared record parser is a bug if they move. **They are now asserted by `tests/test_discs.py`, pinned by disc size** — a table in a document is a note, not a test, and two of these numbers were wrong for a release with a green suite. The suite also pins the **SHA-256 of every sample payload per disc**, because a count table cannot see a payload that shifted by a byte while staying the same length, and the **stereo counts** beside them, because the third condition of the gate is exactly the kind of thing a later simplification removes. On a stereo sample the suite additionally de-interleaves what was written and requires it to reproduce the disc's two blocks byte for byte: the audio moved, and it must be the same audio.
 
-**These are D21's numbers and the previous revision's are all wrong**, on every EIII/ESI disc: `esi32-gm` 2 265, `protozoa` 5 852, `eiiix-1` 1 189 and `eiiix-2` 1 333, each of them a record extent taken from the wrong channel's end pointer ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)). The three E-IV rows are unchanged and are the control: those discs size a record from their own big-endian directory and never read `+34`.
+**These are D21's numbers and the previous revision's are all wrong**, on every EIII/ESI disc: `esi32-gm` 2 265, `protozoa` 5 852, `eiiix-1` 1 189 and `eiiix-2` 1 333, each of them a record extent taken from the wrong channel's end pointer ([ADR-0029](../adr/0029-a-record-is-closed-by-the-channel-it-declares.md)). The three E-IV rows did not move across D21 and were the control there: those discs size a record from their own big-endian directory and never read `+34`. D25 later moved `eiv-studio` and `eiv-vitous` for an unrelated reason — the `FORM/E4B0` recovery above — and `eiv-analogia`, which has no such bank, is still exactly where D18 left it.
 
 `esi32-gm`'s 2 424 and `protozoa`'s 6 788 are what the revision before *that* gave, and both counted another bank's records; [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md) has the accounting. `esi32-gm` is the instructive one: it was believed clean, and its last bank ran to the end of the image and was credited with 193 records belonging to the two banks in front of it.
 
-Each of the seven EIII/ESI discs lists one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract; `esi32-gm`, `eiiix-1` and `eiiix-2` also list the sampler's own code banks — `E3 Main Code`, `E3X Main Code` — which carry no bank header and are noted as such. On `eiv-studio`, 100 of the 230 banks have no confirmed sample directory and are listed with a note rather than guessed at. That disc carries 901 `E4P1` presets, and preset-only banks are the likely explanation — it is not established, so it is not claimed.
+Each of the seven EIII/ESI discs lists one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract; `esi32-gm`, `eiiix-1` and `eiiix-2` also list the sampler's own code banks — `E3 Main Code`, `E3X Main Code` — which carry no bank header and are noted as such. On `eiv-studio`, the 100 banks that had no flat sample directory are the `FORM/E4B0` banks read by D25 above: 96 now extract, adding 987 samples, and the four `E-mu Systems 96` preset banks that carry no sample chunk stay noted. That disc's 901 `E4P1` presets remain unread — the deliverable is the audio ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
 
 ## Traps
 
@@ -654,6 +681,9 @@ Each of the seven EIII/ESI discs lists one index bank with a note and no samples
 - Each folder's bank directory must be bounded by the next folder's start block; they sit two blocks apart on `eiv-studio`.
 - On E-IV the record's own length field is unusable and the directory's is authoritative. The EIII rule matches 0 of 5 349 consecutive pairs.
 - An E-IV sample directory can appear twice. Deduplicate by address or every one of its records is listed twice.
+- An E-IV bank with no flat `E3S1` directory at its predicted base is not empty. 170 of 788 across twelve discs are native `FORM/E4B0` IFF banks, samples as `E3S1` chunks inside; the same fit predicts both, and reading the chunks recovers ~2 017 samples ([ADR-0032](../adr/0032-read-the-eiv-form-e4b0-bank-and-its-embedded-samples.md)).
+- A `FORM/E4B0`'s declared size understates it by 4–12 bytes — the last `E3S1` chunk overruns it and garbage follows. Bound where a chunk may *begin* by the size, its body by the image; bounding the body by the size drops 91 of `eiv-studio`'s samples.
+- A `FORM/E4B0` with no `E3S1` chunk (`Credits`, `E-mu Systems 96`) is genuinely sample-free and gets its own note, not the `no sample directory` one — that wording is wrong for a bank that carries audio without a flat directory.
 - The paired length fields **are** a channel count, and the measurement that said otherwise tested interleaved stereo when the format splits into blocks. 2 843 samples are stereo.
 - A channel count is not enough on its own. Require `end_L + 2 == start_R`. It rejected 65 records when the extent came from `+34`; it rejects none now, and it is what makes the extent's own two-channel test exact.
 - The two halves of a decaying note correlate at 0.94 by RMS envelope, so that measure cannot tell a stereo pair from a single note. Divide the envelope by its own trend, or correlate the waveform at a lag.
