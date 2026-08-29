@@ -67,7 +67,7 @@ def _source_url(root: Path, slug: str) -> str | None:
     if not details.is_file():
         return None
     for line in details.read_text(encoding="utf-8", errors="replace").splitlines():
-        if "url:" in line.lower() and "http" in line:
+        if "url" in line.lower() and "http" in line:
             return "http" + line.split("http", 1)[1].split()[0].strip()
     return None
 
