@@ -65,7 +65,7 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D24 | An EIII/ESI bank binds the near-named header its placement predicts, recovering five banks a mistyped header name hid ([ADR-0031](adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md)) | done |
 | D25 | The E-IV `FORM/E4B0` bank is read through its `E3S1` chunks, recovering the audio of 162 of 170 banks that stored it in an IFF container ([ADR-0032](adr/0032-read-the-eiv-form-e4b0-bank-and-its-embedded-samples.md)) | done |
 
-Across the local collection, by listing: 74 of 82 images claimed, 3 096 volumes, 132 802 files, 98 061 of them samples. The AKAI discs are 44 of those images and 86 177 of those files, read across 314 partitions — 275 where the disk's table puts them and 39 displaced by blocks the rip lost. Before D15 they were 14 670 files, because only the partition at the origin was read.
+Across the local collection, by listing: 96 of 104 images claimed, 4 270 volumes, 161 213 files, 126 361 of them samples. The AKAI discs are 45 of those images and 86 487 of those files, read across 318 partitions — 279 where the disk's table puts them and 39 displaced by blocks the rip lost. Before D15 they were 14 783 files, because only the partition at the origin was read.
 
 ## What is not done
 
