@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from samplerdisc.fs.base import original_suffix
-from samplerdisc.sample import NotASample, PayloadMismatch, aiff
+from samplerdisc.sample import NotASample, PayloadMismatch, aiff, emu_ebl
 from samplerdisc.sample.akai import parse
 from samplerdisc.stereo import find_pairs, interleave
 from samplerdisc.wav import LOOP_FORWARD, Loop, read_header, write_wav
@@ -206,6 +206,15 @@ def extract_volume(
             if digest is not None:
                 written_audio.setdefault(digest, (entry.name, has_smpl))
             yield result
+            continue
+        if entry.kind == "ebl":
+            # An E-mu Emulator X sample bank inside an ISO 9660 disc. Converted
+            # to WAV in the forward pass -- unlike AIFF it has no on-disc twin,
+            # so nothing is deferred and nothing is deduplicated (ADR-0011).
+            if not made:
+                os.makedirs(out_dir, exist_ok=True)
+                made = True
+            yield _convert_ebl(image, backend, origin, volume, entry, out_dir)
             continue
         if entry.kind != "sample":
             continue
@@ -485,6 +494,61 @@ def _convert_aiff(
         rate=sample.rate,
         frames=sample.frames,
         pitch=sample.pitch if sample.pitch is not None else 0,
+        partition=volume.partition,
+        channels=sample.channels,
+    )
+
+
+def _convert_ebl(
+    image: SectorImage,
+    backend: Backend,
+    origin: int,
+    volume: Volume,
+    entry: File,
+    out_dir: str,
+) -> Extracted | Skipped:
+    """Write one E-mu Emulator X EBL entry as a WAV.
+
+    The output is named after the sample's own 64-byte header name and kept
+    under the ISO 9660 bank folder it came from: the disc's filenames are a
+    meaningless sequence (``Vintage ProSL001.ebl``) while the header carries
+    ``EP4MKIIL A0``. A stereo EBL is refused with a reason by the parser and
+    reported as skipped rather than converted by an unverified rule.
+    """
+    payload = backend.read_file(image, origin, entry)
+    if not payload:
+        return Skipped(volume.name, entry.name, "no data on disc", volume.partition)
+    try:
+        sample = emu_ebl.parse(payload, fallback_name=os.path.basename(entry.name))
+    except NotASample as exc:
+        return Skipped(volume.name, entry.name, str(exc), volume.partition)
+    if sample.frames == 0:
+        return Skipped(volume.name, entry.name, "zero-length sample", volume.partition)
+
+    # Keep the disc's bank grouping in the output tree; name the leaf from the
+    # header. The ISO 9660 path separates on '/'; each component is sanitised
+    # on its own, since safe_name would turn a '/' into part of one long name.
+    parts = [safe_name(p) for p in os.path.dirname(entry.name).split("/") if p]
+    folder = os.path.join(out_dir, *parts)
+    os.makedirs(folder, exist_ok=True)
+    stem, _ = os.path.splitext(os.path.basename(entry.name))
+    path = unique_path(folder, safe_name(sample.name or stem))
+    write_wav(
+        path,
+        sample.pcm,
+        rate=sample.rate,
+        channels=sample.channels,
+        sample_width=sample.width,
+        loops=_wav_loops(sample),
+        name=sample.name or stem,
+    )
+    return Extracted(
+        volume=volume.name,
+        name=entry.name,
+        path=path,
+        rate=sample.rate,
+        frames=sample.frames,
+        pitch=0,
         partition=volume.partition,
         channels=sample.channels,
     )

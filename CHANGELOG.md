@@ -2,6 +2,18 @@
 
 Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](docs/formats/); decisions and their rejected alternatives live in [docs/adr/](docs/adr/). This file records what changed for someone using the tool.
 
+## Unreleased
+
+### Added
+
+- **E-mu Emulator X `.EBL` sample banks convert to WAV.** `Digital Sound Factory - E-MU Vintage Pro` is an ISO 9660 disc whose 1 062 files are `.EBL` banks — a sample format Emulator X-3 writes inside an ordinary filesystem, not the `EMU3` filesystem D12 reads — and it extracted **0 WAV**. It now converts all **1 061**, each named from the sample's own 64-byte header (`EP4MKIIL A0`) under its bank folder rather than from the meaningless ISO sequence (`Vintage ProSL001`), with loop points carried into the WAV's `smpl` chunk. **If you shelved this disc because it yielded nothing, extract it again.** ([docs/formats/emu-ebl.md](docs/formats/emu-ebl.md), [ADR-0033](docs/adr/0033-ebl-is-converted-on-a-disc-and-verified-by-a-render.md), [#55](https://github.com/bmxcode/samplerdisc/issues/55))
+
+  **The conversion is checked against the publisher's own render, byte for byte.** An `.EBL` is an IFF `FORM` wrapper — big-endian outer headers, little-endian data headers — around uncompressed little-endian 16-bit PCM, so a mono payload is copied verbatim, no value altered. mattetti/e-mu-soundbanks rendered the whole Vintage Pro bank to FLAC, and **every one of the 1 007 uniquely-named samples decodes to the same rate and PCM byte for byte** (the 4 that do not are names the disc uses twice, which no render can disambiguate). It is the [ADR-0024](docs/adr/0024-the-aiff-twin-is-converted-and-deduplicated.md) oracle, for EBL — the second format here checked against an independent answer rather than the bytes it came from.
+
+  **The rate is read from each record, not assumed.** The bank carries **282 distinct rates** and 44 100 is only 27 of the 1 061 files; a hardcoded rate would be wrong far more often than right. The audio offset is computed by walking the file's own variable-width header rather than hardcoded, so a bank that lays its header out differently is not silently corrupted.
+
+  **Stereo `.EBL` is refused with a reason, not converted.** The format stores stereo non-interleaved (`LLLL…RRRR`), but every file on the one disc in hand is mono, and no stereo `.EBL` is available paired with a render to verify an interleave against — so a stereo record is skipped with a reason rather than converted by an unverified rule that could swap channels invisibly. The render outputs for the stereo banks are already located, so it is interleaving and verification, not rediscovery ([#57](https://github.com/bmxcode/samplerdisc/issues/57), [ADR-0026](docs/adr/0026-the-record-declares-the-channel-count.md)).
+
 ## 0.4.0 — 2026-08-29
 
 ### Added

@@ -618,6 +618,76 @@ def make_aiff(
     return b"FORM" + struct.pack(">I", 4 + len(body)) + form + body
 
 
+def make_ebl(
+    name: str = "Test Sample",
+    rate: int = 44100,
+    pcm: bytes | None = None,
+    frames: int = 32,
+    loop: tuple[int, int] | None = None,
+    stereo: bool = False,
+    toc: bytes = b"E5B0TOC2",
+) -> bytes:
+    """One E-mu Emulator X ``.EBL`` payload. See docs/formats/emu-ebl.md.
+
+    Built to the same layout the disc uses: a ``FORM`` wrapper with big-endian
+    outer headers, a variable-width header ending at a second ``E5S1`` section
+    whose offset the first section declares, then a 176-byte data-description
+    block of little-endian fields, ``header_pad`` bytes of padding, and the
+    audio. ``loop`` is a ``(start, end)`` frame pair adding the EXLZ trailer.
+    With ``stereo`` the two channel spans differ, which the parser refuses.
+    ``toc`` is exposed so a test can build the non-EBL FORM the parser rejects.
+    """
+    if pcm is None:
+        pcm = bytes(itertools.islice(itertools.cycle(range(256)), frames * 2))
+    name16 = name.encode("utf-16-le").ljust(64, b"\x00")[:64]
+
+    # The data-description block: 64-byte name, twelve LE fields, 64-byte
+    # comment. V2..V5 are the two channel spans; mono means equal spans and a
+    # mono length stated as V4 - V3 + 2, so V3 and V4 straddle the audio.
+    base = 0x1000
+    v3 = base
+    v4 = base + len(pcm) - 2
+    if stereo:
+        # Unequal spans: V3 - V2 != V5 - V4.
+        fields = [301, v3, v3, v3 + len(pcm) // 2, v4, 0, 0, 0, 0, rate, 0, 0]
+    else:
+        fields = [301, v3, v3, v4, v4, 0, 0, 0, 0, rate, 0, 0]
+    block = name16 + b"".join(struct.pack("<I", f) for f in fields) + b"\x00" * 64
+    assert len(block) == 176
+
+    trailer = b""
+    if loop is not None:
+        start, end = loop
+        trailer = (
+            b"\x00\x00"
+            + b"EXLZ"
+            + struct.pack("<I", 0x20)
+            + b"INFO"
+            + struct.pack("<III", 8, 1, 1)
+            + b"MARK"
+            + struct.pack("<III", 8, start, end)
+        )
+
+    # The audio begins eight bytes past the 176-byte block, then the trailer.
+    body = block + b"\x00" * 8 + pcm + trailer
+
+    # The header up to the second section, then the second section (14 bytes),
+    # then ``body``. The first section declares where the second one starts.
+    name_field = name16
+    second_start = 0x62
+    # First section: id(4) size(4) offset(4) zeros(2) name(64) = 78 -> 0x14..0x62
+    first = (
+        b"E5S1"
+        + struct.pack(">I", 0)  # dataSize, unread
+        + struct.pack(">I", second_start)  # absolute offset of the second section
+        + b"\x00\x00"
+        + name_field
+    )
+    second = b"E5S1" + struct.pack(">I", 0) + b"\x00" * 6  # 14 bytes
+    after_form = toc + struct.pack(">I", 78) + first + second + body
+    return b"FORM" + struct.pack(">I", len(after_form) + 4) + after_form
+
+
 def subchannel_block(seed: int = 0, sectors: int = 15) -> tuple[bytes, bytes]:
     """One MDX block of 2144-byte sectors: 2048 of data plus 96 of subchannel.
 
