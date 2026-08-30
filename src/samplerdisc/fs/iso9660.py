@@ -258,6 +258,8 @@ def _classify(name: str) -> str:
         return "wav"
     if lower.endswith((".aif", ".aiff")):
         return "aiff"
+    if lower.endswith(".ebl"):
+        return "ebl"
     if lower.endswith(_PROGRAM_SUFFIXES):
         return "program"
     return "file"

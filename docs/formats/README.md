@@ -14,6 +14,7 @@ Without these docs, the next session re-derives the MDX block chain by hexdumpin
 | [roland-s7xx.md](roland-s7xx.md) | Roland `S770 MR25A` filesystem — S-770, S-750, S-760 |
 | [iso9660.md](iso9660.md) | ISO 9660 and Joliet — discs whose payload is already audio |
 | [aiff.md](aiff.md) | AIFF — the payload inside those discs, and the one format carried rather than copied |
+| [emu-ebl.md](emu-ebl.md) | E-mu Emulator X `.EBL` sample banks — a sample format inside an ISO 9660 disc |
 | [audio-cd.md](audio-cd.md) | Red Book audio CDs — no filesystem at all |
 
 ## How to read the constants

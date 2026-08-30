@@ -24,7 +24,7 @@ from samplerdisc.container.base import SECTOR_SIZE
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.container.mdsmdf import find_mdf
 from samplerdisc.fs.probe import find_origin
-from samplerdisc.sample import aiff
+from samplerdisc.sample import aiff, emu_ebl
 from samplerdisc.wav import read_header
 
 #: ``.mds`` and not ``.mdf``: the pair is reached through the descriptor, the
@@ -541,6 +541,93 @@ def test_a_disc_whose_twins_are_not_the_same_audio_keeps_both() -> None:
         for entry in aiffs:
             sample = aiff.parse(backend.read_file(image, offset, entry))
             assert sample.pcm not in plain and sample.pcm not in rich, entry.name
+
+
+#: The one disc in hand that carries E-mu Emulator X ``.EBL`` banks: Vintage
+#: Pro, all 1 057 samples mono. ``(size, ebl files, samples that convert)`` --
+#: 1 061 ``.ebl`` files plus one ``.exb`` bank definition make the 1 062 the
+#: listing test counts, and all 1 061 convert.
+_EBL_DISC = ("Digital Sound Factory - E-MU Vintage Pro", 45_558_240, 1061)
+
+
+def test_every_ebl_on_the_disc_converts_to_a_mono_wav() -> None:
+    """Vintage Pro read 0 WAV before this backend existed. Every ``.EBL`` now
+    parses to a mono sample with a real rate, and none is stereo -- the one
+    record shape this build does not convert (issue for the stereo case)."""
+    label, size, ebl_count = _EBL_DISC
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "iso9660"
+        backend, offset = origin.backend, origin.offset
+        files = [f for v in backend.volumes(image, offset) for f in v.files]
+        ebls = [f for f in files if f.kind == "ebl"]
+        assert len(ebls) == ebl_count
+        for entry in ebls:
+            sample = emu_ebl.parse(backend.read_file(image, offset, entry))
+            assert sample.channels == 1, entry.name
+            assert sample.rate > 0 and sample.frames > 0, entry.name
+
+
+def _ebl_oracle() -> Path | None:
+    """The publisher's own renders of the Vintage Pro bank, if present.
+
+    Set ``SAMPLERDISC_EBL_ORACLE`` to mattetti/e-mu-soundbanks' ``E-MU
+    Sounds/Vintage Pro`` folder -- 1 057 FLAC. Never committed: these are
+    copyrighted DSF renders and the repo's licence is unstated, so like the
+    discs they live outside the tree and the check skips without them.
+    """
+    root = os.environ.get("SAMPLERDISC_EBL_ORACLE")
+    return Path(root) if root and Path(root).is_dir() else None
+
+
+@pytest.mark.skipif(_ebl_oracle() is None, reason="set SAMPLERDISC_EBL_ORACLE to the FLAC renders")
+def test_a_converted_ebl_matches_the_publishers_own_render() -> None:
+    """The disc's oracle, one step removed: mattetti rendered the whole Vintage
+    Pro bank to FLAC, so the publisher's audio says what our conversion should
+    produce -- the ADR-0024 pattern, for EBL. Every uniquely-named sample must
+    decode to the same rate and the same PCM, byte for byte.
+
+    FLAC is decoded with ``soundfile`` -- test tooling only. The shipped
+    converter stays pure-Python (ADR-0001); the oracle just needs reading.
+    """
+    sf = pytest.importorskip("soundfile")
+    oracle_dir = _ebl_oracle()
+    # The FLAC is named ``<bank> - <header name>_.flac``; index by the header
+    # name so a sample matches its render.
+    renders: dict[str, Path] = {}
+    for flac in oracle_dir.glob("*.flac"):
+        key = flac.stem.split(" - ", 1)[-1].rstrip("_")
+        renders[key] = flac
+
+    label, size, _ = _EBL_DISC
+    # A header name the disc uses twice cannot be matched to one render, so
+    # those are excluded from the byte check rather than counted as failures.
+    seen: dict[str, int] = {}
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        backend, offset = origin.backend, origin.offset
+        samples = []
+        for v in backend.volumes(image, offset):
+            for entry in (f for f in v.files if f.kind == "ebl"):
+                s = emu_ebl.parse(backend.read_file(image, offset, entry))
+                seen[s.name] = seen.get(s.name, 0) + 1
+                samples.append(s)
+
+        checked = 0
+        for s in samples:
+            if seen[s.name] > 1:
+                continue
+            flac = renders.get(s.name.replace(" ", "_"))
+            if flac is None:
+                continue
+            data, rate = sf.read(str(flac), dtype="int16")
+            assert rate == s.rate, s.name
+            assert data.reshape(-1).tobytes() == s.pcm, s.name
+            checked += 1
+        # The bank is 1 057 samples; the vast majority match by name. Pin a
+        # floor so a broken decoder cannot pass by matching nothing.
+        assert checked >= 1000
 
 
 def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:

@@ -92,14 +92,14 @@ By filesystem:
 |---|---:|---:|---:|---:|
 | AKAI | 45 | 72 389 | 16 021 | 127 |
 | E-mu `EMU3` | 31 | 47 472 | 7 | 0 |
-| ISO 9660 | 15 | 11 601 | — | 0 |
+| ISO 9660 | 16 | 12 662 | — | 0 |
 | Roland `S770 MR25A` | 5 | 6 392 | 1 341 | 0 |
 
 "Stereo pairs" counts files joined from an `-L`/`-R` pair by name. E-mu's seven are the only ones across those discs, and they are a different and much rarer thing than the 13 238 samples whose record declares two channels.
 
 Every sampler-filesystem WAV was checked against the disc it came from — **81 of 81 discs match exactly**, comparing the decoded audio against the disc's own bytes: a mono record's PCM is a run of the payload, and a stereo record's two channel blocks are the payload with its written interleave undone. 126 253 payloads, zero mismatches. The ISO 9660 discs are not in that count; where one ships a sound as both AIFF and WAV — the thirteen ProSamples discs — the publisher's own WAV is the oracle for what the conversion should produce, a stronger check still (below). The two audio CDs are in neither count: their tracks are cut from a stream by a cue, so there is no run of bytes on the disc to compare a track against.
 
-155 384 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **301 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, 24 are unused slots on the `Ditto Drums` ESI-32 disc, six are on a Proteus library that ships `Dead Air` as a sample, two are on a Roland disc, and one each on `E-mu Classics` and `Vintage`. That is what the discs hold, not something the decoder did.
+156 445 WAV files were written in all — the samples, the stereo joins and the audio CD tracks. None is unreadable and none is zero-length. **301 are silent for their whole length, and every one of them matches the disc exactly**: 267 are the blank `15G-KIT…Z` slots on `ProSamples vol.15`, 24 are unused slots on the `Ditto Drums` ESI-32 disc, six are on a Proteus library that ships `Dead Air` as a sample, two are on a Roland disc, and one each on `E-mu Classics` and `Vintage`. That is what the discs hold, not something the decoder did.
 
 Sample rates run from 6 000 to 50 000 Hz across 1 566 distinct values. The odd ones are real — E-mu writes rates like 24 444 and 27 778, and AKAI uses 33 075 (¾ of 44 100) and 29 400 (⅔) to trade bandwidth for memory. They are carried through exactly as the disc states them and never rounded.
 
@@ -109,7 +109,11 @@ The other 23 are damage of a different kind, and 19 of them are not damage at al
 
 **Eight of the 45 AKAI images are short of the disc they were made from.** Whole 32 KB blocks are missing from the file, so every partition after a gap sits that much nearer the front than the disk's own table says — and 39 of them are found there and read, carrying 17 180 files and 15 808 samples that nothing could reach before. `list` and the manifest say so per disc: *"11 partitions declared, 8 present in this image (7 of them displaced — this image is short of the disc it was made from)"*. 70 declared partitions are still unread, and 60 of those are refused rather than absent: a header is there, inside a partition already being read, and reading it would put one run of bytes under two partitions at once ([ADR-0028](docs/adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md)).
 
-The seven that do not convert are accounted for: one S-550 disc present as both `.iso` and `.nrg` — a different format from the S-7xx and not yet read ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)) — two Digidesign SampleCell discs, one audio CD with no cue sheet present as both `.mdx` and `.cdr`, and `Digital Sound Factory - E-MU Vintage Pro`, an ISO 9660 disc whose 1 061 files are E-mu `.EBL` banks rather than audio. It lists every one under its Joliet name; nothing reads the banks yet, so the disc yields no WAV ([#55](https://github.com/bmxcode/samplerdisc/issues/55)).
+The six that do not convert are accounted for: one S-550 disc present as both `.iso` and `.nrg` — a different format from the S-7xx and not yet read ([ADR-0014](docs/adr/0014-one-backend-per-on-disc-format.md)) — two Digidesign SampleCell discs, and one audio CD with no cue sheet present as both `.mdx` and `.cdr`.
+
+### The E-mu EBL banks
+
+`Digital Sound Factory - E-MU Vintage Pro` is an ISO 9660 disc whose 1 061 files are E-mu Emulator X `.EBL` sample banks rather than plain audio. It read 0 WAV until this deliverable; it now converts all 1 061, each named from the sample's own header (`EP4MKIIL A0`) under its bank folder rather than from the meaningless ISO sequence (`Vintage ProSL001`), with loop points carried where the file has them ([#55](https://github.com/bmxcode/samplerdisc/issues/55), [ADR-0033](docs/adr/0033-ebl-is-converted-on-a-disc-and-verified-by-a-render.md)). Every file on this disc is mono; the format's non-interleaved stereo is refused with a reason, since no stereo `.EBL` is available with a render to verify an interleave against. The check is the render itself: mattetti's publisher-grade FLAC of the whole bank, against which all 1 007 uniquely-named samples decode to the same rate and PCM byte for byte — the [ADR-0024](docs/adr/0024-the-aiff-twin-is-converted-and-deduplicated.md) oracle, for EBL ([formats/emu-ebl.md](docs/formats/emu-ebl.md)).
 
 ### The AIFF twins
 
