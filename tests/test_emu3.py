@@ -508,11 +508,55 @@ def test_bank_offsets_recovers_a_mistyped_header_only_when_unclaimed():
         _Bank("Echo", "", 5, 1),
         _Bank("Alphaa", "", 1, 1),
     ]
+    # Keyed by directory-entry index, not by name (ADR-0034): banks[3] is
+    # ``Delta``, banks[4] ``Echo``, banks[5] ``Alphaa``, banks[0] ``Alpha``.
     found = backend._bank_offsets(banks, headers)
-    assert found["Delta"] == 400  # mistyped header, recovered by its address
-    assert "Echo" not in found  # predicted address holds a far name
-    assert "Alphaa" not in found  # would steal Alpha's header, refused
-    assert found["Alpha"] == 100  # the claim it would have stolen is intact
+    assert found[3] == 400  # mistyped header, recovered by its address
+    assert 4 not in found  # predicted address holds a far name
+    assert 5 not in found  # would steal Alpha's header, refused
+    assert found[0] == 100  # the claim it would have stolen is intact
+
+
+def test_bank_offsets_splits_a_name_written_twice_across_its_own_headers():
+    """A directory name written twice binds each entry to its own header, and
+    never both to one (ADR-0034, #47).
+
+    Two shapes occur on real discs and both are here. ``Piano`` is written
+    twice with a real header apiece -- `elements1mb`'s ``Harpsichord    X`` --
+    and the placement fit gives each entry the header at its own predicted
+    address, so the two do not collapse onto one and double-list its records.
+    ``Organ`` is written twice with only *one* header wearing the name --
+    `heavy`'s ``HvyGtr Maj.Open`` -- and its second entry's predicted address
+    holds a blank-named header whose name confirms nothing; that entry binds
+    nothing rather than being handed a header by address alone (ADR-0031).
+    """
+    from samplerdisc.fs.emu3 import _Bank
+
+    backend = Emu3Backend()
+    headers = [
+        (100, "Aaa"),
+        (200, "Bbb"),
+        (300, "Ccc"),
+        (400, "Piano"),
+        (500, "Organ"),
+        (600, "        X"),  # a blank-named header, as `heavy` writes
+        (700, "Piano"),
+    ]
+    banks = [
+        _Bank("Aaa", "", 1, 1),
+        _Bank("Bbb", "", 2, 1),
+        _Bank("Ccc", "", 3, 1),
+        _Bank("Piano", "", 4, 1),  # index 3: predicts 400
+        _Bank("Piano", "", 7, 1),  # index 4: predicts 700 -- its own header
+        _Bank("Organ", "", 5, 1),  # index 5: predicts 500, the one real header
+        _Bank("Organ", "", 6, 1),  # index 6: predicts 600, a blank name -> note
+    ]
+    found = backend._bank_offsets(banks, headers)
+    assert found[3] == 400
+    assert found[4] == 700
+    assert found[3] != found[4]  # the two Piano entries do not collapse
+    assert found[5] == 500
+    assert 6 not in found  # the blank-named header confirms nothing
 
 
 def test_a_mistyped_bank_header_is_recovered_end_to_end(tmp_path):

@@ -729,16 +729,23 @@ _EMU3 = {
     "eiv-vitous": (532_443_136, 44, 852, 208, 828, "add35582e5187cc7"),
     # D24 recovers a bank whose header carries a mis-typed copy of its
     # directory name (ADR-0031). ``ditto-drums`` gains ``PERCUSSION#1   X``'s
-    # 31 records above; these two discs are pinned for the first time by it.
+    # 31 records above; these two discs were pinned for the first time by it.
     #
-    # Their sample totals still include a *separate*, pre-existing
-    # duplicate-directory-name double-listing that D24 does not touch:
-    # ``elements1mb`` lists ``Harpsichord    X`` twice and ``heavy`` lists
-    # ``HvyGtr Maj.Open`` twice, each pair reading the same records because
-    # ``located`` is keyed by name. When that is fixed these counts move; it is
-    # filed separately (see the PR).
-    "elements1mb": (296_042_496, 102, 1465, 1181, 0, "299901d661807f2d"),
-    "heavy": (524_599_296, 68, 870, 680, 745, "2c22387cd8be8344"),
+    # D27 fixes the separate duplicate-directory-name double-listing D24 left
+    # in these totals (ADR-0034, #47). ``located`` is now keyed by directory
+    # entry, not by name, so where a disc writes one name twice each entry
+    # binds to its own header. ``elements1mb`` writes ``Harpsichord    X``
+    # twice with a header apiece -- 11 records and 13, two different banks the
+    # old totals read as the 13 twice, so 1465 -> 1463 and the digest moves.
+    # ``heavy`` writes ``HvyGtr Maj.Open`` twice with only one header wearing
+    # the name; its second entry's predicted address holds a blank-named,
+    # byte-identical copy the first entry already yields, so that entry is
+    # noted rather than bound (never by address alone -- ADR-0031, ADR-0034),
+    # and its 6 duplicate records fall away: 870 -> 864, with 6 fewer loops and
+    # 6 fewer stereo. Both discs still list 102 and 68 volumes; the second
+    # ``HvyGtr Maj.Open`` volume is now noted, not empty-without-reason.
+    "elements1mb": (296_042_496, 102, 1463, 1179, 0, "d7f2c87ea4da9d6f"),
+    "heavy": (524_599_296, 68, 864, 674, 739, "7d684c05a5556fd8"),
 }
 
 
@@ -1018,11 +1025,16 @@ _EMU3_RUN_ENDS = {
     "emu-classics": (19, 16),
     "vintage": (13, 13),
     "ditto-drums": (45, 45),
-    # Newly pinned by D24. ``ditto-drums`` gains its recovered ``PERCUSSION#1``;
-    # ``heavy``'s two non-exact banks are the ordinary payload-overshoot D21
-    # already documents, not the recovery.
+    # Pinned by D24; ``heavy`` moved in D27. ``ditto-drums`` gains its recovered
+    # ``PERCUSSION#1``; ``heavy``'s two non-exact banks are the ordinary
+    # payload-overshoot D21 already documents, not the recovery. D27 drops
+    # ``heavy``'s second ``HvyGtr Maj.Open`` entry to a note (its records are a
+    # blank-named duplicate the first entry already yields, ADR-0034), so one
+    # fewer bank yields records: 65 -> 64, 63 -> 62. ``elements1mb`` is
+    # unchanged at (100, 100) -- both its ``Harpsichord    X`` entries still
+    # yield records, now from their own headers.
     "elements1mb": (100, 100),
-    "heavy": (65, 63),
+    "heavy": (64, 62),
 }
 
 
