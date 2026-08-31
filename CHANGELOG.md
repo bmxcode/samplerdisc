@@ -4,6 +4,10 @@ Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](
 
 ## Unreleased
 
+### Fixed
+
+- **An EIII/ESI disc that lists one bank name twice no longer writes that bank's audio twice.** Banks were resolved to their header by name, so where a directory writes one name in two entries — `Harpsichord    X` on `Vol. 10 – Elements of Sound 1MB`, `HvyGtr Maj.Open` on `Vol. 17 – Heavy Guitars` — both entries collapsed onto one header and each wrote its records. Resolution is now **per directory entry**, so each entry binds the header its own placement predicts. On `Elements of Sound 1MB` the two `Harpsichord    X` entries turn out to be two *different* banks — 11 records and 13 — that the old code read as the 13 twice, so the disc now lists both (1 465 → 1 463 samples). On `Heavy Guitars` the second `HvyGtr Maj.Open` entry's predicted address holds a real but blank-named 6.3 MB header whose six records are byte-identical to the named bank's; its name confirms nothing, so it is listed with a note rather than bound by address alone, and its six duplicate records fall away (870 → 864). No other disc changes. ([docs/formats/emu3.md](docs/formats/emu3.md), [ADR-0034](docs/adr/0034-each-directory-entry-binds-its-own-header.md), [#47](https://github.com/bmxcode/samplerdisc/issues/47))
+
 ### Added
 
 - **E-mu Emulator X `.EBL` sample banks convert to WAV.** `Digital Sound Factory - E-MU Vintage Pro` is an ISO 9660 disc whose 1 062 files are `.EBL` banks — a sample format Emulator X-3 writes inside an ordinary filesystem, not the `EMU3` filesystem D12 reads — and it extracted **0 WAV**. It now converts all **1 061**, each named from the sample's own 64-byte header (`EP4MKIIL A0`) under its bank folder rather than from the meaningless ISO sequence (`Vintage ProSL001`), with loop points carried into the WAV's `smpl` chunk. **If you shelved this disc because it yielded nothing, extract it again.** ([docs/formats/emu-ebl.md](docs/formats/emu-ebl.md), [ADR-0033](docs/adr/0033-ebl-is-converted-on-a-disc-and-verified-by-a-render.md), [#55](https://github.com/bmxcode/samplerdisc/issues/55))

@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import re
 import struct
+from collections import Counter
 from itertools import pairwise
 from typing import TYPE_CHECKING, NamedTuple
 
@@ -790,23 +791,39 @@ class Emu3Backend:
             return None
         return best[1], best[2]
 
-    def _bank_offsets(self, banks: list[_Bank], headers: list[tuple[int, str]]) -> dict[str, int]:
-        """One header per bank name: the one the directory placed there.
+    def _bank_offsets(self, banks: list[_Bank], headers: list[tuple[int, str]]) -> dict[int, int]:
+        """The header each directory entry binds to, keyed by the entry's index.
 
-        Keying on the name alone and keeping the first hit reads the wrong
-        copy where a disc holds two. `esi32-gm` carries an older revision of
-        ``2.5M Drums+SFX X`` and ``1.3M Drums+SFX X`` in a region its
-        directory does not allocate, both *before* the banks the directory
-        points at; `protozoa` carries a second ``Phatt Presets  X`` after
-        them. Whichever end you take, one of those discs is read wrong.
+        Keyed by entry and **not** by name, because a directory may write one
+        name twice and the two entries then sit at different addresses. Keying
+        by name collapses both onto one header and lists its records under each
+        -- the same audio read twice, which is a different failure from the one
+        ADR-0031 recovers and is filed as #47 (ADR-0034). `elements1mb` writes
+        ``Harpsichord    X`` twice with a real header apiece; `heavy` writes
+        ``HvyGtr Maj.Open`` twice, and only one of the two headers wears the
+        name.
 
-        A bank whose name matches **no** header exactly is then given one last
-        chance: the header sitting at the address its placement predicts, when
-        that header carries a near-copy of the bank's name (ADR-0031). Five
-        banks across three discs -- ``Electric Grand X``, ``PERCUSSION#1   X``,
-        ``HvyGtr FX5     X``, ``Misc Gtr FX 2MbX``, ``HvGtrFdBkTxtr2Mb`` -- have
-        a real ``EMULATOR`` header the mastering mis-typed the name on, and were
-        listed empty with a note where their audio was plainly there. This never
+        Keying on the name alone and keeping the first hit also reads the wrong
+        copy where a disc holds two headers of one name. `esi32-gm` carries an
+        older revision of ``2.5M Drums+SFX X`` and ``1.3M Drums+SFX X`` in a
+        region its directory does not allocate, both *before* the banks the
+        directory points at; `protozoa` carries a second ``Phatt Presets  X``
+        after them. Whichever end you take, one of those discs is read wrong.
+
+        So a name written once binds to its single header, or -- where the disc
+        holds two of that name -- to the one the placement fit predicts
+        (ADR-0021). A name written twice cannot share a header, so each entry
+        binds only to the header at its *own* predicted address; an entry whose
+        prediction lands on no same-named header is left to the recovery below
+        or to its note, never collapsed onto its twin's header.
+
+        An entry no header names exactly is then given one last chance: the
+        header sitting at the address its placement predicts, when that header
+        carries a near-copy of the entry's name (ADR-0031). Five banks across
+        three discs -- ``Electric Grand X``, ``PERCUSSION#1   X``, ``HvyGtr FX5
+        X``, ``Misc Gtr FX 2MbX``, ``HvGtrFdBkTxtr2Mb`` -- have a real
+        ``EMULATOR`` header the mastering mis-typed the name on, and were listed
+        empty with a note where their audio was plainly there. This never
         *places* a bank: the header is one the signature scan already found, and
         the name at ``+16`` is what confirms it -- the same instrument the
         placement fit already uses to arbitrate a name written twice, one step
@@ -815,33 +832,48 @@ class Emu3Backend:
         at_name: dict[str, list[int]] = {}
         for at, name in headers:
             at_name.setdefault(name, []).append(at)
-        found = {name: addresses[0] for name, addresses in at_name.items()}
+        entries_of = Counter(bank.name for bank in banks)
+
+        # A name written once binds to its first header; a name written twice
+        # cannot, so it waits for the placement fit to give each entry its own.
+        found: dict[int, int] = {}
+        for index, bank in enumerate(banks):
+            addresses = at_name.get(bank.name)
+            if addresses and entries_of[bank.name] == 1:
+                found[index] = addresses[0]
+
         placement = self._placement(banks, headers)
         if placement is None:
             return found
         unit, bias = placement
-        for bank in banks:
+        # Placement is authoritative about which header an entry means. For a
+        # name written once this only re-picks between two same-named headers
+        # (ADR-0021); for a name written twice it is what assigns each entry the
+        # header at its own predicted address, splitting the two apart.
+        for index, bank in enumerate(banks):
             want = unit * bank.start + bias
             if want in at_name.get(bank.name, ()):
-                found[bank.name] = want
-        # Recovery. ``taken`` is the addresses that name-matched entries own, so
-        # a bank can never be bound to a header another bank already claims --
-        # which is what keeps ``ditto-drums``'s ``E3 Main Code`` off the
-        # ``Ditto Drums    X`` header its arithmetic lands on. ``by_address``
-        # names the header actually sitting at ``want``; a bank whose predicted
-        # address holds no header, or one whose name is not a near-copy of it,
-        # keeps its note.
+                found[index] = want
+        # Recovery. ``taken`` is every address already bound, so an entry can
+        # never be bound to a header another entry owns -- which keeps
+        # ``ditto-drums``'s ``E3 Main Code`` off the ``Ditto Drums    X`` header
+        # its arithmetic lands on, and keeps `heavy`'s first ``HvyGtr Maj.Open``
+        # entry off the blank-named header at its predicted address, whose name
+        # confirms nothing and whose audio the second entry already yields
+        # (ADR-0034). ``by_address`` names the header actually sitting at
+        # ``want``; an entry whose predicted address holds no header, or one
+        # whose name is not a near-copy of it, keeps its note.
         by_address = {at: name for at, name in headers}
-        taken = {found[bank.name] for bank in banks if bank.name in at_name}
-        for bank in banks:
-            if bank.name in at_name:
+        taken = set(found.values())
+        for index, bank in enumerate(banks):
+            if index in found:
                 continue
             want = unit * bank.start + bias
             header_name = by_address.get(want)
             if header_name is None or want in taken:
                 continue
             if _near_name(bank.name, header_name):
-                found[bank.name] = want
+                found[index] = want
                 taken.add(want)
         return found
 
@@ -993,11 +1025,11 @@ class Emu3Backend:
         eiv_tags: dict[int, bytes] = {}
         eiv_bound: dict[int, tuple[int, list[_EivEntry]]] = {}
         eiv_form: dict[int, int] = {}
-        if any(bank.name not in located for bank in banks):
+        if any(index not in located for index in range(len(banks))):
             eiv_tags, eiv_bound, eiv_form = self._eiv(image, offset, banks)
-        for bank in banks:
+        for index, bank in enumerate(banks):
             volume = Volume(name=bank.name, start_block=bank.start)
-            at = located.get(bank.name)
+            at = located.get(index)
             if at is None:
                 found = eiv_bound.get(bank.start)
                 form_at = eiv_form.get(bank.start)

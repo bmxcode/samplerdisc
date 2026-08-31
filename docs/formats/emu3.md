@@ -165,6 +165,21 @@ Every corruption is a shifted space, a case change, or one doubled or dropped ch
 
 So a directory entry that no header names exactly binds the header at its predicted address, when that header's name is within one normalised edit of the entry's and no other entry already owns it ([ADR-0031](../adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md)). The near-name gate is load-bearing, not cosmetic: `ditto-drums`'s `E3 Main Code` and `E3X Main Code` slots — real operating-system banks with no audio — predict addresses that fall on the `Ditto Drums    X` and `DAVE W  KIT1   X` headers, a dozen edits from their own names, and binding by address alone would hand each OS slot another bank's records. `elements1mb` and `heavy` are pinned by this recovery in `tests/test_discs.py`; it binds nothing on any of the ten reference discs.
 
+### The directory itself can write a name twice
+
+Distinct from a name carried by two headers above: here the **directory** lists one name in two entries, at two different `start` fields. Two discs do it — `elements1mb` writes `Harpsichord    X` twice, `heavy` writes `HvyGtr Maj.Open` twice — and each entry binds to the header its *own* placement predicts. Resolving a bank by name alone gives both entries one header and lists its records under each, the same audio written twice; the fix is to resolve per directory entry ([ADR-0034](../adr/0034-each-directory-entry-binds-its-own-header.md)).
+
+The two entries need not point at the same audio. `elements1mb`'s two `Harpsichord    X` headers are two different banks — 11 records and 13 — and reading one twice both double-lists it and hides the other:
+
+| Disc | Directory name (×2) | Entry `start` | Predicted address | Header `+16` name | Records |
+|---|---|---:|---|---|---:|
+| `elements1mb` | `Harpsichord    X` | 96 | `0x017cdc00` | `Harpsichord    X` | 11 |
+| `elements1mb` | `Harpsichord    X` | 218 | `0x0364dc00` | `Harpsichord    X` | 13 |
+| `heavy` | `HvyGtr Maj.Open` | 51 | `0x03215600` | `               X` (blank) | 6 |
+| `heavy` | `HvyGtr Maj.Open` | 292 | `0x12315600` | `HvyGtr Maj.Open` | 6 |
+
+`heavy`'s first entry is the one open thread. Its predicted address holds a real `EMULATOR 3X` header whose 16-byte name is blanked to spaces and the conventional trailing `X`, carrying six `MajOpen …` records that are **byte-identical** to the six the named header holds — the `EMU SI-32` `4k` duplicate-library pattern with the name zeroed rather than re-typed. Its name confirms nothing, so it is left with the `no bank header found` note rather than bound by address alone (which [ADR-0031](../adr/0031-a-bank-binds-the-near-named-header-its-placement-predicts.md) rejected), and because its audio duplicates the named entry's, nothing is lost by noting it ([ADR-0034](../adr/0034-each-directory-entry-binds-its-own-header.md)).
+
 An earlier revision of this doc gave `0x38` as the bank size and claimed `0x30 + 0x34 == 0x38`. **That sum holds on 0 of the 114 located banks** across the four EIII/ESI discs, and nothing checked it. `0x38` reads a constant 8 388 608 on every `EMULATOR 3X` and `EMU SI-32` bank — including a 256 KiB one — which is the sampler's memory size and not a property of the bank; on `EMULATOR THREE` banks it reads 0 on 60 of 90 and a small number unrelated to the bank's extent on the rest. Do not use it for anything.
 
 ### A bank's region holds more than the bank
