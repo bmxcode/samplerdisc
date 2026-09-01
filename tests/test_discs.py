@@ -920,9 +920,58 @@ _EMU3 = {
 }
 
 
+#: The seven EMU3 ``.iso`` masters the superblock checksum was cross-checked
+#: against in PR #65 (docs/formats/emu3.md, "Independent corroboration"), and
+#: which issue #66 names as the pin. The checksum -- the sum mod 2**16 of the
+#: 255 u16 LE words over 0x000-0x1FD, stored at 0x1FE -- is the header-integrity
+#: gate probe() now applies. Every *other* _EMU3 disc (the E-IV discs and the
+#: shared-size twins) exercises the same gate implicitly:
+#: test_emu3_discs_list_their_banks_and_samples asserts the emu3 probe accepts
+#: it, which now requires the checksum to pass.
+_EMU3_CHECKSUM_MASTERS = (
+    "esi32-gm",
+    "protozoa",
+    "eiiix-1",
+    "eiiix-2",
+    "emu-classics",
+    "vintage",
+    "ditto-drums",
+)
+
+
+@pytest.mark.parametrize("label", _EMU3_CHECKSUM_MASTERS)
+def test_emu3_superblock_checksum_validates_the_header(label: str) -> None:
+    """The 0x1FE superblock checksum is self-consistent on every master.
+
+    Asserts both the raw arithmetic and the backend's own
+    ``_superblock_checksum_ok`` agree, so the constant in the source and the one
+    the doc claims cannot drift (issue #66).
+    """
+    from samplerdisc.fs.emu3 import (
+        OFF_CHECKSUM,
+        SUPERBLOCK_LEN,
+        _superblock_checksum_ok,
+    )
+
+    size = _EMU3[label][0]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        head = image.read(origin.offset, SUPERBLOCK_LEN)
+        words = struct.unpack_from(f"<{SUPERBLOCK_LEN // 2}H", head)
+        assert sum(words[: OFF_CHECKSUM // 2]) % 0x10000 == words[OFF_CHECKSUM // 2]
+        assert _superblock_checksum_ok(head)
+
+
 @pytest.mark.parametrize("label", sorted(_EMU3))
 def test_emu3_discs_list_their_banks_and_samples(label: str) -> None:
-    """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
+    """Pinned where present, skipped where the shelf is bare -- see _pinned_disc().
+
+    Also the implicit full-corpus check on the superblock-checksum gate (#66):
+    probe() rejects a header whose 0x1FE checksum does not verify, so requiring
+    the emu3 backend to claim every _EMU3 disc requires the checksum to hold on
+    each -- confirmed 17/17 across the local collection.
+    """
     size, volumes_expected, samples_expected, _, _, _ = _EMU3[label]
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)

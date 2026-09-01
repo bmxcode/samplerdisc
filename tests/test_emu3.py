@@ -8,14 +8,17 @@ import struct
 from samplerdisc.container.flat import FlatImage
 from samplerdisc.fs.emu3 import (
     BANK_MAGICS,
+    OFF_CHECKSUM,
     OFF_SAMPLE_END_L,
     OFF_SAMPLE_END_R,
     OFF_SAMPLE_RATE,
     OFF_SAMPLE_START_L,
     OFF_SAMPLE_START_R,
     SAMPLE_HEADER_LEN,
+    SUPERBLOCK_LEN,
     Emu3Backend,
     _form_e3s1_chunks,
+    _superblock_checksum_ok,
     is_plausible_name,
     record_extent,
 )
@@ -52,6 +55,19 @@ def image_of(tmp_path, data: bytes, name: str = "emu.iso") -> FlatImage:
 # --- probe --------------------------------------------------------------
 
 
+def _rechecksum(data: bytearray) -> bytearray:
+    """Restore the superblock checksum after mutating a header field.
+
+    A fixture writes a valid checksum, so mutating a byte breaks it -- which is
+    the point of ``test_probe_rejects_a_corrupted_superblock_checksum`` but noise
+    in a test isolating a *different* gate, since the checksum would reject the
+    header before that gate runs.
+    """
+    words = struct.unpack_from(f"<{SUPERBLOCK_LEN // 2}H", data, 0)
+    struct.pack_into("<H", data, OFF_CHECKSUM, sum(words[: OFF_CHECKSUM // 2]) % 0x10000)
+    return data
+
+
 def test_probe_accepts_a_real_emu3_header(tmp_path):
     image = image_of(tmp_path, fixtures.emu3_disc(ONE_FOLDER))
     assert BACKEND.probe(image, 0)
@@ -61,11 +77,34 @@ def test_probe_rejects_the_magic_alone(tmp_path):
     """Four bytes is not a filesystem (ADR-0012).
 
     The header's own arithmetic must close and the directory it names must
-    actually yield a bank.
+    actually yield a bank. The checksum is repaired after the mutation so this
+    exercises the arithmetic gate and not the checksum gate, which would
+    otherwise reject the header first.
     """
     data = bytearray(fixtures.emu3_disc(ONE_FOLDER))
     data[0x08:0x0C] = (99).to_bytes(4, "little")  # folder + reserved no longer == banks
-    assert not BACKEND.probe(image_of(tmp_path, bytes(data), "broken.iso"), 0)
+    assert not BACKEND.probe(image_of(tmp_path, bytes(_rechecksum(data)), "broken.iso"), 0)
+
+
+def test_probe_rejects_a_corrupted_superblock_checksum(tmp_path):
+    """A header whose 0x1FE checksum does not verify is not this filesystem (#66).
+
+    This is the gate that catches a truncated rip or a wrong container track
+    start (ADR-0005): flip one header byte and leave the stored checksum, and the
+    sum no longer matches -- exactly what a mis-offset or damaged header looks
+    like. A whole valid disc otherwise, so only the checksum decides.
+    """
+    data = bytearray(fixtures.emu3_disc(ONE_FOLDER))
+    assert _superblock_checksum_ok(bytes(data[:SUPERBLOCK_LEN]))
+    data[0x40] ^= 0x01  # a byte inside the summed range, checksum left stale
+    assert not _superblock_checksum_ok(bytes(data[:SUPERBLOCK_LEN]))
+    assert not BACKEND.probe(image_of(tmp_path, bytes(data), "corrupt.iso"), 0)
+
+
+def test_probe_rejects_a_truncated_header(tmp_path):
+    """A header short of a whole 512-byte block cannot carry the checksum (#66)."""
+    data = fixtures.emu3_disc(ONE_FOLDER)[: SUPERBLOCK_LEN - 2]
+    assert not BACKEND.probe(image_of(tmp_path, data, "short.iso"), 0)
 
 
 def test_probe_rejects_zeros_and_noise(tmp_path):

@@ -35,6 +35,7 @@ Addressing is in **512-byte blocks**, not the 2048-byte cooked sector.
 | `0x08` | 4 | u32 LE, **folder table** block |
 | `0x0C` | 4 | u32 LE, blocks reserved for the folder table |
 | `0x10` | 4 | u32 LE, first folder's bank directory block |
+| `0x1FE` | 2 | u16 LE, **superblock checksum** — see below |
 
 **`0x08 + 0x0C == 0x10` on every disc**, so the third field is derived and the first is the authority:
 
@@ -47,6 +48,12 @@ Addressing is in **512-byte blocks**, not the 2048-byte cooked sector.
 | `eiv-vitous` | 6 | 4 | 10 |
 
 The pointer at `0x10` takes **six distinct values across seven discs**. Read it; never assume 9.
+
+### The superblock checksum
+
+The header block ends with a checksum: the **sum modulo 2¹⁶ of the 255 u16 LE words spanning bytes `0x000`–`0x1FD`**, stored as a u16 LE at `0x1FE`. It is the format's own integrity test, and because it sums the whole block it fails on a truncated header or one read at the wrong offset — the mis-offset case [ADR-0005](../adr/0005-probe-for-the-filesystem-origin.md) exists to catch, which the four-byte magic and the `0x08 + 0x0C == 0x10` pointer relation both let through. The `EMU3` backend's `probe()` gates on it (`SUPERBLOCK_LEN`, `OFF_CHECKSUM` in `fs/emu3.py`), after the magic and before the pointer arithmetic — magic first, because an all-zeros block sums to its own zeroed checksum and would pass the sum alone.
+
+It was found in the mpc2emu cross-check for [PR #65](https://github.com/bmxcode/samplerdisc/pull/65) and adopted in [issue #66](https://github.com/bmxcode/samplerdisc/issues/66); see "Independent corroboration (mpc2emu)" below for the seven-master table it was first verified against. Probing the whole local collection at each disc's resolved origin, it holds on **17 of 17** EMU3 images — every EIII/ESI and E-IV disc the backend reads, plus the shared-size twins — so gating on it rejects none of the discs the probe accepts today.
 
 ## The trap at `0x08`
 
