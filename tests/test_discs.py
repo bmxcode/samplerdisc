@@ -105,6 +105,7 @@ def _pinned_sizes() -> set[int]:
     return {
         *_EXPECT_NO_FILESYSTEM.values(),
         *(size for size, _ in _ROLAND_S7XX.values()),
+        *(size for size, _ in _KURZWEIL.values()),
         *(size for size, _, _ in _ISO9660.values()),
         *(size for size, _, _, _, _, _ in _EMU3.values()),
         *(size for size, _, _, _, _, _ in _AKAI.values()),
@@ -377,6 +378,69 @@ def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(label: str) -> None
                     "<H", image.read(origin.offset + fs.FAT_BLOCK * fs.BLOCK + 2 * cluster, 2)
                 )
                 if cluster >= fs.CHAIN_END:
+                    break
+            assert payload == bytes(expected[: entry.size]), entry.name
+
+
+#: Kurzweil ``KMSI`` (FAT16) discs, pinned by size with the ``.KRZ`` bank-file
+#: count each lists. These are the collection's first Kurzweil specimens (#60).
+#: A ``.KRZ`` is an object bank, not a bare sample, so the fs layer lists files
+#: and the count pinned here is the file count; the audio inside a bank is a
+#: separate format layer, deferred (ADR-0035). ``label: (size in bytes, files)``.
+_KURZWEIL = {
+    "gigapack-cd1": (684_702_480, 106),
+    "gigapack-cd2": (684_744_816, 189),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_KURZWEIL))
+def test_kurzweil_discs_resolve_and_list_their_krz_banks(label: str) -> None:
+    """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
+    size, expected = _KURZWEIL[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None, f"{label}: no filesystem found"
+        assert origin.backend.name == "kurzweil"
+        assert origin.offset == 0
+        volumes = list(origin.backend.volumes(image, origin.offset))
+        # One flat FAT16 volume -- no partitions (ADR-0035).
+        assert len(volumes) == 1
+        assert sum(len(v.files) for v in volumes) == expected
+        # Every claimed volume yields a file or says why it is empty (ADR-0012).
+        assert all(v.files or v.note for v in volumes), [v.name for v in volumes if not v.files]
+
+
+@pytest.mark.parametrize("label", sorted(_KURZWEIL))
+def test_kurzweil_payloads_are_byte_identical_to_the_disc(label: str) -> None:
+    """``read_file`` follows the FAT chain; check it against an independent walk.
+
+    Over a spread of the disc rather than its first few entries, and against a
+    second hand-rolled FAT16 walk rather than ``read_file`` itself -- CD 1 has
+    twelve fragmented banks, and a walk that assumed contiguity would return a
+    neighbour's bytes on exactly those.
+    """
+    from samplerdisc.fs import kurzweil as fs
+
+    path = _pinned_disc(label, _KURZWEIL[label][0])
+    with open_image(path) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        offset = origin.offset
+        geo = fs._geometry(image, offset)
+        fat = origin.backend._read_fat(image, offset, geo)
+        files = next(iter(origin.backend.volumes(image, offset))).files
+        for entry in files[:: max(1, len(files) // 30)]:
+            payload = origin.backend.read_file(image, offset, entry)
+            assert len(payload) == entry.size
+            assert payload[:4] == fs.KRZ_SIGNATURE
+            expected = bytearray()
+            cluster = entry.start_block
+            seen: set[int] = set()
+            while fs.FIRST_DATA_CLUSTER <= cluster <= geo.max_cluster and cluster not in seen:
+                seen.add(cluster)
+                expected += image.read(offset + geo.cluster_at(cluster), geo.cluster_bytes)
+                (cluster,) = struct.unpack_from("<H", fat, 2 * cluster)
+                if cluster >= fs.FAT16_EOC:
                     break
             assert payload == bytes(expected[: entry.size]), entry.name
 
