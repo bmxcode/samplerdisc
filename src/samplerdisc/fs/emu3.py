@@ -40,6 +40,16 @@ OFF_FOLDER_BLOCK = 0x08
 OFF_FOLDER_RESERVED = 0x0C
 OFF_BANK_BLOCK = 0x10
 
+#: The 512-byte header block carries a superblock checksum: the sum modulo
+#: 2**16 of the 255 u16 LE words over bytes 0x000-0x1FD, stored as a u16 LE at
+#: 0x1FE. It holds on every EMU3 master (docs/formats/emu3.md, "The superblock
+#: checksum" and "Independent corroboration") and, being a sum over the whole
+#: block, fails on a truncated or mis-offset header -- so probe() gates on it to
+#: reject a wrong container track start before the directory walk (ADR-0005,
+#: issue #66).
+SUPERBLOCK_LEN = 0x200
+OFF_CHECKSUM = 0x1FE
+
 #: Folder and bank share one 32-byte record shape and are told apart by the
 #: flags word alone. Reading the folder table as banks yields plausible names
 #: and nonsense extents, which is the trap docs/formats/emu3.md records.
@@ -649,18 +659,35 @@ def _form_e3s1_chunks(image: SectorImage, at: int) -> Iterator[tuple[int, int]]:
         position = body + size + (size & 1)
 
 
+def _superblock_checksum_ok(head: bytes) -> bool:
+    """Whether the header block's checksum at ``OFF_CHECKSUM`` is self-consistent.
+
+    See the ``SUPERBLOCK_LEN``/``OFF_CHECKSUM`` note above. A header short of a
+    whole block cannot carry the checksum and is rejected; a header at the wrong
+    offset sums to something other than its stored word.
+    """
+    if len(head) < SUPERBLOCK_LEN:
+        return False
+    words = struct.unpack_from(f"<{SUPERBLOCK_LEN // 2}H", head)
+    return sum(words[: OFF_CHECKSUM // 2]) % 0x10000 == words[OFF_CHECKSUM // 2]
+
+
 class Emu3Backend:
     name = "emu3"
 
     def probe(self, image: SectorImage, offset: int) -> bool:
-        """``EMU3`` plus a folder table that actually resolves.
+        """``EMU3``, a valid superblock checksum, and a folder table that resolves.
 
-        The magic is four bytes, which is not enough on its own (ADR-0012), so
-        the header's own arithmetic is checked and the directory it points at
-        must yield a bank.
+        The magic is four bytes, which is not enough on its own (ADR-0012). The
+        superblock checksum is the strong gate: it sums the whole header block,
+        so a truncated rip or a wrong container track start fails it here rather
+        than walking a garbage directory (ADR-0005, issue #66). The magic is
+        checked first, because an all-zeros block sums to its own zeroed
+        checksum and would pass the sum on its own. The header's own arithmetic
+        is then checked and the directory it points at must yield a bank.
         """
-        head = image.read(offset, 0x40)
-        if len(head) < 0x40 or not head.startswith(MAGIC):
+        head = image.read(offset, SUPERBLOCK_LEN)
+        if not head.startswith(MAGIC) or not _superblock_checksum_ok(head):
             return False
         folder = struct.unpack_from("<I", head, OFF_FOLDER_BLOCK)[0]
         reserved = struct.unpack_from("<I", head, OFF_FOLDER_RESERVED)[0]

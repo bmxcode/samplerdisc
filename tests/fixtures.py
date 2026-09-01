@@ -1311,6 +1311,15 @@ def emu3_disc(
         table = sample_dir * 2 if duplicate_sample_dir else sample_dir
         base = sample_dir_block * BLOCK
         image[base : base + len(table)] = table
+
+    # The superblock checksum the probe now gates on (issue #66): the sum mod
+    # 2**16 of the 255 u16 LE words over 0x000-0x1FD, stored at 0x1FE. Block 0
+    # holds only the header fields above, so it is computed last, over whatever
+    # they were set to -- a real disc's own integrity test, reproduced here.
+    from samplerdisc.fs.emu3 import OFF_CHECKSUM, SUPERBLOCK_LEN
+
+    words = struct.unpack_from(f"<{SUPERBLOCK_LEN // 2}H", image, 0)
+    struct.pack_into("<H", image, OFF_CHECKSUM, sum(words[: OFF_CHECKSUM // 2]) % 0x10000)
     return bytes(image)
 
 
