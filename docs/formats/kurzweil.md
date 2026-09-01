@@ -1,6 +1,6 @@
 # Kurzweil `KMSI` disc filesystem
 
-The native disc format of the Kurzweil K2000/K2500 family is a plain **FAT16** filesystem. Its boot sector carries the OEM name `KMSI` (Kurzweil Music Systems Inc.) where a DOS-formatted disc would carry `MSDOS5.0` or a `mkfs` string, and that eight-byte label is the only thing that says a given FAT was written by a Kurzweil rather than by anything else. The files on it are `.KRZ` object banks; this backend lists them, and the format of what is inside a bank is a separate problem ([#63](https://github.com/bmxcode/samplerdisc/issues/63)).
+The native disc format of the Kurzweil K2000/K2500 family is a plain **FAT16** filesystem. Its boot sector carries the OEM name `KMSI` (Kurzweil Music Systems Inc.) where a DOS-formatted disc would carry `MSDOS5.0` or a `mkfs` string, and that eight-byte label is the only thing that says a given FAT was written by a Kurzweil rather than by anything else. The files on it are `.KRZ` object banks; this doc is the FAT16 layer that finds them, and [kurzweil-krz.md](kurzweil-krz.md) is the separate layer for what is inside a bank.
 
 Everything below is measured against the two `Best Service - Gigapack I & II (Kurzweil)` discs — CD 1 (684 702 480 bytes, 291 115 raw sectors) and CD 2 (684 744 816 bytes, 291 133) — read end to end. They are the collection's first Kurzweil specimens. Where a constant is called "on both discs" it means byte-identical across the two, which is weak evidence of the format against one disc's quirk and is said honestly as such until a third specimen exists.
 
@@ -58,9 +58,9 @@ CD 1 lists 106 entries, CD 2 lists 189, every one a `.KRZ` file at the root — 
 
 Files are fragmented. On CD 1, 12 of the 106 banks have a non-contiguous cluster chain — `CH BACK5.KRZ` starts at cluster 15 654 in the middle of an otherwise-ascending run — so a reader that assumed contiguity would splice a neighbour's audio onto those banks. `read_file` follows the FAT16 chain from the directory's first cluster, coalescing a contiguous run into one read, bounded three ways: by the end-of-chain marker (`≥ 0xFFF8`), by the table's own range, and by a visited set against a corrupt table that loops. A short read at the tail is a damaged disc, not an error — the caller gets what the disc still holds.
 
-## The `.KRZ` file — an object bank, listed not opened
+## The `.KRZ` file — an object bank
 
-Every one of the 295 files across both discs begins with the four-byte tag `PRAM` — the 1012-byte `DRUM KIT.KRZ` on CD 2 included. A `.KRZ` is not a bare sample: it is a bundle of Kurzweil objects (programs, keymaps and samples), big-endian, with embedded object names (`HAL:CHRD 1` inside `CH GRG 2.KRZ`). This backend lists the bank files and stops there; enumerating and extracting the samples inside a bank is a separate format layer, deferred ([#63](https://github.com/bmxcode/samplerdisc/issues/63), ADR-0035). Each bank is listed with kind `bank`, and `--keep-originals` writes it out with its own `.krz` suffix.
+Every one of the 295 files across both discs begins with the four-byte tag `PRAM` — the 1012-byte `DRUM KIT.KRZ` on CD 2 included. A `.KRZ` is not a bare sample: it is a bundle of Kurzweil objects (programs, keymaps and samples), big-endian, with embedded object names (`HAL:CHRD 1` inside `CH GRG 2.KRZ`). Each bank is a **volume** whose files are its sample objects, and the whole bank is also listed as one `program` so `--keep-originals` writes it out with its own `.krz` suffix. The bank interior — how a sample's audio, rate, root key and loop are read out of the shared pool — is its own layer, documented in [kurzweil-krz.md](kurzweil-krz.md) (D29, [ADR-0036](../adr/0036-the-krz-bank-is-read-as-objects-and-verified-against-mpc2emu.md)).
 
 ## What a probe confirms
 

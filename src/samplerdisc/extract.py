@@ -169,7 +169,11 @@ def extract_volume(
     written_audio: dict[bytes, tuple[str, bool]] = {}
     deferred: list[File] = []
     for entry in volume.files:
-        if keep_originals and entry.kind in _KEEP_KINDS:
+        if keep_originals and entry.kind in _KEEP_KINDS and not entry.get("embedded"):
+            # An embedded sample -- a Kurzweil object that is a slice of a bank,
+            # not a file the disc placed -- is not kept on its own: the bank it
+            # lives in is kept whole (as a program), and the raw slice would be
+            # a headerless fragment nothing opens.
             payload = backend.read_file(image, origin, entry)
             if payload:
                 if not originals_made:

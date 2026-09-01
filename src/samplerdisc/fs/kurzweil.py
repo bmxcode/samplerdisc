@@ -10,12 +10,17 @@ the container's 2048-byte cooked stream; the ``rawcd`` container already did
 the 2352->2048 de-interleave, so this layer addresses the cooked stream in
 512-byte FAT units from the probe offset.
 
-Every file on the two reference discs is a ``.KRZ`` object bank, and this
-backend lists those files -- it does not open them. A ``.KRZ`` is a bundle of
-Kurzweil objects (programs, keymaps and samples) with its own big-endian
-object format, which is a separate deliverable; each file begins with the
-four-byte tag ``PRAM`` and that is what the probe confirms a real file by
-(ADR-0012, ADR-0035). Turning a ``.KRZ`` bank into WAV is deferred (#63).
+Every file on the two reference discs is a ``.KRZ`` object bank: a bundle of
+Kurzweil objects (programs, keymaps and samples) sharing one big-endian PCM
+pool, opening with the four-byte tag ``PRAM`` that the probe confirms a real
+file by (ADR-0012, ADR-0035). This backend walks a bank's object directory,
+lists it as a volume, and enumerates the sample objects inside it as that
+volume's files -- the extent, rate and loop each sample declares come from the
+directory, and the pool audio it points at is carried to WAV by
+``sample/kurzweil.py``. The whole bank is also listed as one ``program`` so
+``--keep-originals`` writes the ``.krz`` out for ConvertWithMoss, which reads
+the object format this backend does not (ADR-0011). See
+docs/formats/kurzweil-krz.md for the bank interior (#63).
 
 Every constant here is documented in the format doc against the two
 ``Gigapack I & II (Kurzweil)`` discs. Do not change a constant without changing
@@ -102,9 +107,249 @@ END_OF_DIR = 0x00  # no entry here and none after: the directory ends
 #: The four-byte tag every ``.KRZ`` object bank opens with -- 295 of 295 files
 #: across both discs, the 1012-byte ``DRUM KIT`` on CD 2 included. It is what
 #: the probe confirms the first file *is* a Kurzweil object and not just a
-#: plausible directory pointer (ADR-0012). The bank's interior is a separate
-#: format (#63).
+#: plausible directory pointer (ADR-0012).
 KRZ_SIGNATURE = b"PRAM"
+
+#: The ``.KRZ`` object bank interior (docs/formats/kurzweil-krz.md), all
+#: big-endian. Past a 32-byte header sits an object directory: a chain of
+#: length-prefixed records, each opening with a signed be32 equal to the
+#: *negative* of its own length. A non-negative value is the end marker, and
+#: the shared PCM pool begins at the byte offset the header names.
+KRZ_HEADER_LEN = 8  # the PRAM tag and the u32 that follows it
+OFF_POOL_START = 4  # u32: byte offset where the PCM pool begins (a.k.a. osize)
+OBJ_DIR_START = 32  # first object record, past the header
+OBJ_HDR_MIN = 10  # bytes needed before the name to read a record's header
+OBJ_HASH = 4  # u16 type|id hash; its top bits are the object type
+OBJ_OFS = 8  # u16; body = record + 8 + this (past a name of nl+3 or nl+4 bytes)
+OBJ_NAME = 10  # the name string starts here
+OBJ_NAME_MAX = 16  # a name is at most this; a full field carries no NUL terminator
+OBJ_BODY_BASE = 8  # body = record + OBJ_BODY_BASE + ofs
+
+#: An object's type and id are packed into the hash. Types with the 0x8000 bit
+#: set (all this backend reads) put the type in the top six bits; a sample is
+#: type 38. The lower-bit conditional decode a general reader needs for song and
+#: effect objects is not reproduced here, because those objects are never read.
+OBJ_TYPE_SHIFT = 10
+OBJ_TYPE_SAMPLE = 38
+
+#: The sample object's body: a 12-byte ``KSample`` header then one 32-byte
+#: ``Soundfilehead`` per channel. ``num_headers`` is a count minus one (0 mono,
+#: 1 stereo); the stereo bit is bit 0 of the byte at ``KSAMPLE_FLAGS``, and a
+#: header count above one *without* that bit is a group of mono samples at
+#: different root keys, not a stereo pair.
+KSAMPLE_NUM_HEADERS = 2  # u16, channel count minus one
+KSAMPLE_FLAGS = 6  # u8, bit 0 = stereo
+KSAMPLE_HEADERS = 12  # first Soundfilehead, relative to the body
+SFH_LEN = 32
+STEREO_FLAG = 0x01
+
+#: ``Soundfilehead`` fields, as byte offsets into a 32-byte header. Frame
+#: addresses index the pool in 16-bit words. The rate is stored as a nanosecond
+#: period, not a frequency; ``sample/kurzweil.py`` turns it back into Hz.
+SFH_ROOT_KEY = 0  # u8, MIDI note the sample plays at
+SFH_FLAGS = 1  # u8: 0x40 loads the sample, 0x80 CLEAR means it loops
+SFH_START = 8  # i32, first PCM word (absolute pool frame)
+SFH_LOOP_START = 16  # i32, loop start frame
+SFH_LOOP_END = 20  # i32, loop end frame (NOT the PCM end -- see _bank_samples)
+SFH_PERIOD = 28  # u32, sample period in nanoseconds = round(1e9 / rate)
+SFH_HAS_DATA = 0x40  # flag bit: the header carries loaded PCM
+SFH_ONE_SHOT = 0x80  # flag bit: SET means one-shot, CLEAR means looped
+
+#: The rate is a nanosecond period, and ``1e9 / period`` does not invert back to
+#: a round number -- a 44 100 Hz sample reads as 44 101. Snap to the nearest of
+#: these within a couple of Hz, the values a Kurzweil records at; a genuinely
+#: odd rate that matches none is kept as read. Matches ConvertWithMoss.
+STANDARD_RATES = (8000, 11025, 16000, 22050, 24000, 32000, 44100, 48000, 96000)
+RATE_SNAP_HZ = 2
+
+#: The byte that precedes the ``L``/``R`` side in a stereo half's name. Some
+#: stereo samples are one object with two channels (handled here); others are a
+#: pair of mono objects named ``...\x7fL`` / ``...\x7fR``, which the stereo
+#: joiner pairs on exactly this character (ADR-0017), so it is kept in the name
+#: the backend reports and ``safe_name`` sanitises it out of the final filename.
+STEREO_MARKER = 0x7F
+
+#: How large a prefix of a bank to read to *enumerate* its samples. The object
+#: directory sits at the front and is a few tens of KB even on the busiest bank;
+#: the megabytes of PCM after it are read only when a sample is extracted, never
+#: to list one. The bank's header names the directory's exact end, so a rare
+#: directory larger than this is still read in full rather than truncated.
+DIR_SCAN_BYTES = 512 * 1024
+
+
+@dataclass(frozen=True)
+class _BankSample:
+    """One extractable sample located inside a ``.KRZ`` bank.
+
+    A mono sample is one channel; a stereo sample is one object carrying two
+    planar channels, ``channel_bytes`` each, which the sample layer interleaves.
+    ``data_off`` is a byte offset into the bank's own stream (the shared PCM
+    pool), not the disc. ``root`` is the MIDI note the sample plays at, and
+    ``loop`` is sample-relative with an inclusive-ish end, or ``None`` for a
+    one-shot.
+    """
+
+    name: str
+    rate: int
+    root: int
+    channels: int
+    data_off: int
+    data_off_right: int
+    channel_bytes: int
+    loop: tuple[int, int] | None
+
+
+def _object_name(raw: bytes) -> str:
+    """A sample object's name, to its first NUL and capped at 16, latin-1.
+
+    The cap is load-bearing: a name that fills the 16-byte field exactly has no
+    terminator, and reading to the (padded, rounded) body offset would return
+    trailing block bytes as name characters. The ``0x7f`` that precedes an
+    ``L``/``R`` side on a stereo half is inside the name and kept; trailing
+    padding is trimmed, but a space run before a stereo marker is left for the
+    joiner's own whitespace handling.
+    """
+    return raw.split(b"\x00", 1)[0][:OBJ_NAME_MAX].decode("latin1", "replace").rstrip()
+
+
+def _headers(bank: bytes, body: int, count: int) -> list[dict[str, int]]:
+    """The ``Soundfilehead`` records of one sample object."""
+    out = []
+    for i in range(count):
+        ho = body + KSAMPLE_HEADERS + i * SFH_LEN
+        if ho + SFH_LEN > len(bank):
+            break
+        flags = bank[ho + SFH_FLAGS]
+        start, _alt, loop_s, loop_e = struct.unpack_from(">4i", bank, ho + SFH_START)
+        period = struct.unpack_from(">I", bank, ho + SFH_PERIOD)[0]
+        out.append(
+            {
+                "root": bank[ho + SFH_ROOT_KEY],
+                "start": start,
+                "loop_start": loop_s,
+                "loop_end": loop_e,
+                "period": period,
+                "has_data": flags & SFH_HAS_DATA,
+                "looped": not flags & SFH_ONE_SHOT,
+            }
+        )
+    return out
+
+
+def _bank_samples(bank: bytes, full_size: int) -> list[_BankSample]:
+    """Every extractable sample in a ``.KRZ`` bank, in directory order.
+
+    ``bank`` need only reach the end of the object directory; ``full_size`` is
+    the bank's whole length (from its directory entry), which fixes the pool's
+    frame count without reading the pool. A sample object carries one or more
+    channel headers: the stereo bit makes two of them one stereo sample, and any
+    other header with loaded audio is its own mono sample (a group of mono
+    samples at different root keys shares one object). A header's stored end is
+    its *loop* end, not the audio end, so the true extent runs to the next
+    sample's start in the pool -- which also keeps a post-loop decay tail. A
+    header with no loaded audio (an empty ``NewSample`` slot) is skipped.
+    """
+    if len(bank) < KRZ_HEADER_LEN or bank[:4] != KRZ_SIGNATURE:
+        return []
+    pool_start = struct.unpack_from(">i", bank, OFF_POOL_START)[0]
+    pool_frames = (full_size - pool_start) // 2
+    if pool_start <= 0 or pool_frames <= 0:
+        return []
+    limit = len(bank)
+    off = OBJ_DIR_START
+    objects: list[tuple[str, int, list[dict[str, int]]]] = []
+    starts: set[int] = set()
+    while off + OBJ_HDR_MIN <= limit:
+        length = -struct.unpack_from(">i", bank, off)[0]
+        if length <= 0 or off + length > limit:
+            break  # the end marker (or an overrun): the directory is done
+        hash_ = struct.unpack_from(">H", bank, off + OBJ_HASH)[0]
+        if hash_ >> OBJ_TYPE_SHIFT == OBJ_TYPE_SAMPLE:
+            ofs = struct.unpack_from(">H", bank, off + OBJ_OFS)[0]
+            body = off + OBJ_BODY_BASE + ofs
+            if body + KSAMPLE_HEADERS <= off + length:
+                num = struct.unpack_from(">h", bank, body + KSAMPLE_NUM_HEADERS)[0]
+                stereo = bank[body + KSAMPLE_FLAGS] & STEREO_FLAG
+                headers = _headers(bank, body, num + 1)
+                name = _object_name(bank[off + OBJ_NAME : body])
+                objects.append((name, stereo, headers))
+                starts.update(h["start"] for h in headers if h["has_data"])
+        off += length
+    # A header's true PCM end is the next loaded sample's start anywhere in the
+    # pool (the stored end is only the loop end), capped at the pool itself.
+    ordered = [*sorted(starts), pool_frames]
+
+    def next_start(after: int) -> int:
+        for value in ordered:
+            if value > after:
+                return value
+        return pool_frames
+
+    out: list[_BankSample] = []
+    for name, stereo, headers in objects:
+        loaded = [h for h in headers if h["has_data"]]
+        if stereo and len(loaded) >= 2:
+            out.append(
+                _stereo_sample(name, loaded[0], loaded[1], pool_start, pool_frames, next_start)
+            )
+            continue
+        for index, header in enumerate(loaded):
+            part = f"{name} {index + 1}" if len(loaded) > 1 else name
+            out.append(_mono_sample(part, header, pool_start, pool_frames, next_start))
+    return [s for s in out if s is not None]
+
+
+def _snap_rate(hz: float) -> int:
+    for standard in STANDARD_RATES:
+        if abs(hz - standard) <= RATE_SNAP_HZ:
+            return standard
+    return round(hz)
+
+
+def _rate_and_loop(header: dict[str, int], start: int) -> tuple[int, tuple[int, int] | None]:
+    rate = _snap_rate(1_000_000_000 / header["period"]) if header["period"] else 0
+    loop = None
+    if header["looped"]:
+        loop = (header["loop_start"] - start, header["loop_end"] - start)
+    return rate, loop
+
+
+def _mono_sample(name, header, pool_start, pool_frames, next_start) -> _BankSample | None:
+    start = header["start"]
+    end = min(next_start(start), pool_frames)
+    if not 0 <= start < end:
+        return None
+    rate, loop = _rate_and_loop(header, start)
+    return _BankSample(
+        name=name,
+        rate=rate,
+        root=header["root"],
+        channels=1,
+        data_off=pool_start + start * 2,
+        data_off_right=0,
+        channel_bytes=(end - start) * 2,
+        loop=loop,
+    )
+
+
+def _stereo_sample(name, left, right, pool_start, pool_frames, next_start) -> _BankSample | None:
+    ls, rs = left["start"], right["start"]
+    left_len = min(next_start(ls), pool_frames) - ls
+    right_len = min(next_start(rs), pool_frames) - rs
+    channel = min(left_len, right_len)  # planar channels are equal; be defensive
+    if channel <= 0:
+        return None
+    rate, loop = _rate_and_loop(left, ls)
+    return _BankSample(
+        name=name,
+        rate=rate,
+        root=left["root"],
+        channels=2,
+        data_off=pool_start + ls * 2,
+        data_off_right=pool_start + rs * 2,
+        channel_bytes=channel * 2,
+        loop=loop,
+    )
 
 
 @dataclass(frozen=True)
@@ -270,6 +515,13 @@ def _live_entries(directory: bytes) -> Iterator[tuple[str, int, int, int]]:
 class KurzweilBackend:
     name = "kurzweil"
 
+    def __init__(self) -> None:
+        #: The last bank read in full, keyed by ``(id(image), offset, cluster)``.
+        #: A volume's samples are extracted back to back and all slice the same
+        #: bank, so a one-slot cache turns the per-sample reads into one read of
+        #: the bank rather than one of the whole disc per sample.
+        self._bank_cache: tuple[tuple[int, int, int], bytes] | None = None
+
     def probe(self, image: SectorImage, offset: int) -> bool:
         """A ``KMSI`` FAT16 boot sector whose first real file leads with ``PRAM``.
 
@@ -297,12 +549,14 @@ class KurzweilBackend:
         return False
 
     def volumes(self, image: SectorImage, offset: int) -> Iterator[Volume]:
-        """One volume -- FAT16 has no partitions -- holding every ``.KRZ`` file.
+        """One volume per ``.KRZ`` bank, its samples the volume's files.
 
-        The root directory is a fixed region; a subdirectory is a cluster chain
-        like any file, so it is followed and walked in turn. Neither reference
-        disc has a subdirectory, but the format allows one and a walk that
-        assumed a flat root would silently drop it.
+        FAT16 has no partitions, so the disc is a flat set of banks; each bank
+        is a bundle of samples, which makes a bank the natural volume and its
+        sample objects its files -- the same shape an E-mu bank takes
+        (ADR-0032). A subdirectory is a cluster chain like any file and is
+        walked in turn; neither reference disc has one, but a flat-root walk
+        would silently drop it.
         """
         geo = _geometry(image, offset)
         if geo is None:
@@ -311,16 +565,87 @@ class KurzweilBackend:
         root = image.read(
             offset + geo.sector_at(geo.first_root_sector), geo.root_entries * ENTRY_LEN
         )
-        volume = Volume(
-            name=self._volume_name(image, offset, geo, root), start_block=geo.first_root_sector
-        )
-        volume.files = list(self._walk(image, offset, geo, fat, root, "", set()))
-        if not volume.files:
+        any_bank = False
+        for bank in self._walk(image, offset, geo, fat, root, "", set()):
+            any_bank = True
+            yield self._bank_volume(image, offset, geo, fat, bank)
+        if not any_bank:
             # probe() confirmed a file, so an empty walk means the directory was
             # damaged after the first entry rather than genuinely empty -- say
-            # so, never leave an unexplained empty volume (ADR-0012).
+            # so, never leave the disc looking simply blank (ADR-0012).
+            volume = Volume(name="KMSI", start_block=geo.first_root_sector)
             volume.note = "KMSI root directory holds no readable .KRZ files"
-        yield volume
+            yield volume
+
+    def _bank_volume(
+        self,
+        image: SectorImage,
+        offset: int,
+        geo: _Geometry,
+        fat: bytes,
+        bank: File,
+    ) -> Volume:
+        """One bank as a volume: its samples, then the whole ``.krz`` to keep.
+
+        Only the front of the bank -- the object directory -- is read to
+        enumerate; the pool is left on the disc until a sample is extracted. The
+        whole bank is added as one ``program`` so ``--keep-originals`` writes the
+        ``.krz`` out, while the WAV path, which acts on ``sample`` entries alone,
+        passes it by. A bank whose objects are all programs and keymaps -- the
+        1012-byte ``DRUM KIT`` is one -- yields no samples, and the note says so
+        rather than leaving an empty-looking volume unexplained (ADR-0012).
+        """
+        volume = Volume(name=bank.name, start_block=bank.start_block)
+        prefix = self._directory_prefix(image, offset, geo, fat, bank)
+        files: list[File] = []
+        for sample in _bank_samples(prefix, bank.size):
+            files.append(
+                File(
+                    name=sample.name,
+                    kind="sample",
+                    size=sample.channel_bytes * sample.channels,
+                    start_block=bank.start_block,
+                    raw_type=sample.rate,
+                    meta=(
+                        ("data_off", sample.data_off),
+                        ("data_off_right", sample.data_off_right),
+                        ("channels", sample.channels),
+                        ("channel_bytes", sample.channel_bytes),
+                        ("root", sample.root),
+                        ("has_loop", 1 if sample.loop else 0),
+                        ("loop_start", sample.loop[0] if sample.loop else 0),
+                        ("loop_end", sample.loop[1] if sample.loop else 0),
+                        # An object inside a bank, not a file the disc placed:
+                        # its bytes are a slice of the bank kept whole below, so
+                        # --keep-originals writes the .krz, not each raw slice.
+                        ("embedded", 1),
+                    ),
+                )
+            )
+        files.append(
+            File(name=bank.name, kind="program", size=bank.size, start_block=bank.start_block)
+        )
+        volume.files = files
+        if not any(f.kind == "sample" for f in files):
+            volume.note = "the bank holds programs or keymaps and no samples; listed only"
+        return volume
+
+    def _directory_prefix(
+        self, image: SectorImage, offset: int, geo: _Geometry, fat: bytes, bank: File
+    ) -> bytes:
+        """Enough of a bank to enumerate its samples -- the object directory.
+
+        The header names where the pool begins, which is the directory's end, so
+        a first bounded read almost always suffices; only a bank whose directory
+        is somehow larger than the bound is read again, in full, rather than
+        enumerated short.
+        """
+        prefix = self._read_chain(image, offset, geo, fat, bank.start_block, DIR_SCAN_BYTES)
+        if len(prefix) >= KRZ_HEADER_LEN:
+            pool_start = struct.unpack_from(">i", prefix, OFF_POOL_START)[0]
+            if 0 < len(prefix) < pool_start <= bank.size:
+                prefix = self._read_chain(image, offset, geo, fat, bank.start_block, pool_start)
+        return prefix
 
     def _walk(
         self,
@@ -348,28 +673,6 @@ class KurzweilBackend:
             if not FIRST_DATA_CLUSTER <= first_cluster <= geo.max_cluster:
                 continue
             yield File(name=f"{prefix}{name}", kind="bank", size=size, start_block=first_cluster)
-
-    def _volume_name(self, image: SectorImage, offset: int, geo: _Geometry, root: bytes) -> str:
-        """The volume label if the disc set one, else a constant.
-
-        FAT keeps the label in two places -- a root-directory entry with the
-        volume-id attribute, and the boot sector's extended field -- and both
-        are blank on the reference discs. The directory entry wins where they
-        differ, because it is the one a machine actually rewrites.
-        """
-        for name, attr, _first, _size in _live_entries(root):
-            if attr & ATTR_VOLUME_ID and not attr & ATTR_DIRECTORY:
-                label = name.replace(".", "").strip("\x00 ")
-                if label:
-                    return label
-        boot = image.read(offset, BOOT_READ)
-        if boot[OFF_EXT_BOOT_SIG] == 0x29:
-            label = (
-                boot[OFF_VOL_LABEL : OFF_VOL_LABEL + VOL_LABEL_LEN].decode("cp437").strip("\x00 ")
-            )
-            if label:
-                return label
-        return "KMSI"
 
     def _read_fat(self, image: SectorImage, offset: int, geo: _Geometry) -> bytes:
         return image.read(
@@ -399,32 +702,74 @@ class KurzweilBackend:
         return out
 
     def _read_chain(
-        self, image: SectorImage, offset: int, geo: _Geometry, fat: bytes, start: int
+        self,
+        image: SectorImage,
+        offset: int,
+        geo: _Geometry,
+        fat: bytes,
+        start: int,
+        max_bytes: int | None = None,
     ) -> bytes:
-        """Every cluster of a chain, coalescing a contiguous run into one read."""
+        """The chain's clusters, coalescing a contiguous run into one read.
+
+        ``max_bytes`` stops the walk once that many bytes are in hand -- used to
+        read a bank's front matter without pulling its whole PCM pool off the
+        disc. It bounds the pending run too, so a contiguous bank is not read
+        whole just because its clusters never break into a second run.
+        """
         out = bytearray()
         run_start = run_len = 0
         for cluster in self._chain(fat, start, geo.max_cluster):
             if run_len and cluster == run_start + run_len:
                 run_len += 1
-                continue
-            if run_len:
-                out += image.read(offset + geo.cluster_at(run_start), run_len * geo.cluster_bytes)
-            run_start, run_len = cluster, 1
+            else:
+                if run_len:
+                    out += image.read(
+                        offset + geo.cluster_at(run_start), run_len * geo.cluster_bytes
+                    )
+                run_start, run_len = cluster, 1
+            if max_bytes is not None and len(out) + run_len * geo.cluster_bytes >= max_bytes:
+                break
         if run_len:
             out += image.read(offset + geo.cluster_at(run_start), run_len * geo.cluster_bytes)
-        return bytes(out)
+        return bytes(out) if max_bytes is None else bytes(out[:max_bytes])
+
+    def _bank_bytes(
+        self, image: SectorImage, offset: int, geo: _Geometry, fat: bytes, cluster: int
+    ) -> bytes:
+        """The whole bank at ``cluster``, from a one-slot cache where it can be."""
+        key = (id(image), offset, cluster)
+        cached = self._bank_cache
+        if cached is not None and cached[0] == key:
+            return cached[1]
+        bank = self._read_chain(image, offset, geo, fat, cluster)
+        self._bank_cache = (key, bank)
+        return bank
 
     def read_file(self, image: SectorImage, offset: int, entry: File) -> bytes:
-        """Gather a file's clusters along the FAT chain, truncated to its size.
+        """The bytes of one entry: a bank's whole ``.krz``, or a sample's slice.
 
-        A short read is a damaged disc, not an error: the caller gets what the
-        disc still holds (per the container's own read contract).
+        A ``program`` entry is the whole bank, gathered along its FAT chain and
+        truncated to its size. A ``sample`` entry is an object inside a bank, so
+        its bytes are a window into the bank's shared PCM pool -- the bank is
+        read (once, cached) and sliced. A short read is a damaged disc, not an
+        error: the caller gets what the disc still holds.
         """
         geo = _geometry(image, offset)
         if geo is None:
             return b""
         fat = self._read_fat(image, offset, geo)
+        if entry.get("embedded"):
+            bank = self._bank_bytes(image, offset, geo, fat, entry.start_block)
+            data_off = entry.get("data_off")
+            channel = entry.get("channel_bytes")
+            if entry.get("channels") == 2:
+                # Stereo is planar: the whole left channel, then the whole
+                # right, each addressed separately. Hand the sample layer the
+                # two channels back to back for it to interleave.
+                right = entry.get("data_off_right")
+                return bank[data_off : data_off + channel] + bank[right : right + channel]
+            return bank[data_off : data_off + channel]
         return self._read_chain(image, offset, geo, fat, entry.start_block)[: entry.size]
 
     def layout(self, image: SectorImage, offset: int) -> str:
@@ -447,16 +792,27 @@ class KurzweilBackend:
         return suffix.lower() or DEFAULT_ORIGINAL_SUFFIX
 
     def parse_sample(self, entry: File, payload: bytes):
-        """Not yet: a ``.KRZ`` is an object bank, not a bare sample.
+        """Carry one sample object's pool slice to WAV-ready PCM.
 
-        The audio lives inside the bank's own big-endian object format, which
-        is a separate deliverable (#63). Raising here rather than falling back
-        to the AKAI parser is what makes ``extract`` skip a ``.KRZ`` cleanly
-        with a reason instead of mis-reading a bank as an AKAI sample.
+        The rate and loop the object declared were read from the bank directory
+        and travel on ``entry``; ``payload`` is the big-endian pool slice
+        ``read_file`` returned. The sample layer reverses each value's bytes to
+        little-endian and applies the loop (ADR-0011, ADR-0024). Passing them
+        here rather than sniffing the payload keeps ``sample/`` free of any
+        Kurzweil bookkeeping (ADR-0003).
         """
-        from samplerdisc.sample import NotASample
+        from samplerdisc.sample import kurzweil
 
-        raise NotASample(f"{entry.name}: Kurzweil .KRZ bank parsing is not implemented yet (#63)")
+        loop = (entry.get("loop_start"), entry.get("loop_end")) if entry.get("has_loop") else None
+        return kurzweil.parse(
+            payload,
+            rate=entry.raw_type,
+            name=entry.name,
+            loop=loop,
+            root=entry.get("root"),
+            channels=entry.get("channels") or 1,
+            channel_bytes=entry.get("channel_bytes"),
+        )
 
 
 register(KurzweilBackend())
