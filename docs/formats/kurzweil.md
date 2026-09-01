@@ -1,6 +1,6 @@
 # Kurzweil `KMSI` disc filesystem
 
-The native disc format of the Kurzweil K2000/K2500 family is a plain **FAT16** filesystem. Its boot sector carries the OEM name `KMSI` (Kurzweil Music Systems Inc.) where a DOS-formatted disc would carry `MSDOS5.0` or a `mkfs` string, and that eight-byte label is the only thing that says a given FAT was written by a Kurzweil rather than by anything else. The files on it are `.KRZ` object banks; this backend lists them, and the format of what is inside a bank is a separate problem ([#60](https://github.com/bmxcode/samplerdisc/issues/60)).
+The native disc format of the Kurzweil K2000/K2500 family is a plain **FAT16** filesystem. Its boot sector carries the OEM name `KMSI` (Kurzweil Music Systems Inc.) where a DOS-formatted disc would carry `MSDOS5.0` or a `mkfs` string, and that eight-byte label is the only thing that says a given FAT was written by a Kurzweil rather than by anything else. The files on it are `.KRZ` object banks; this backend lists them, and the format of what is inside a bank is a separate problem ([#63](https://github.com/bmxcode/samplerdisc/issues/63)).
 
 Everything below is measured against the two `Best Service - Gigapack I & II (Kurzweil)` discs — CD 1 (684 702 480 bytes, 291 115 raw sectors) and CD 2 (684 744 816 bytes, 291 133) — read end to end. They are the collection's first Kurzweil specimens. Where a constant is called "on both discs" it means byte-identical across the two, which is weak evidence of the format against one disc's quirk and is said honestly as such until a third specimen exists.
 
@@ -60,7 +60,7 @@ Files are fragmented. On CD 1, 12 of the 106 banks have a non-contiguous cluster
 
 ## The `.KRZ` file — an object bank, listed not opened
 
-Every one of the 295 files across both discs begins with the four-byte tag `PRAM` — the 1012-byte `DRUM KIT.KRZ` on CD 2 included. A `.KRZ` is not a bare sample: it is a bundle of Kurzweil objects (programs, keymaps and samples), big-endian, with embedded object names (`HAL:CHRD 1` inside `CH GRG 2.KRZ`). This backend lists the bank files and stops there; enumerating and extracting the samples inside a bank is a separate format layer, deferred ([#60](https://github.com/bmxcode/samplerdisc/issues/60), ADR-0035). Each bank is listed with kind `bank`, and `--keep-originals` writes it out with its own `.krz` suffix.
+Every one of the 295 files across both discs begins with the four-byte tag `PRAM` — the 1012-byte `DRUM KIT.KRZ` on CD 2 included. A `.KRZ` is not a bare sample: it is a bundle of Kurzweil objects (programs, keymaps and samples), big-endian, with embedded object names (`HAL:CHRD 1` inside `CH GRG 2.KRZ`). This backend lists the bank files and stops there; enumerating and extracting the samples inside a bank is a separate format layer, deferred ([#63](https://github.com/bmxcode/samplerdisc/issues/63), ADR-0035). Each bank is listed with kind `bank`, and `--keep-originals` writes it out with its own `.krz` suffix.
 
 ## What a probe confirms
 

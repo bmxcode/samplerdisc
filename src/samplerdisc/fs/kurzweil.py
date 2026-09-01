@@ -15,7 +15,7 @@ backend lists those files -- it does not open them. A ``.KRZ`` is a bundle of
 Kurzweil objects (programs, keymaps and samples) with its own big-endian
 object format, which is a separate deliverable; each file begins with the
 four-byte tag ``PRAM`` and that is what the probe confirms a real file by
-(ADR-0012, ADR-0035). Turning a ``.KRZ`` bank into WAV is deferred (#60).
+(ADR-0012, ADR-0035). Turning a ``.KRZ`` bank into WAV is deferred (#63).
 
 Every constant here is documented in the format doc against the two
 ``Gigapack I & II (Kurzweil)`` discs. Do not change a constant without changing
@@ -103,7 +103,7 @@ END_OF_DIR = 0x00  # no entry here and none after: the directory ends
 #: across both discs, the 1012-byte ``DRUM KIT`` on CD 2 included. It is what
 #: the probe confirms the first file *is* a Kurzweil object and not just a
 #: plausible directory pointer (ADR-0012). The bank's interior is a separate
-#: format (#60).
+#: format (#63).
 KRZ_SIGNATURE = b"PRAM"
 
 
@@ -450,13 +450,13 @@ class KurzweilBackend:
         """Not yet: a ``.KRZ`` is an object bank, not a bare sample.
 
         The audio lives inside the bank's own big-endian object format, which
-        is a separate deliverable (#60). Raising here rather than falling back
+        is a separate deliverable (#63). Raising here rather than falling back
         to the AKAI parser is what makes ``extract`` skip a ``.KRZ`` cleanly
         with a reason instead of mis-reading a bank as an AKAI sample.
         """
         from samplerdisc.sample import NotASample
 
-        raise NotASample(f"{entry.name}: Kurzweil .KRZ bank parsing is not implemented yet (#60)")
+        raise NotASample(f"{entry.name}: Kurzweil .KRZ bank parsing is not implemented yet (#63)")
 
 
 register(KurzweilBackend())
