@@ -1312,3 +1312,197 @@ def emu3_disc(
         base = sample_dir_block * BLOCK
         image[base : base + len(table)] = table
     return bytes(image)
+
+
+def kurzweil_cluster(cluster: int, cluster_bytes: int, seed: int = 11) -> bytes:
+    """The bytes this fixture writes into one KMSI cluster, keyed on its number.
+
+    Different in every cluster, so a chain test means something: a walk that
+    assumes contiguity instead of following the FAT then returns visibly wrong
+    bytes rather than plausible ones -- the same discipline the Roland fixture
+    uses.
+    """
+    return bytes([(seed + cluster + i // 512) & 0xFF for i in range(cluster_bytes)])
+
+
+def kurzweil_file(
+    name: str,
+    chain,
+    *,
+    size: int | None = None,
+    body: bytes | None = None,
+    signature: bytes | None = None,
+    attr: int = 0x20,
+    terminator: int = 0xFFFF,
+    children=None,
+    seed: int = 11,
+) -> dict:
+    """One entry for ``kurzweil_disc``.
+
+    ``chain`` is the list of clusters linked in the FAT, in order -- give it out
+    of sequence to build a fragmented file. ``body`` sets the exact contents
+    (a read-back test compares against it); when omitted the clusters are filled
+    with keyed content and the first four bytes are the ``PRAM`` signature so
+    the file passes the probe. ``children`` makes this a subdirectory whose
+    cluster chain holds those child entries.
+    """
+    return {
+        "name": name,
+        "chain": tuple(chain),
+        "size": size,
+        "body": body,
+        "signature": signature,
+        "attr": attr,
+        "terminator": terminator,
+        "children": children,
+        "seed": seed,
+    }
+
+
+def kurzweil_disc(
+    files,
+    *,
+    volume_label: str | None = None,
+    oem: bytes | None = None,
+    sec_per_clus: int = 1,
+    min_clusters: int = 4200,
+    zero_root: bool = False,
+) -> bytes:
+    """Build a synthetic Kurzweil ``KMSI`` FAT16 image.
+
+    ``files`` is a list of ``kurzweil_file()`` dicts. Everything is written from
+    the backend's own constants (ADR-0008: not one byte comes off a disc), so
+    the fixture and the reader cannot drift apart about where a region sits.
+
+    ``oem`` overrides the ``KMSI`` label to build a FAT that is not Kurzweil's.
+    ``min_clusters`` below the FAT16 floor builds a FAT12-sized volume, which
+    the backend declines. ``zero_root`` leaves the root directory zeroed while
+    the boot sector stays valid -- the ADR-0012 case, a magic and a pointer with
+    nothing confirmed.
+    """
+    from samplerdisc.fs.kurzweil import (
+        ENTRY_LEN,
+        FIRST_DATA_CLUSTER,
+        KRZ_SIGNATURE,
+        LOGICAL_SECTOR,
+        OEM_NAME,
+        OFF_BYTES_PER_SEC,
+        OFF_ENTRY_ATTR,
+        OFF_ENTRY_FIRST_CLUS,
+        OFF_ENTRY_SIZE,
+        OFF_EXT_BOOT_SIG,
+        OFF_FAT_SZ16,
+        OFF_JMP,
+        OFF_MEDIA,
+        OFF_NUM_FATS,
+        OFF_OEM,
+        OFF_ROOT_ENT,
+        OFF_RSVD,
+        OFF_SEC_PER_CLUS,
+        OFF_TOT32,
+        OFF_VOL_LABEL,
+        VOL_LABEL_LEN,
+    )
+
+    oem = OEM_NAME if oem is None else oem
+    bps = LOGICAL_SECTOR
+    cluster_bytes = sec_per_clus * bps
+    root_entries = 512
+    num_fats = 2
+    reserved = 1
+
+    specs = list(files)
+    used = [c for spec in specs for c in spec["chain"]]
+    highest = max(used, default=FIRST_DATA_CLUSTER)
+    cluster_count = max(min_clusters, highest - FIRST_DATA_CLUSTER + 1 + 4)
+    fat_entries = cluster_count + FIRST_DATA_CLUSTER
+    fat_sectors = (fat_entries * 2 + bps - 1) // bps
+    root_sectors = (root_entries * ENTRY_LEN + bps - 1) // bps
+    first_fat = reserved
+    first_root = reserved + num_fats * fat_sectors
+    first_data = first_root + root_sectors
+    total_sectors = first_data + cluster_count * sec_per_clus
+    image = bytearray(total_sectors * bps)
+
+    # --- boot sector / BPB, all from the backend's own field offsets.
+    image[OFF_JMP : OFF_JMP + 3] = b"\xe9\x00\x00"
+    image[OFF_OEM : OFF_OEM + 8] = oem[:8].ljust(8, b" ")
+    struct.pack_into("<H", image, OFF_BYTES_PER_SEC, bps)
+    image[OFF_SEC_PER_CLUS] = sec_per_clus
+    struct.pack_into("<H", image, OFF_RSVD, reserved)
+    image[OFF_NUM_FATS] = num_fats
+    struct.pack_into("<H", image, OFF_ROOT_ENT, root_entries)
+    image[OFF_MEDIA] = 0xF8
+    struct.pack_into("<H", image, OFF_FAT_SZ16, fat_sectors)
+    struct.pack_into("<I", image, OFF_TOT32, total_sectors)
+    image[OFF_EXT_BOOT_SIG] = 0x29
+    if volume_label is not None:
+        image[OFF_VOL_LABEL : OFF_VOL_LABEL + VOL_LABEL_LEN] = volume_label.encode("cp437")[
+            :VOL_LABEL_LEN
+        ].ljust(VOL_LABEL_LEN, b" ")
+
+    fat = bytearray(fat_sectors * bps)
+    struct.pack_into("<HH", fat, 0, 0xFFF8, 0xFFFF)  # reserved slots 0 and 1
+
+    def name_8_3(name: str) -> bytes:
+        stem, _, ext = name.partition(".")
+        return stem.encode("cp437")[:8].ljust(8, b" ") + ext.encode("cp437")[:3].ljust(3, b" ")
+
+    def link_chain(chain, terminator) -> None:
+        for here, nxt in itertools.pairwise(chain):
+            struct.pack_into("<H", fat, 2 * here, nxt)
+        struct.pack_into("<H", fat, 2 * chain[-1], terminator)
+
+    def write_body(chain, payload: bytes) -> None:
+        for index, cluster in enumerate(chain):
+            piece = payload[index * cluster_bytes : (index + 1) * cluster_bytes]
+            at = (first_data + (cluster - FIRST_DATA_CLUSTER) * sec_per_clus) * bps
+            image[at : at + len(piece)] = piece
+
+    def build_entry(spec) -> tuple[bytes, int, int]:
+        """Write a spec's FAT chain and data; return (dir entry, cluster, size)."""
+        chain = spec["chain"]
+        link_chain(chain, spec["terminator"])
+        capacity = len(chain) * cluster_bytes
+        if spec["children"] is not None:
+            table = bytearray()
+            for child in spec["children"]:
+                dentry, _first_clus, _size = build_entry(child)
+                table += dentry
+            body = bytes(table).ljust(capacity, b"\x00")
+            attr = spec["attr"] | 0x10
+            declared = 0
+        else:
+            if spec["body"] is not None:
+                body = spec["body"][:capacity].ljust(capacity, b"\x00")
+            else:
+                sig = KRZ_SIGNATURE if spec["signature"] is None else spec["signature"]
+                buf = bytearray()
+                for cluster in chain:
+                    buf += kurzweil_cluster(cluster, cluster_bytes, spec["seed"])
+                buf[: len(sig)] = sig
+                body = bytes(buf)
+            declared = (
+                spec["size"] if spec["size"] is not None else len(body.rstrip(b"\x00")) or capacity
+            )
+            attr = spec["attr"]
+        write_body(chain, body)
+        entry = bytearray(ENTRY_LEN)
+        entry[:11] = name_8_3(spec["name"])
+        entry[OFF_ENTRY_ATTR] = attr
+        struct.pack_into("<H", entry, OFF_ENTRY_FIRST_CLUS, chain[0])
+        struct.pack_into("<I", entry, OFF_ENTRY_SIZE, declared)
+        return bytes(entry), chain[0], declared
+
+    root = bytearray()
+    for spec in specs:
+        entry, _clus, _size = build_entry(spec)
+        root += entry
+
+    for copy in range(num_fats):
+        base = (first_fat + copy * fat_sectors) * bps
+        image[base : base + len(fat)] = fat
+    if not zero_root:
+        base = first_root * bps
+        image[base : base + len(root)] = root
+    return bytes(image)
