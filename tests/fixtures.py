@@ -1506,3 +1506,136 @@ def kurzweil_disc(
         base = first_root * bps
         image[base : base + len(root)] = root
     return bytes(image)
+
+
+def kurzweil_sample(
+    name: str,
+    *,
+    rate: int = 44100,
+    root: int = 60,
+    pcm: bytes,
+    right: bytes | None = None,
+    loop: tuple[int, int] | None = None,
+    has_data: bool = True,
+) -> dict:
+    """One sample object for ``kurzweil_bank``.
+
+    ``pcm`` (and ``right`` for a single stereo object) are **little-endian** mono
+    bytes -- what a round-trip expects back, since the bank stores them
+    big-endian. ``loop`` is ``(start, end)`` sample-relative frames, or ``None``
+    for a one-shot. ``has_data=False`` builds an empty ``NewSample`` slot the
+    reader must skip.
+    """
+    return {
+        "name": name,
+        "rate": rate,
+        "root": root,
+        "pcm": pcm,
+        "right": right,
+        "loop": loop,
+        "has_data": has_data,
+    }
+
+
+def kurzweil_bank(samples, *, base_id: int = 200, extra_pool: int = 0) -> bytes:
+    """A synthetic ``.KRZ`` object bank, built from the backend's own constants.
+
+    ``samples`` is a list of ``kurzweil_sample()`` dicts. Everything below comes
+    from ``fs/kurzweil.py`` (ADR-0008), so the fixture and the reader cannot
+    drift about a field's place. The audio is laid out in one contiguous pool in
+    directory order, each header's ``sampleStart`` pointing at its slice, so the
+    reader's next-start extent recovery has neighbours to bound against.
+    """
+    from samplerdisc.fs.kurzweil import (
+        KRZ_SIGNATURE,
+        KSAMPLE_HEADERS,
+        OBJ_DIR_START,
+        OFF_POOL_START,
+        SFH_HAS_DATA,
+        SFH_ONE_SHOT,
+        STEREO_FLAG,
+    )
+
+    def swap16(data: bytes) -> bytes:
+        out = bytearray(len(data))
+        out[0::2] = data[1::2]
+        out[1::2] = data[0::2]
+        return bytes(out)
+
+    # Lay the pool out first so every header knows its absolute word offset.
+    pool = bytearray()
+    placed = []  # (frame_offset, channel_frames, right_channel_frames|None)
+    for spec in samples:
+        if not spec["has_data"]:
+            placed.append(None)
+            continue
+        left_start = len(pool) // 2
+        pool += swap16(spec["pcm"])
+        right_start = None
+        if spec["right"] is not None:
+            right_start = len(pool) // 2
+            pool += swap16(spec["right"])
+        placed.append((left_start, len(spec["pcm"]) // 2, right_start))
+
+    def header_bytes(spec, start_w) -> bytes:
+        frames = len(spec["pcm"]) // 2
+        looped = spec["loop"] is not None
+        flags = SFH_HAS_DATA | (0 if looped else SFH_ONE_SHOT) | 0x30
+        if looped:
+            loop_start_w = start_w + spec["loop"][0]
+            sample_end_w = start_w + spec["loop"][1]
+        else:
+            loop_start_w = sample_end_w = start_w + frames
+        period = round(1_000_000_000 / spec["rate"]) if spec["rate"] else 0
+        return (
+            struct.pack(">BBBBhh", spec["root"], flags, 0, 0, 0, 0)
+            + struct.pack(">iiii", start_w, start_w, loop_start_w, sample_end_w)
+            + struct.pack(">hhI", 8, 6, period)
+        )
+
+    blocks = bytearray()
+    for index, (spec, place) in enumerate(zip(samples, placed, strict=True)):
+        name_b = spec["name"].encode("latin1")
+        nl = len(name_b)
+        ofs = nl + 3 if nl % 2 else nl + 4
+        namepad = ofs - nl - 2  # 1 (odd name) or 2 (even), so body lands past the name
+        if place is None:
+            # An empty slot: one header with the has-data bit clear.
+            headers = struct.pack(">BBBBhh", 0, 0, 0, 0, 0, 0) + struct.pack(
+                ">iiiihhI", 0, 0, 0, 0, 8, 6, 0
+            )
+            num_headers = 0
+            stereo_flag = 0
+        else:
+            left_start, _frames, right_start = place
+            headers = header_bytes(spec, left_start)
+            stereo_flag = 0
+            num_headers = 0
+            if right_start is not None:
+                right_spec = dict(spec, pcm=spec["right"])
+                headers += header_bytes(right_spec, right_start)
+                stereo_flag = STEREO_FLAG
+                num_headers = 1
+        ksample = (
+            struct.pack(">hhh", 1, num_headers, KSAMPLE_HEADERS - 4)
+            + bytes([stereo_flag, 0])
+            + struct.pack(">hh", 0, 0)
+        )
+        body = ksample + headers
+        hash_id = 0x9800 + base_id + index
+        content = (
+            struct.pack(">H", hash_id)
+            + struct.pack(">H", 0)  # size: the reader ignores it, using blocksize
+            + struct.pack(">H", ofs)
+            + name_b
+            + b"\x00" * namepad
+            + body
+        )
+        blocks += struct.pack(">i", -(4 + len(content))) + content
+
+    header = bytearray(OBJ_DIR_START)
+    header[0:4] = KRZ_SIGNATURE
+    pool_start = OBJ_DIR_START + len(blocks) + 4  # past the int32 end marker
+    struct.pack_into(">i", header, OFF_POOL_START, pool_start)
+    end_marker = struct.pack(">i", 0)
+    return bytes(header) + bytes(blocks) + end_marker + bytes(pool) + b"\x00" * extra_pool

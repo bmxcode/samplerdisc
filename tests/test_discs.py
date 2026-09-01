@@ -105,7 +105,7 @@ def _pinned_sizes() -> set[int]:
     return {
         *_EXPECT_NO_FILESYSTEM.values(),
         *(size for size, _ in _ROLAND_S7XX.values()),
-        *(size for size, _ in _KURZWEIL.values()),
+        *(size for size, _, _ in _KURZWEIL.values()),
         *(size for size, _, _ in _ISO9660.values()),
         *(size for size, _, _, _, _, _ in _EMU3.values()),
         *(size for size, _, _, _, _, _ in _AKAI.values()),
@@ -382,41 +382,43 @@ def test_roland_s7xx_payloads_are_byte_identical_to_the_disc(label: str) -> None
             assert payload == bytes(expected[: entry.size]), entry.name
 
 
-#: Kurzweil ``KMSI`` (FAT16) discs, pinned by size with the ``.KRZ`` bank-file
-#: count each lists. These are the collection's first Kurzweil specimens (#60).
-#: A ``.KRZ`` is an object bank, not a bare sample, so the fs layer lists files
-#: and the count pinned here is the file count; the audio inside a bank is a
-#: separate format layer, deferred (ADR-0035). ``label: (size in bytes, files)``.
+#: Kurzweil ``KMSI`` (FAT16) discs, pinned by size with the bank and sample
+#: counts each yields. These are the collection's first Kurzweil specimens (#60).
+#: A ``.KRZ`` is an object bank, so each bank is a volume and its sample objects
+#: are that volume's files (ADR-0036). ``label: (size, banks, samples)``.
 _KURZWEIL = {
-    "gigapack-cd1": (684_702_480, 106),
-    "gigapack-cd2": (684_744_816, 189),
+    "gigapack-cd1": (684_702_480, 106, 3846),
+    "gigapack-cd2": (684_744_816, 189, 6637),
 }
 
 
 @pytest.mark.parametrize("label", sorted(_KURZWEIL))
-def test_kurzweil_discs_resolve_and_list_their_krz_banks(label: str) -> None:
+def test_kurzweil_discs_resolve_and_enumerate_their_bank_samples(label: str) -> None:
     """Pinned where present, skipped where the shelf is bare -- see _pinned_disc()."""
-    size, expected = _KURZWEIL[label]
+    size, banks, samples = _KURZWEIL[label]
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
         assert origin is not None, f"{label}: no filesystem found"
         assert origin.backend.name == "kurzweil"
         assert origin.offset == 0
         volumes = list(origin.backend.volumes(image, origin.offset))
-        # One flat FAT16 volume -- no partitions (ADR-0035).
-        assert len(volumes) == 1
-        assert sum(len(v.files) for v in volumes) == expected
-        # Every claimed volume yields a file or says why it is empty (ADR-0012).
-        assert all(v.files or v.note for v in volumes), [v.name for v in volumes if not v.files]
+        # One volume per .KRZ bank (ADR-0036), each carrying its samples and the
+        # whole bank kept as a program for --keep-originals.
+        assert len(volumes) == banks
+        assert sum(1 for v in volumes for f in v.files if f.kind == "sample") == samples
+        assert all(f.kind == "program" for v in volumes for f in v.files if f.kind != "sample")
+        # Every claimed volume yields a sample or says why it has none (ADR-0012).
+        assert all(any(f.kind == "sample" for f in v.files) or v.note for v in volumes)
 
 
 @pytest.mark.parametrize("label", sorted(_KURZWEIL))
-def test_kurzweil_payloads_are_byte_identical_to_the_disc(label: str) -> None:
-    """``read_file`` follows the FAT chain; check it against an independent walk.
+def test_kurzweil_banks_are_byte_identical_to_the_disc(label: str) -> None:
+    """``read_file`` of a whole ``.krz`` follows the FAT chain; check it against
+    an independent walk.
 
-    Over a spread of the disc rather than its first few entries, and against a
-    second hand-rolled FAT16 walk rather than ``read_file`` itself -- CD 1 has
-    twelve fragmented banks, and a walk that assumed contiguity would return a
+    Over a spread of the banks rather than the first few, and against a second
+    hand-rolled FAT16 walk rather than ``read_file`` itself -- CD 1 has twelve
+    fragmented banks, and a walk that assumed contiguity would return a
     neighbour's bytes on exactly those.
     """
     from samplerdisc.fs import kurzweil as fs
@@ -428,8 +430,9 @@ def test_kurzweil_payloads_are_byte_identical_to_the_disc(label: str) -> None:
         offset = origin.offset
         geo = fs._geometry(image, offset)
         fat = origin.backend._read_fat(image, offset, geo)
-        files = next(iter(origin.backend.volumes(image, offset))).files
-        for entry in files[:: max(1, len(files) // 30)]:
+        volumes = list(origin.backend.volumes(image, offset))
+        banks = [f for v in volumes for f in v.files if f.kind == "program"]
+        for entry in banks[:: max(1, len(banks) // 30)]:
             payload = origin.backend.read_file(image, offset, entry)
             assert len(payload) == entry.size
             assert payload[:4] == fs.KRZ_SIGNATURE
@@ -443,6 +446,110 @@ def test_kurzweil_payloads_are_byte_identical_to_the_disc(label: str) -> None:
                 if cluster >= fs.FAT16_EOC:
                     break
             assert payload == bytes(expected[: entry.size]), entry.name
+
+
+@pytest.mark.parametrize("label", sorted(_KURZWEIL))
+def test_kurzweil_samples_decode_to_standard_rates(label: str) -> None:
+    """Every sample carries audio at a plausible rate.
+
+    A decoder reading the wrong field offsets would still return audio-shaped
+    bytes -- the pool is nothing but PCM -- so coherence alone proves little.
+    The period, though, sits at a fixed place in the sample header, and read
+    from the wrong one it inverts to an absurd rate; so every rate must fall in
+    an audio band, and a majority must land on one of the sampler's standard
+    rates (many Kurzweil samples use in-between rates like 30 000, which is why
+    this is a majority and not all). The byte-for-byte agreement with mpc2emu is
+    what pins the rate exactly; this is the check that runs without that reader.
+    """
+    size, _banks, samples = _KURZWEIL[label]
+    standard = set(_kurzweil_fs().STANDARD_RATES)
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        on_grid = checked = 0
+        for volume in origin.backend.volumes(image, origin.offset):
+            for entry in volume.files:
+                if entry.kind != "sample":
+                    continue
+                checked += 1
+                assert 4000 <= entry.raw_type <= 96000, f"{entry.name}: {entry.raw_type}"
+                on_grid += entry.raw_type in standard
+        assert checked == samples
+        assert on_grid >= int(checked * 0.5)
+
+
+def _kurzweil_fs():
+    from samplerdisc.fs import kurzweil
+
+    return kurzweil
+
+
+def _krz_oracle() -> Path | None:
+    """A checkout of lentferj/mpc2emu, whose ``krz_parser`` is the independent
+    reader this decode is verified against.
+
+    Set ``SAMPLERDISC_KRZ_ORACLE`` to the repository root. Its ``parse_krz``
+    returns each sample as little-endian PCM with a rate, exactly this backend's
+    output, so the two are compared byte for byte. Not vendored: it is a
+    separate project, so the check skips without it -- the decode's own
+    correspondence with it was established when this deliverable was built (see
+    ADR-0036).
+    """
+    root = os.environ.get("SAMPLERDISC_KRZ_ORACLE")
+    return Path(root) if root and (Path(root) / "parsers" / "krz_parser.py").is_file() else None
+
+
+@pytest.mark.skipif(
+    _krz_oracle() is None, reason="set SAMPLERDISC_KRZ_ORACLE to an mpc2emu checkout"
+)
+def test_kurzweil_samples_match_the_mpc2emu_reader() -> None:
+    """Byte-for-byte against an independent K2000 reader (ADR-0036).
+
+    mpc2emu names unreferenced samples itself and can hold two same-named
+    slots, so samples are matched on content -- ``(rate, pcm)`` -- not name:
+    every sample this backend decodes must be one mpc2emu decodes identically,
+    with a floor so a broken decoder cannot pass by matching nothing.
+    """
+    import contextlib
+    import io
+    import sys
+    import tempfile
+
+    oracle_root = _krz_oracle()
+    sys.path.insert(0, str(oracle_root))
+    cwd = os.getcwd()
+    os.chdir(oracle_root)
+    try:
+        from parsers.krz_parser import parse_krz
+    finally:
+        os.chdir(cwd)
+
+    label, (size, _banks, _samples) = "gigapack-cd1", _KURZWEIL["gigapack-cd1"]
+    checked = matched = 0
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None
+        backend, offset = origin.backend, origin.offset
+        volumes = list(backend.volumes(image, offset))
+        for volume in volumes[:: max(1, len(volumes) // 20)]:
+            program = next(f for f in volume.files if f.kind == "program")
+            fd, krz_path = tempfile.mkstemp(suffix=".krz")
+            with os.fdopen(fd, "wb") as krz:
+                krz.write(backend.read_file(image, offset, program))
+            try:
+                with contextlib.redirect_stdout(io.StringIO()):
+                    bank = parse_krz(krz_path)
+            finally:
+                os.unlink(krz_path)
+            reference = {(sd.sample_rate, sd.data) for sd in bank.samples}
+            for entry in volume.files:
+                if entry.kind != "sample":
+                    continue
+                sample = backend.parse_sample(entry, backend.read_file(image, offset, entry))
+                checked += 1
+                matched += (sample.rate, sample.pcm) in reference
+    assert checked >= 100
+    assert matched == checked, f"{checked - matched} of {checked} samples disagreed with mpc2emu"
 
 
 #: ISO 9660 discs pinned by name, with the volume label and file count each

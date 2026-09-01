@@ -5,9 +5,17 @@ here came off a disc, and nothing here may: the reference libraries are
 commercial and this repository is public. The disc-backed pins for the two real
 ``Gigapack I & II (Kurzweil)`` discs live in ``tests/test_discs.py`` and skip
 where the shelf is bare.
+
+The backend both lists a bank (as a volume) and enumerates the sample objects
+inside it (as that volume's files); the sample *audio* -- big-endian PCM carried
+to little-endian WAV -- is tested in ``test_kurzweil_sample.py``. What is here is
+the filesystem shape: a bank per volume, its samples and the ``.krz`` kept whole.
 """
 
 from __future__ import annotations
+
+import math
+import struct
 
 from samplerdisc.container.flat import FlatImage
 from samplerdisc.fs.kurzweil import KRZ_SIGNATURE, KurzweilBackend
@@ -23,22 +31,49 @@ def image_of(tmp_path, data: bytes, name: str = "kmsi.iso") -> FlatImage:
     return FlatImage(path)
 
 
-def krz(name: str, chain, *, size=None, body=None, **kw):
-    return fixtures.kurzweil_file(name, chain, size=size, body=body, **kw)
+def tone(frames: int, step: int = 137) -> bytes:
+    """Deterministic little-endian mono PCM -- what a round-trip expects back."""
+    return b"".join(struct.pack("<h", ((i * step) % 20000) - 10000) for i in range(frames))
 
 
-#: A small disc in the shape of a real one: a few .KRZ banks, one of them
-#: fragmented (its FAT chain out of order), each cluster carrying different
-#: bytes so a contiguity-assuming walk returns visibly wrong data.
+#: Real sample objects: a looped mono piano, a one-shot kick, a single stereo
+#: object (two planar channels), and an empty ``NewSample`` slot the walk skips.
+S_PIANO = fixtures.kurzweil_sample(
+    "PIANO C3", rate=44100, root=48, pcm=tone(2000), loop=(500, 1500)
+)
+S_KICK = fixtures.kurzweil_sample("KICK", rate=22050, root=60, pcm=tone(800, 91))
+S_STEREO = fixtures.kurzweil_sample(
+    "STR:Vn\x7fL", rate=48000, root=57, pcm=tone(1000, 50), right=tone(1000, 70), loop=(100, 900)
+)
+S_EMPTY = fixtures.kurzweil_sample("NewSample", pcm=b"", has_data=False)
+
+
+def disc_of(banks, *, first_cluster: int = 2, **kwargs) -> bytes:
+    """A KMSI disc from ``(name, [sample, ...])`` banks, chains sized to fit."""
+    files = []
+    cluster = first_cluster
+    for name, samples in banks:
+        body = fixtures.kurzweil_bank(samples)
+        count = max(1, math.ceil(len(body) / 512))
+        files.append(
+            fixtures.kurzweil_file(name, tuple(range(cluster, cluster + count)), body=body)
+        )
+        cluster += count
+    return fixtures.kurzweil_disc(files, **kwargs)
+
+
 THREE_BANKS = [
-    krz("CH GRG 1.KRZ", (2, 3)),
-    krz("SYN 01.KRZ", (7, 4, 6)),  # fragmented: 7 -> 4 -> 6
-    krz("PIA AC.KRZ", (5,)),
+    ("CH GRG 1.KRZ", [S_PIANO, S_KICK]),
+    ("SYN 01.KRZ", [S_STEREO]),
+    ("PIA AC.KRZ", [S_PIANO]),
 ]
 
 
+# --- the probe -----------------------------------------------------------------
+
+
 def test_probe_resolves_a_kmsi_disc_at_offset_zero(tmp_path):
-    image = image_of(tmp_path, fixtures.kurzweil_disc(THREE_BANKS))
+    image = image_of(tmp_path, disc_of(THREE_BANKS))
     origin = find_origin(image)
     assert origin is not None
     assert origin.backend.name == "kurzweil"
@@ -48,78 +83,10 @@ def test_probe_resolves_a_kmsi_disc_at_offset_zero(tmp_path):
 def test_probe_finds_a_filesystem_behind_a_zeroed_pregap(tmp_path):
     """A .bin with 150 zeroed sectors of pregap in front still resolves (ADR-0005)."""
     pregap = b"\x00" * (150 * 2048)
-    image = image_of(tmp_path, pregap + fixtures.kurzweil_disc(THREE_BANKS))
+    image = image_of(tmp_path, pregap + disc_of(THREE_BANKS))
     origin = find_origin(image)
     assert origin is not None
-    assert origin.backend.name == "kurzweil"
     assert origin.offset == 150 * 2048
-
-
-def test_volumes_lists_every_bank_as_one_flat_volume(tmp_path):
-    image = image_of(tmp_path, fixtures.kurzweil_disc(THREE_BANKS, volume_label="GIGA 1"))
-    volumes = list(BACKEND.volumes(image, 0))
-    assert len(volumes) == 1
-    volume = volumes[0]
-    assert volume.name == "GIGA 1"
-    assert [f.name for f in volume.files] == ["CH GRG 1.KRZ", "SYN 01.KRZ", "PIA AC.KRZ"]
-    assert all(f.kind == "bank" for f in volume.files)
-    assert not volume.note
-
-
-def test_an_unlabelled_volume_is_named_kmsi(tmp_path):
-    image = image_of(tmp_path, fixtures.kurzweil_disc(THREE_BANKS))
-    volume = next(iter(BACKEND.volumes(image, 0)))
-    assert volume.name == "KMSI"
-
-
-def test_read_file_follows_the_fat_chain_including_a_fragmented_bank(tmp_path):
-    bodies = {
-        "CH GRG 1.KRZ": KRZ_SIGNATURE + b"first-bank-payload" * 40,
-        "SYN 01.KRZ": KRZ_SIGNATURE + b"fragmented-across-7-4-6" * 30,
-        "PIA AC.KRZ": KRZ_SIGNATURE + b"single-cluster" * 10,
-    }
-    files = [
-        krz("CH GRG 1.KRZ", (2, 3), body=bodies["CH GRG 1.KRZ"]),
-        krz("SYN 01.KRZ", (7, 4, 6), body=bodies["SYN 01.KRZ"]),
-        krz("PIA AC.KRZ", (5,), body=bodies["PIA AC.KRZ"]),
-    ]
-    image = image_of(tmp_path, fixtures.kurzweil_disc(files))
-    volume = next(iter(BACKEND.volumes(image, 0)))
-    for entry in volume.files:
-        got = BACKEND.read_file(image, 0, entry)
-        assert got == bodies[entry.name], entry.name
-
-
-def test_read_file_truncates_to_the_declared_size(tmp_path):
-    body = KRZ_SIGNATURE + b"x" * 2000
-    files = [krz("SHORT.KRZ", (2, 3, 4), body=body, size=1234)]
-    image = image_of(tmp_path, fixtures.kurzweil_disc(files))
-    volume = next(iter(BACKEND.volumes(image, 0)))
-    got = BACKEND.read_file(image, 0, volume.files[0])
-    assert len(got) == 1234
-    assert got == body[:1234]
-
-
-def test_a_subdirectory_is_walked_and_its_files_carry_the_path(tmp_path):
-    child = krz("DEEP.KRZ", (9,), body=KRZ_SIGNATURE + b"nested" * 20)
-    files = [
-        krz("TOP.KRZ", (2,), body=KRZ_SIGNATURE + b"top" * 20),
-        fixtures.kurzweil_file("PIANOS", (3,), children=[child]),
-    ]
-    image = image_of(tmp_path, fixtures.kurzweil_disc(files))
-    origin = find_origin(image)
-    assert origin is not None
-    volume = next(iter(origin.backend.volumes(image, origin.offset)))
-    names = [f.name for f in volume.files]
-    assert names == ["TOP.KRZ", "PIANOS/DEEP.KRZ"]
-
-
-def test_layout_and_suffix(tmp_path):
-    image = image_of(tmp_path, fixtures.kurzweil_disc(THREE_BANKS))
-    layout = BACKEND.layout(image, 0)
-    assert layout.startswith("FAT16 (KMSI/Kurzweil)")
-    volume = next(iter(BACKEND.volumes(image, 0)))
-    assert all(BACKEND.original_suffix(f) == ".krz" for f in volume.files)
 
 
 def test_probe_declines_a_run_of_zeros(tmp_path):
@@ -130,37 +97,135 @@ def test_probe_declines_a_run_of_zeros(tmp_path):
 
 def test_probe_declines_a_generic_non_kmsi_fat(tmp_path):
     """A DOS FAT with a different OEM name is not claimed (ADR-0004)."""
-    image = image_of(tmp_path, fixtures.kurzweil_disc(THREE_BANKS, oem=b"MSDOS5.0"))
-    assert not BACKEND.probe(image, 0)
+    assert not BACKEND.probe(image_of(tmp_path, disc_of(THREE_BANKS, oem=b"MSDOS5.0")), 0)
 
 
 def test_probe_declines_a_fat12_sized_volume(tmp_path):
     """The reader is FAT16 only; a FAT12-sized volume is declined, not misread."""
-    image = image_of(tmp_path, fixtures.kurzweil_disc(THREE_BANKS, min_clusters=100))
-    assert not BACKEND.probe(image, 0)
+    assert not BACKEND.probe(image_of(tmp_path, disc_of(THREE_BANKS, min_clusters=100)), 0)
 
 
 def test_probe_declines_kmsi_with_no_confirmable_file(tmp_path):
     """A valid KMSI boot sector over a zeroed root is structure, not a disc (ADR-0012)."""
-    image = image_of(tmp_path, fixtures.kurzweil_disc(THREE_BANKS, zero_root=True))
-    assert not BACKEND.probe(image, 0)
+    assert not BACKEND.probe(image_of(tmp_path, disc_of(THREE_BANKS, zero_root=True)), 0)
 
 
 def test_probe_declines_when_the_first_file_is_not_a_krz_bank(tmp_path):
     """The confirming step is the PRAM tag, not just a plausible directory entry."""
-    files = [krz("NOTKRZ.KRZ", (2, 3), signature=b"junk")]
+    files = [fixtures.kurzweil_file("NOTKRZ.KRZ", (2, 3), signature=b"junk")]
+    assert not BACKEND.probe(image_of(tmp_path, fixtures.kurzweil_disc(files)), 0)
+
+
+# --- a bank is a volume, its samples the files ---------------------------------
+
+
+def test_each_bank_is_its_own_volume(tmp_path):
+    image = image_of(tmp_path, disc_of(THREE_BANKS))
+    volumes = list(BACKEND.volumes(image, 0))
+    assert [v.name for v in volumes] == ["CH GRG 1.KRZ", "SYN 01.KRZ", "PIA AC.KRZ"]
+
+
+def test_a_volumes_files_are_its_samples_then_the_whole_bank_to_keep(tmp_path):
+    image = image_of(tmp_path, disc_of([("SOUNDS.KRZ", [S_PIANO, S_KICK, S_STEREO, S_EMPTY])]))
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    samples = [f for f in volume.files if f.kind == "sample"]
+    programs = [f for f in volume.files if f.kind == "program"]
+    # The empty NewSample slot is skipped; the stereo object is one file.
+    assert [f.name for f in samples] == ["PIANO C3", "KICK", "STR:Vn\x7fL"]
+    # The whole bank is listed once as a program so --keep-originals writes it.
+    assert [f.name for f in programs] == ["SOUNDS.KRZ"]
+    assert BACKEND.original_suffix(programs[0]) == ".krz"
+
+
+def test_a_sample_file_carries_its_rate_root_and_loop(tmp_path):
+    image = image_of(tmp_path, disc_of([("SOUNDS.KRZ", [S_PIANO, S_KICK, S_STEREO])]))
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    by_name = {f.name: f for f in volume.files if f.kind == "sample"}
+    piano = by_name["PIANO C3"]
+    assert piano.raw_type == 44100
+    assert piano.get("root") == 48
+    assert piano.get("has_loop") == 1
+    assert piano.get("channels") == 1
+    # A one-shot carries no loop; the stereo object declares two channels.
+    assert by_name["KICK"].get("has_loop") == 0
+    assert by_name["STR:Vn\x7fL"].get("channels") == 2
+
+
+def test_a_bank_with_no_samples_is_listed_with_a_note(tmp_path):
+    """A programs/keymaps-only bank (like DRUM KIT) is real but sample-free."""
+    image = image_of(tmp_path, disc_of([("DRUM KIT.KRZ", [S_EMPTY])]))
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    assert not [f for f in volume.files if f.kind == "sample"]
+    assert volume.note
+
+
+# --- reading bytes: a sample slice, and the whole bank -------------------------
+
+
+def test_read_file_returns_a_samples_pool_slice_that_round_trips(tmp_path):
+    image = image_of(tmp_path, disc_of([("SOUNDS.KRZ", [S_PIANO, S_KICK])]))
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    piano = next(f for f in volume.files if f.name == "PIANO C3")
+    sample = BACKEND.parse_sample(piano, BACKEND.read_file(image, 0, piano))
+    assert sample.pcm == S_PIANO["pcm"]
+    assert sample.rate == 44100
+    assert sample.pitch == 48
+
+
+def test_read_file_returns_the_whole_krz_for_the_program_entry(tmp_path):
+    body = fixtures.kurzweil_bank([S_PIANO])
+    count = math.ceil(len(body) / 512)
+    disc = fixtures.kurzweil_disc(
+        [fixtures.kurzweil_file("SOUNDS.KRZ", tuple(range(2, 2 + count)), body=body)]
+    )
+    image = image_of(tmp_path, disc)
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    program = next(f for f in volume.files if f.kind == "program")
+    assert BACKEND.read_file(image, 0, program).startswith(KRZ_SIGNATURE)
+    assert BACKEND.read_file(image, 0, program) == body
+
+
+def test_a_fragmented_bank_is_reassembled_before_its_samples_are_cut(tmp_path):
+    """The FAT chain is followed, never assumed contiguous, when slicing a sample."""
+    body = fixtures.kurzweil_bank([S_PIANO, S_KICK])
+    count = math.ceil(len(body) / 512)
+    # A deliberately out-of-order chain: a contiguity-assuming read would splice
+    # the wrong clusters and the sample PCM would not round-trip.
+    chain = tuple(reversed(range(2, 2 + count + 2)))
+    disc = fixtures.kurzweil_disc([fixtures.kurzweil_file("FRAG.KRZ", chain, body=body)])
+    image = image_of(tmp_path, disc)
+    volume = next(iter(BACKEND.volumes(image, 0)))
+    kick = next(f for f in volume.files if f.name == "KICK")
+    assert BACKEND.parse_sample(kick, BACKEND.read_file(image, 0, kick)).pcm == S_KICK["pcm"]
+
+
+# --- subdirectories, layout, and the empty-volume note -------------------------
+
+
+def test_a_subdirectory_bank_becomes_its_own_volume(tmp_path):
+    body = fixtures.kurzweil_bank([S_KICK])
+    count = math.ceil(len(body) / 512)
+    child = fixtures.kurzweil_file("DEEP.KRZ", tuple(range(9, 9 + count)), body=body)
+    top = fixtures.kurzweil_bank([S_PIANO])
+    top_count = math.ceil(len(top) / 512)
+    files = [
+        fixtures.kurzweil_file("TOP.KRZ", tuple(range(2, 2 + top_count)), body=top),
+        fixtures.kurzweil_file("PIANOS", (30,), children=[child]),
+    ]
     image = image_of(tmp_path, fixtures.kurzweil_disc(files))
-    assert not BACKEND.probe(image, 0)
+    origin = find_origin(image)
+    assert origin is not None
+    volumes = list(origin.backend.volumes(image, origin.offset))
+    assert [v.name for v in volumes] == ["TOP.KRZ", "PIANOS/DEEP.KRZ"]
+
+
+def test_layout_reports_fat16(tmp_path):
+    image = image_of(tmp_path, disc_of(THREE_BANKS))
+    assert BACKEND.layout(image, 0).startswith("FAT16 (KMSI/Kurzweil)")
 
 
 def test_a_volume_with_only_an_empty_subdirectory_says_why_it_is_empty(tmp_path):
-    """No file, but a note rather than a silent empty volume (ADR-0012).
-
-    Reached by calling ``volumes`` directly: the probe would decline this disc
-    (it confirms a real top-level file), so it never resolves through
-    ``find_origin`` -- but a backend must still never yield an unexplained empty
-    volume if asked to walk one.
-    """
+    """No bank at all, but a note rather than a silent empty disc (ADR-0012)."""
     files = [fixtures.kurzweil_file("EMPTY", (2,), children=[])]
     image = image_of(tmp_path, fixtures.kurzweil_disc(files))
     volume = next(iter(BACKEND.volumes(image, 0)))
