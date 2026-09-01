@@ -679,8 +679,49 @@ These are the regression baseline: any change to the shared record parser is a b
 
 Each of the seven EIII/ESI discs lists one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract; `esi32-gm`, `eiiix-1` and `eiiix-2` also list the sampler's own code banks — `E3 Main Code`, `E3X Main Code` — which carry no bank header and are noted as such. On `eiv-studio`, the 100 banks that had no flat sample directory are the `FORM/E4B0` banks read by D25 above: 96 now extract, adding 987 samples, and the four `E-mu Systems 96` preset banks that carry no sample chunk stay noted. That disc's 901 `E4P1` presets remain unread — the deliverable is the audio ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
 
+## Independent corroboration (mpc2emu)
+
+Everything above was reverse-engineered from the ten reference discs alone, before we knew [lentferj/mpc2emu](https://github.com/lentferj/mpc2emu) existed. Its `docs/` directory — adopted as the Kurzweil oracle in [ADR-0036](../adr/0036-the-krz-bank-is-read-as-objects-and-verified-against-mpc2emu.md) — independently documents three of the formats here (`EIII_FORMAT.md`, `E4B_FORMAT.md`, `EMU3_ISO_FORMAT.md`), corpus- and hardware-confirmed against a different disc set. A second independent read is exactly the corroboration [CLAUDE.md](../../CLAUDE.md)'s "verify a constant against a real disc" rule wants; this section is the comparison. It is a source to cite the way we cite `emu3bm` and ConvertWithMoss, not a decode we depend on.
+
+### The E-IV `FORM/E4B0` bank agrees field for field
+
+`E4B_FORMAT.md` and "E-IV: the `FORM/E4B0` bank" above describe the same container down to the offsets, from two disjoint corpora:
+
+| Fact | This doc | mpc2emu `E4B_FORMAT.md` |
+|---|---|---|
+| Container | `FORM` · BE u32 size · `E4B0`, then chunks; odd body padded to 2 | same |
+| Chunk header | 4-char tag · BE u32 size · body | same |
+| Sample chunk | one `E3S1` per sample, body is a 92-byte record + PCM | 94-byte header incl. a 2-byte index prefix, PCM after — the same bytes, the prefix counted in |
+| `start_L` | `+22`, reads 92 (header length) | `start_l` at 22, "always 92" |
+| `end_L` / loops / rate | `+30` / `+38`,`+46` / `+54` | `end_l` 30 · loop 38,46 · rate 54 |
+| Loop end pointer | addresses the *last* word, so the record runs two bytes past it | "stores the frame **before** the last loop frame" — the same off-by-one, stated from the other side |
+| Declared `FORM` size | short by 4–12 bytes; bounds where a chunk may begin, not its body | "size semantics differ subtly from spec", `form_size = filesize − 12` |
+
+Where mpc2emu reaches past the audio it reaches into what [ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md) leaves to ConvertWithMoss: it decodes the `E4P1` presets, the 284-byte voice blocks and the 22-byte zone entries (key ranges, root key, pan) we deliberately do not read, and it identifies fields we leave as noise — the 2-byte prefix as a big-endian 1-based sample index, `+58` as a signed 1/64-semitone pitch offset (not a root key, which is consistent with "There is no root key" above), `+60` as mono/loop option flags, and an `EMSt` master-setup chunk. None of these is needed for the WAV; they are recorded here as leads, not adopted. Reading the channel count from mpc2emu's explicit `+60` options word rather than inferring it from the pointer sets ([ADR-0026](../adr/0026-the-record-declares-the-channel-count.md)) is the one that could simplify the decoder — a `src/` change for its own branch, not this docs pass.
+
+`EIII_FORMAT.md` likewise agrees on the parts we share: a 92-byte sample header and byte-offset (not index) addressing. Its 96-byte bank header, 142-byte presets and 48-byte zones are the instrument layer, out of remit.
+
+### The EMU3 filesystem: two structures we missed, and one real divergence
+
+`EMU3_ISO_FORMAT.md` describes the header as a **fixed** geometry — superblock at block 0, FAT at blocks 2–6, root directory 7–10, dir-content 11–135, data 136+ — with a superblock checksum. Our "Header" section reads it instead as **variable** pointers (`0x08` folder table, `0x0C` its length, `0x10` first bank directory, "read it; never assume 9"). Probing all seven EMU3 `.iso` masters settles what is corroboration and what is divergence:
+
+| Disc | `0x08` | `0x0C` | `0x10` | checksum holds | block 2 = FAT |
+|---|---:|---:|---:|:--:|:--:|
+| `esi32-gm` | 7 | 2 | 9 | yes | `0080 ff7f ff7f ff7f` |
+| `eiiix-1` | 7 | 2 | 9 | yes | `0080 ff7f 0300 0400` |
+| `eiiix-2` | 7 | 2 | 9 | yes | `0080 ff7f ff7f 0400` |
+| `protozoa` | 6 | 6 | 12 | yes | `0080 0200 0300 0400` |
+| `vintage` | 6 | 4 | 10 | yes | `0080 0200 0300 0400` |
+| `emu-classics` | 6 | 4 | 10 | yes | `0080 ff7f ff7f ff7f` |
+| `ditto-drums` | 9 | 6 | 15 | yes | `0080 ff7f ff7f ff7f` |
+
+**Two of mpc2emu's structures are real and we never documented them.** The superblock **checksum** — the sum modulo 2¹⁶ of the 255 little-endian u16 words spanning `0x000`–`0x1FD`, stored at `0x1FE` — matches on 7 of 7 discs; it is a validity test for the header we do not have. And a real **FAT** begins at block 2 on every disc (`0x0080` then `0x7fff` end-of-chain markers and ascending next-cluster words), which is very likely the actual allocation mechanism the empirical `unit × start + bias` fit in "Locating a bank" and "Resolving a chain to an address" approximates. Deriving the bank/sample addresses from the FAT instead of the measured fit is the most promising lead in this comparison — again a `src/` change for its own branch.
+
+**The one genuine divergence is the fixedness.** mpc2emu's block geometry is not fixed across our corpus: `0x08 ∈ {6, 7, 9}`, `0x0C ∈ {2, 4, 6}`, `0x10 ∈ {9, 10, 12, 15}`, so the FAT's length and the directory's origin move per disc. A fixed-geometry read (root dir at 7–10) would misplace `ditto-drums`, whose directory is at block 15. Our pointer read subsumes mpc2emu's here rather than contradicting it: mpc2emu's numbers are the values `esi32-gm`/`eiiix` happen to take, accurate for its own medium or corpus and not universal. **So there is nothing to correct upstream** — its structural facts are right and enrich us; only its "fixed" framing is corpus-specific, which is a difference in generality, not an error. (`E-MU Vintage Pro`, a `.bin`, is excluded from the table: it is a 2352-byte-sector image whose filesystem does not start at byte 0 ([ADR-0005](../adr/0005-probe-for-the-filesystem-origin.md)), so a raw read of byte 0 sees sector sync, not `EMU3` — a probe artifact, not a divergence.)
+
 ## Traps
 
+- The EMU3 header carries a real superblock checksum at `0x1FE` (sum mod 2¹⁶ of the u16 words over `0x000`–`0x1FD`) and a FAT from block 2; the block geometry is **not** fixed. mpc2emu documents it as fixed — true for its corpus, not ours, where `0x10` takes four values. Read `0x08`/`0x0C`/`0x10`; never assume the geometry.
 - `0x08` is the folder table, not a bank directory. Only the flags word tells them apart, and reading the wrong one gives a believable short listing.
 - Names are padded with spaces **or** NULs. Requiring one silently drops banks.
 - Contiguity of `start`/`len` is a coincidence on simple discs. It breaks on 41 of 46 banks on `eiiix-2`.
