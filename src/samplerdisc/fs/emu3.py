@@ -33,6 +33,27 @@ MAGIC = b"EMU3"
 #: Directory addressing is in 512-byte blocks, not the 2048-byte cooked sector.
 BLOCK = 512
 
+#: The real allocation table. A FAT begins at block 2 of every EMU3 master and
+#: is a flat array of u16 LE cluster-chain entries -- EMU's own variant of a
+#: classic FAT (docs/formats/emu3.md, "The block-2 FAT"; mpc2emu
+#: EMU3_ISO_FORMAT.md). ``fat[0]`` is a reserved media slot; clusters are
+#: numbered from ``FIRST_CLUSTER``, and a directory entry's ``start`` field is a
+#: cluster index. The table runs from block 2 up to the folder table at
+#: ``OFF_FOLDER_BLOCK`` -- so its extent is read from the header, never assumed
+#: (mpc2emu's fixed blocks 2-6 hold only on its own corpus; ``0x08`` takes
+#: {6, 7, 9} across ours).
+#:
+#: ``unit * start + bias`` (the per-disc fits below) is exactly ``block(start)``
+#: -- the block address of cluster ``start`` -- so a bank's own header address
+#: is what the FAT predicts for its first cluster. The fit and the FAT agree to
+#: the byte on every disc; the FAT is the *independent* structure that
+#: corroborates it, and it is the authority when a file is fragmented, which the
+#: linear fit cannot express. See docs/formats/emu3.md and ADR-0037.
+OFF_FAT_START_BLOCK = 2
+FAT_RESERVED = 0x8000
+FAT_EOC = 0x7FFF
+FIRST_CLUSTER = 1
+
 #: Header fields, all u32 LE. ``FOLDER_BLOCK + FOLDER_RESERVED == BANK_BLOCK``
 #: holds on every disc measured, so the third is derived and the first is the
 #: authority -- see the note on folders in volumes().
@@ -659,6 +680,125 @@ def _form_e3s1_chunks(image: SectorImage, at: int) -> Iterator[tuple[int, int]]:
         position = body + size + (size & 1)
 
 
+def _read_fat(image: SectorImage, offset: int) -> list[int]:
+    """The block-2 FAT as a list of u16 LE cluster-chain entries.
+
+    Its extent is blocks ``2 .. OFF_FOLDER_BLOCK-1`` -- read from the header, not
+    assumed, because the folder table's block varies per disc and the FAT fills
+    the gap before it. ``fat[0]`` is the reserved media slot; every other entry
+    is the next cluster in a chain or ``FAT_EOC``. Returns ``[]`` for a header
+    that places the folder table at or before the FAT, which is damage.
+    """
+    head = image.read(offset, OFF_BANK_BLOCK + 4)
+    if len(head) < OFF_BANK_BLOCK + 4:
+        return []
+    folder_block = struct.unpack_from("<I", head, OFF_FOLDER_BLOCK)[0]
+    if folder_block <= OFF_FAT_START_BLOCK:
+        return []
+    raw = image.read(
+        offset + OFF_FAT_START_BLOCK * BLOCK, (folder_block - OFF_FAT_START_BLOCK) * BLOCK
+    )
+    return list(struct.unpack_from(f"<{len(raw) // 2}H", raw))
+
+
+def _fat_chain(fat: list[int], start: int) -> list[int]:
+    """The cluster chain from ``start``, bounded three ways.
+
+    By the end-of-chain marker (``FAT_EOC``; the reserved ``0x8000`` and any gap
+    fall out of the same test), by the table's own range, and by a visited set,
+    so a table that pointed a cluster back into its own chain degrades rather
+    than spins (ADR-0012). Returns ``[]`` for a ``start`` outside the table.
+    """
+    out: list[int] = []
+    cluster = start
+    seen: set[int] = set()
+    while FIRST_CLUSTER <= cluster < len(fat) and cluster not in seen:
+        out.append(cluster)
+        seen.add(cluster)
+        nxt = fat[cluster]
+        if nxt >= FAT_EOC or nxt < FIRST_CLUSTER:
+            break
+        cluster = nxt
+    return out
+
+
+def _fat_contiguous(chain: list[int]) -> bool:
+    """Whether a chain's clusters ascend by one -- the file is unfragmented.
+
+    Nine of the ten reference discs are wholly contiguous, and the tenth is one
+    fragmented bank (vitous ``CES 1``). A contiguous bank reads the same whether
+    its bytes are gathered along the chain or read straight from the image, so
+    this is what lets the contiguous path stay byte-for-byte the current one.
+    """
+    return all(chain[i + 1] == chain[i] + 1 for i in range(len(chain) - 1))
+
+
+def _fat_byte(unit: int, bias: int, cluster: int) -> int:
+    """The offset-relative first byte of ``cluster``.
+
+    ``unit * cluster + bias`` is the block address of the cluster (the same
+    linear form the per-disc fit measures; ``unit * start + bias`` is just this
+    at the bank's own first cluster), so the byte address is that times
+    ``BLOCK``. The fit and the FAT are the same arithmetic seen from two sides.
+    """
+    return BLOCK * (unit * cluster + bias)
+
+
+def _form_bank_bytes(
+    image: SectorImage, offset: int, fat: list[int], unit: int, bias: int, start_cluster: int
+) -> bytes:
+    """A ``FORM/E4B0`` bank gathered along its FAT chain, contiguous runs coalesced.
+
+    Used only for a fragmented bank; a contiguous one is read straight from the
+    image on the current path. Coalescing a run into one read keeps the gather
+    to a handful of ``image.read`` calls even for a bank split into a few
+    fragments -- the same shape ``fs/kurzweil.py`` uses for its FAT16 chains.
+    """
+    cluster_bytes = unit * BLOCK
+    out = bytearray()
+    run_start = run_len = 0
+    for cluster in _fat_chain(fat, start_cluster):
+        if run_len and cluster == run_start + run_len:
+            run_len += 1
+        else:
+            if run_len:
+                at = offset + _fat_byte(unit, bias, run_start)
+                out += image.read(at, run_len * cluster_bytes)
+            run_start, run_len = cluster, 1
+    if run_len:
+        out += image.read(offset + _fat_byte(unit, bias, run_start), run_len * cluster_bytes)
+    return bytes(out)
+
+
+def _form_chunks_in_buffer(buf: bytes) -> Iterator[tuple[int, int]]:
+    """Walk a gathered ``FORM/E4B0`` bank's top-level ``E3S1`` chunks.
+
+    The buffer-relative twin of ``_form_e3s1_chunks``: the bank is already
+    gathered along its chain, so a chunk body is bounded by the buffer rather
+    than the image. Yields ``(body_offset_in_buffer, record_length)``.
+    """
+    if (
+        len(buf) < FORM_HEADER_LEN
+        or buf[:4] != EIV_FORM_MAGIC
+        or buf[OFF_FORM_TYPE : OFF_FORM_TYPE + 4] != EIV_FORM_TYPE
+    ):
+        return
+    (form_size,) = struct.unpack_from(">I", buf, OFF_FORM_SIZE)
+    header_end = min(IFF_CHUNK_HEADER + form_size, len(buf))
+    position = FORM_HEADER_LEN
+    while position + IFF_CHUNK_HEADER <= header_end:
+        tag = buf[position : position + 4]
+        (size,) = struct.unpack_from(">I", buf, position + 4)
+        if size <= 0:
+            return
+        body = position + IFF_CHUNK_HEADER
+        if body + size > len(buf):
+            return  # tail damage: the chunk body is not wholly present.
+        if tag == EIV_MAGIC:
+            yield body, size
+        position = body + size + (size & 1)
+
+
 def _superblock_checksum_ok(head: bytes) -> bool:
     """Whether the header block's checksum at ``OFF_CHECKSUM`` is self-consistent.
 
@@ -674,6 +814,14 @@ def _superblock_checksum_ok(head: bytes) -> bool:
 
 class Emu3Backend:
     name = "emu3"
+
+    def __init__(self) -> None:
+        #: The last fragmented ``FORM`` bank gathered along its chain, keyed by
+        #: ``(id(image), offset, start_cluster)``. A bank's samples are extracted
+        #: back to back and all slice the same gathered buffer, so a one-slot
+        #: cache turns the per-sample reads into one gather -- the same shape
+        #: ``fs/kurzweil.py`` uses. Only a fragmented bank ever reaches it.
+        self._form_cache: tuple[tuple[int, int, int], bytes] | None = None
 
     def probe(self, image: SectorImage, offset: int) -> bool:
         """``EMU3``, a valid superblock checksum, and a folder table that resolves.
@@ -925,14 +1073,17 @@ class Emu3Backend:
     def _eiv(self, image: SectorImage, offset: int, banks: list[_Bank]):
         """Locate E-IV banks and bind each to the samples at its predicted base.
 
-        Returns ``(tags, bound, form_bound)``. ``bound`` maps a bank's ``start``
-        to the ``(base, entries)`` of the confirmed flat ``E3S1`` directory that
-        lives at the address that start predicts. ``form_bound`` maps a bank's
-        ``start`` to the offset-relative address of a ``FORM/E4B0`` IFF bank
-        sitting there instead -- the native E-IV bank file, whose samples are
-        ``E3S1`` chunks rather than a flat record run (ADR-0032). The single
-        per-disc allocation fit places both; only the interior differs, so a
-        bank binds one way or the other, never both.
+        Returns ``(tags, bound, form_bound, geom)``. ``bound`` maps a bank's
+        ``start`` to the ``(base, entries)`` of the confirmed flat ``E3S1``
+        directory that lives at the address that start predicts. ``form_bound``
+        maps a bank's ``start`` to the offset-relative address of a ``FORM/E4B0``
+        IFF bank sitting there instead -- the native E-IV bank file, whose
+        samples are ``E3S1`` chunks rather than a flat record run (ADR-0032).
+        ``geom`` is the fitted ``(unit, bias)`` -- the cluster geometry the FORM
+        read follows the FAT chain with, so a fragmented bank is gathered from
+        the right clusters (ADR-0037); ``None`` when no bank needs the E-IV path.
+        The single per-disc allocation fit places both interiors; only the
+        interior differs, so a bank binds one way or the other, never both.
 
         Every address is relative to ``offset``, the filesystem origin. A bank
         in neither map has no samples the disc lets us reach and stays noted.
@@ -940,10 +1091,10 @@ class Emu3Backend:
         tags = _eiv_scan(image, offset)
         bases, corroborated = _eiv_bases(tags, _eiv_chains(_eiv_entries(tags)))
         if not corroborated:
-            return tags, {}, {}
+            return tags, {}, {}, None
         fitted = _eiv_unit(sorted(corroborated), sorted(bases), [bank.start for bank in banks])
         if fitted is None:
-            return tags, {}, {}
+            return tags, {}, {}, None
         unit, bias = fitted
         bound: dict[int, tuple[int, list[_EivEntry]]] = {}
         form_bound: dict[int, int] = {}
@@ -968,7 +1119,7 @@ class Emu3Backend:
                 and head[OFF_FORM_TYPE : OFF_FORM_TYPE + 4] == EIV_FORM_TYPE
             ):
                 form_bound[bank.start] = form_at
-        return tags, bound, form_bound
+        return tags, bound, form_bound, (unit, bias)
 
     def _eiv_samples(self, tags: dict[int, bytes], base: int, entries) -> Iterator[File]:
         """One bank's samples, sized by the directory rather than the record.
@@ -1001,8 +1152,74 @@ class Emu3Backend:
                 meta=sample_pointers(window[EIV_RECORD_OFFSET:]),
             )
 
-    def _eiv_form_samples(self, image: SectorImage, offset: int, form_at: int) -> Iterator[File]:
+    def _eiv_form_samples(
+        self,
+        image: SectorImage,
+        offset: int,
+        fat: list[int],
+        unit: int,
+        bias: int,
+        start_cluster: int,
+        form_at: int,
+    ) -> Iterator[File]:
         """One ``FORM/E4B0`` bank's samples, one per embedded ``E3S1`` chunk.
+
+        **A contiguous bank is read straight from the image, byte for byte the
+        way it always was.** Nine of the ten reference discs are wholly
+        contiguous and so is every FORM bank but one, so this branch is what
+        every current sample except ``CES 1``'s takes -- the FAT changes nothing
+        it does not have to.
+
+        **A fragmented bank is gathered along its FAT chain first.** ``CES 1`` on
+        `eiv-vitous` is split into three runs, and the contiguous read stops at
+        the first break, stranding eight real samples in the tail. Gathering the
+        bank from the clusters the FAT names recovers them, and their PCM (which
+        may straddle a fragment boundary) is read the same way in ``read_file``,
+        through the ``embedded`` route ``fs/kurzweil.py`` uses for a sample that
+        is a slice of a bank rather than a file the disc placed (ADR-0037).
+        """
+        if _fat_contiguous(_fat_chain(fat, start_cluster)):
+            yield from self._eiv_form_samples_flat(image, offset, form_at)
+            return
+        buf = _form_bank_bytes(image, offset, fat, unit, bias, start_cluster)
+        for body, length in _form_chunks_in_buffer(buf):
+            head = buf[body : body + SAMPLE_HEADER_LEN]
+            if len(head) < SAMPLE_HEADER_LEN:
+                continue
+            raw = head[SAMPLE_NAME_OFFSET : SAMPLE_NAME_OFFSET + ENTRY_NAME_LEN]
+            if not is_plausible_name(raw):
+                continue
+            name = decode_name(raw)
+            if not name:
+                continue
+            size = length - SAMPLE_HEADER_LEN
+            if size <= 0 or size % 2:
+                continue
+            (rate,) = struct.unpack_from("<I", head, OFF_SAMPLE_RATE)
+            if not MIN_RATE <= rate <= MAX_RATE:
+                continue
+            yield File(
+                name=name,
+                kind="sample",
+                size=size,
+                # An object inside a gathered bank, not a flat image address:
+                # ``read_file`` re-gathers the chain and slices at ``data_off``,
+                # carrying ``unit``/``bias`` so it can without re-fitting.
+                start_block=start_cluster,
+                raw_type=rate,
+                meta=(
+                    *sample_pointers(head),
+                    ("embedded", 1),
+                    ("data_off", body + SAMPLE_HEADER_LEN),
+                    ("unit", unit),
+                    ("bias", bias),
+                ),
+            )
+
+    def _eiv_form_samples_flat(
+        self, image: SectorImage, offset: int, form_at: int
+    ) -> Iterator[File]:
+        """A contiguous ``FORM/E4B0`` bank's samples, read straight from the image.
 
         The chunk body is an ordinary sample record, so this is the flat path
         with the IFF chunk header standing in for the ``E3S1`` directory: the
@@ -1052,8 +1269,14 @@ class Emu3Backend:
         eiv_tags: dict[int, bytes] = {}
         eiv_bound: dict[int, tuple[int, list[_EivEntry]]] = {}
         eiv_form: dict[int, int] = {}
+        eiv_geom: tuple[int, int] | None = None
+        eiv_fat: list[int] = []
         if any(index not in located for index in range(len(banks))):
-            eiv_tags, eiv_bound, eiv_form = self._eiv(image, offset, banks)
+            eiv_tags, eiv_bound, eiv_form, eiv_geom = self._eiv(image, offset, banks)
+            if eiv_form:
+                # The FAT is read only when a FORM bank is present -- to follow
+                # its chain in case the bank is fragmented (ADR-0037).
+                eiv_fat = _read_fat(image, offset)
         for index, bank in enumerate(banks):
             volume = Volume(name=bank.name, start_block=bank.start)
             at = located.get(index)
@@ -1062,10 +1285,17 @@ class Emu3Backend:
                 form_at = eiv_form.get(bank.start)
                 if found is not None:
                     volume.files = list(self._eiv_samples(eiv_tags, *found))
-                elif form_at is not None:
+                elif form_at is not None and eiv_geom is not None:
                     # A native ``FORM/E4B0`` E-IV bank: its samples are the
-                    # ``E3S1`` chunks inside the IFF container (ADR-0032).
-                    volume.files = list(self._eiv_form_samples(image, offset, form_at))
+                    # ``E3S1`` chunks inside the IFF container (ADR-0032), read
+                    # along the FAT chain so a fragmented bank is gathered from
+                    # the right clusters (ADR-0037).
+                    unit, bias = eiv_geom
+                    volume.files = list(
+                        self._eiv_form_samples(
+                            image, offset, eiv_fat, unit, bias, bank.start, form_at
+                        )
+                    )
                     if not volume.files:
                         # A FORM the disc placed here that holds no sample
                         # chunk -- the ``Credits`` text banks and a few
@@ -1203,7 +1433,30 @@ class Emu3Backend:
         return name, extent, rate
 
     def read_file(self, image: SectorImage, offset: int, entry: File) -> bytes:
+        """One entry's bytes.
+
+        Every EIII and E-IV record but a fragmented FORM bank's is a flat run at
+        a byte address the disc placed, so the common path is one read. A sample
+        marked ``embedded`` is an object inside a fragmented ``FORM`` bank whose
+        PCM may straddle a cluster-fragment boundary, so its bytes are a slice of
+        the bank gathered along the FAT chain -- the bank is gathered once,
+        cached, and sliced (ADR-0037), the same route ``fs/kurzweil.py`` takes.
+        """
+        if entry.get("embedded"):
+            return self._form_sample_bytes(image, offset, entry)
         return image.read(offset + entry.start_block, entry.size)
+
+    def _form_sample_bytes(self, image: SectorImage, offset: int, entry: File) -> bytes:
+        key = (id(image), offset, entry.start_block)
+        cached = self._form_cache
+        if cached is None or cached[0] != key:
+            fat = _read_fat(image, offset)
+            buf = _form_bank_bytes(
+                image, offset, fat, entry.get("unit"), entry.get("bias"), entry.start_block
+            )
+            self._form_cache = cached = (key, buf)
+        data_off = entry.get("data_off")
+        return cached[1][data_off : data_off + entry.size]
 
     def parse_sample(self, entry: File, payload: bytes):
         """The record's rate and pointers travelled on the File; the payload is
