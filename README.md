@@ -59,6 +59,8 @@ The audio is a byte-for-byte copy: AKAI stores signed 16-bit little-endian PCM a
 
 `export-iso` unwraps any supported container into a flat ISO without touching the filesystem inside. That is the escape hatch for a disc whose filesystem `samplerdisc` cannot yet read: the ISO can be handed to [akaiutil](https://sourceforge.net/projects/akaiutil/) or any other tool.
 
+Every image comes off archive.org or a stranger's FTP, and each is the tool's one untrusted input. For a `batch` run over images you do not trust, the repository ships a `Containerfile` that bounds the blast radius — read-only image mounts, no network, capped memory. It is defence in depth, not a fix, and running it is optional; `uv tool install` stays the way to install the tool. See [SECURITY.md](SECURITY.md#running-images-you-do-not-trust) for the invocation and what each flag buys.
+
 ## Supported
 
 **Containers** — `.mdx` (DAEMON Tools, *including compressed*), `.nrg` (Nero v1 and v2), `.bin` + `.cue` (raw 2352-byte CD sectors), `.iso` / `.img`, `.cdr`, `.tao`. Detection is by content signature, not by file extension, because these archives are named inconsistently.
