@@ -897,7 +897,15 @@ _EMU3 = {
     "eiv-studio-vol2": (399_077_376, 168, 1665, 1093, 474, "fbe642b97e5cec43"),
     "eiv-vol5": (524_906_496, 96, 1104, 596, 930, "d81594c686b7b932"),
     "eiv-phatt-cd1": (629_764_096, 17, 4552, 944, 898, "a96a570c73e8f181"),
-    "eiv-vitous": (532_443_136, 44, 852, 208, 828, "add35582e5187cc7"),
+    # D30 reads a fragmented ``FORM/E4B0`` bank along its FAT chain rather than
+    # contiguously (ADR-0037). `eiv-vitous`'s ``CES 1`` is the collection's one
+    # fragmented located bank: it holds 20 samples across three cluster runs, and
+    # the contiguous reader stopped at the first break, stranding 8 (852 -> 860).
+    # All 8 are mono one-shots, so the loop and stereo counts do not move; the
+    # digest does, because the 8 recovered payloads join the walk. Every other
+    # disc is wholly contiguous, so a FAT-chain read is byte-for-byte the
+    # contiguous read and no other pin here moves.
+    "eiv-vitous": (532_443_136, 44, 860, 208, 828, "d2c43a84af1d7f01"),
     # D24 recovers a bank whose header carries a mis-typed copy of its
     # directory name (ADR-0031). ``ditto-drums`` gains ``PERCUSSION#1   X``'s
     # 31 records above; these two discs were pinned for the first time by it.
@@ -937,6 +945,125 @@ _EMU3_CHECKSUM_MASTERS = (
     "vintage",
     "ditto-drums",
 )
+
+
+#: The FAT cluster size each reference disc uses, in bytes. This is the ``unit``
+#: the per-disc fit measures and the FAT names -- and it is *not* derivable
+#: (protozoa uses 1 MiB where its FAT ceiling would allow 256 KiB, so "smallest
+#: size that fits" is wrong), so it is pinned per disc, matching the table in
+#: docs/formats/emu3.md, "The block-2 FAT" (ADR-0037).
+_EMU3_CLUSTER_BYTES = {
+    "esi32-gm": 262144,
+    "eiiix-1": 262144,
+    "eiiix-2": 262144,
+    "protozoa": 1048576,
+    "eiv-analogia": 1048576,
+    "emu-classics": 524288,
+    "vintage": 524288,
+    "ditto-drums": 524288,
+    "eiv-studio": 524288,
+    "eiv-vitous": 524288,
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EMU3_CLUSTER_BYTES))
+def test_emu3_addresses_are_reproduced_by_the_block_2_fat(label: str) -> None:
+    """The FAT is the independent structure the per-disc fit approximates (ADR-0037).
+
+    Every bank/base the reader locates -- by signature scan for EIII, by the
+    allocation fit for E-IV -- must begin a real FAT cluster chain, and the byte
+    address the FAT gives that first cluster must equal the located address to
+    the byte. The fit is measured from the same headers it then places, so this
+    is the *external* check it lacks: the block-2 FAT is a different structure,
+    and it agrees on every disc. The cluster size it uses is pinned too, because
+    it is not derivable (protozoa) and is the constant the doc records.
+    """
+    from samplerdisc.fs import emu3
+
+    size = _EMU3[label][0]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        backend, offset = origin.backend, origin.offset
+        fat = emu3._read_fat(image, offset)
+        assert fat and fat[0] == emu3.FAT_RESERVED
+
+        banks = backend._banks(image, offset)
+        headers = backend._bank_headers(image, offset)
+        located = backend._bank_offsets(banks, headers)
+
+        checked = 0
+        placement = backend._placement(banks, headers)
+        if placement is not None:
+            # EIII: the fit addresses are bytes, so the cluster size is the unit.
+            unit_bytes, bias_bytes = placement
+            assert unit_bytes == _EMU3_CLUSTER_BYTES[label]
+            for index, bank in enumerate(banks):
+                at = located.get(index)
+                if at is None:
+                    continue
+                chain = emu3._fat_chain(fat, bank.start)
+                assert chain and chain[0] == bank.start, bank.name
+                assert unit_bytes * bank.start + bias_bytes == at, bank.name
+                checked += 1
+
+        _tags, bound, form, geom = (
+            backend._eiv(image, offset, banks)
+            if any(index not in located for index in range(len(banks)))
+            else ({}, {}, {}, None)
+        )
+        # geom is None on an all-EIII disc (its unlocated banks are the noted
+        # index/code banks, not E-IV); the E-IV corroboration only applies where
+        # the disc actually has a FORM or flat E-IV bank.
+        if geom is not None:
+            unit_blocks, bias_blocks = geom
+            assert unit_blocks * emu3.BLOCK == _EMU3_CLUSTER_BYTES[label]
+            for bank in banks:
+                if bank.start in bound:
+                    at = bound[bank.start][0] - emu3.EIV_RECORD_OFFSET  # base carries +8
+                elif bank.start in form:
+                    at = form[bank.start]
+                else:
+                    continue
+                chain = emu3._fat_chain(fat, bank.start)
+                assert chain and chain[0] == bank.start, bank.name
+                assert emu3._fat_byte(unit_blocks, bias_blocks, bank.start) == at, bank.name
+                checked += 1
+
+        assert checked >= 8, f"{label}: only {checked} addresses corroborated"
+
+
+def test_emu3_a_fragmented_form_bank_is_read_along_its_chain() -> None:
+    """vitous ``CES 1`` is the collection's one fragmented located bank (ADR-0037).
+
+    Its FAT chain is not a single ascending run, so a contiguous read stops at
+    the first break; the reader gathers it along the chain instead and recovers
+    the samples stranded in the tail. This pins both halves: that the bank really
+    is fragmented (or the recovery is untested), and that its extra samples are
+    read as ``embedded`` slices of the gathered bank, not flat image addresses.
+    """
+    from samplerdisc.fs import emu3
+
+    size = _EMU3["eiv-vitous"][0]
+    with open_image(_pinned_disc("eiv-vitous", size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        backend, offset = origin.backend, origin.offset
+        fat = emu3._read_fat(image, offset)
+        banks = backend._banks(image, offset)
+        ces = next(b for b in banks if b.name.strip() == "CES 1")
+        chain = emu3._fat_chain(fat, ces.start)
+        assert not emu3._fat_contiguous(chain), "CES 1 is expected to be fragmented"
+
+        volume = next(v for v in backend.volumes(image, offset) if v.name.strip() == "CES 1")
+        samples = [f for f in volume.files if f.kind == "sample"]
+        assert len(samples) == 20
+        # The tail samples the contiguous read could not reach are embedded
+        # slices of the gathered bank; every one must round-trip its own bytes.
+        embedded = [f for f in samples if f.get("embedded")]
+        assert len(embedded) == 20
+        for entry in embedded:
+            assert len(backend.read_file(image, offset, entry)) == entry.size
 
 
 @pytest.mark.parametrize("label", _EMU3_CHECKSUM_MASTERS)

@@ -106,6 +106,31 @@ Four discs have a single folder — `Designed by S&M.`, `Default Folder` — whi
 
 No header field predicts which — `0x2c` happens to equal 2048 on `protozoa`, matching 2048 × 512 = 1 MiB, and equals 8 on the others, where the answer is 512. The physical layout also does not follow `start` consistently: on `esi32-gm` two adjacent banks differ by 24 in `start` and by 8 units on the disc.
 
+### The block-2 FAT is where `start` and the unit come from
+
+`start` is a **cluster index**, and the "allocation unit" above is the **cluster size**. A real FAT begins at block 2 of every master and is the allocation mechanism the empirical `unit × start + bias` fit below approximates. It was found in the mpc2emu cross-check ([PR #65](https://github.com/bmxcode/samplerdisc/pull/65)) and adopted in [issue #67](https://github.com/bmxcode/samplerdisc/issues/67) / [ADR-0037](../adr/0037-a-fragmented-form-bank-is-read-along-the-fat-chain.md).
+
+It is a flat array of little-endian u16 cluster-chain entries — EMU's own variant of a classic FAT — running from block 2 up to the folder table at `0x08`. Its **extent is read from the header, never assumed**: mpc2emu documents a fixed blocks 2–6, which is only its corpus (our `0x08 ∈ {6, 7, 9}`, so the FAT is 4, 5 or 7 blocks). `fat[0]` is a reserved media slot (`0x8000`); `0x7fff` (`FAT_EOC`) ends a chain; every other entry is the next cluster.
+
+A cluster resolves to a byte address as
+
+```
+byte(cluster) = BLOCK × (unit × cluster + bias)
+```
+
+which is the *same* `unit × cluster + bias` the fit measures — the fit's formula **is** `block(start_cluster)`, so the header address it predicts for a bank is what the FAT gives that bank's first cluster. The two agree to the byte on every located bank of every disc; the FAT is the *independent* structure that corroborates the fit (`tests/test_discs.py` asserts this), and it is the authority when a file is **fragmented**, which the linear fit cannot express.
+
+The cluster size (`unit`, in bytes for EIII, `unit × 512` for E-IV) is measured per disc and **not derivable** — `protozoa` uses 1 MiB where its FAT ceiling (1 023) would fit 256 KiB (502 clusters), so mpc2emu's "smallest size that fits" rule is wrong here; it is a property of the mastering generation:
+
+| Disc | Cluster size | FAT extent (blocks) |
+|---|---|---|
+| `esi32-gm`, `eiiix-1`, `eiiix-2` | 256 KiB | 2–6 |
+| `emu-classics`, `vintage`, `eiv-studio`, `eiv-vitous` | 512 KiB | 2–5 / 2–8 |
+| `ditto-drums` | 512 KiB | 2–8 |
+| `protozoa`, `eiv-analogia` | 1 MiB | 2–5 |
+
+**One bank in the collection is fragmented**, and it is why the FAT is worth reading rather than just corroborating: `eiv-vitous`'s `CES 1` (a `FORM/E4B0` bank) is three cluster runs — 640–658, 620–634, 579–583. A contiguous read stops at the first break and lists **12** of its **20** samples; the other eight (`CES E_2 2` … `STR:VcsD_5 2`) sit in the tail. So a fragmented `FORM` bank is gathered along its chain and its samples recovered; every other bank on every disc is contiguous and read exactly as before (see "A fragmented FORM bank" under the E-IV sections, and [ADR-0037](../adr/0037-a-fragmented-form-bank-is-read-along-the-fat-chain.md)).
+
 So banks are found by their own header instead, which is exact and self-checking because it repeats the directory name:
 
 | Offset in bank | Size | Meaning |
@@ -524,6 +549,14 @@ Eight of the 170 hold a FORM with presets or text and no sample chunk: the four 
 
 `E4P1` presets — the key ranges, envelopes and root key — are **not** read, here or anywhere; the deliverable is the audio ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
 
+### A fragmented FORM bank is read along the FAT chain
+
+A `FORM/E4B0` bank is read straight from the image, contiguously — which is right for every bank on nine discs and every `FORM` bank but one. **`eiv-vitous`'s `CES 1` is the exception, and it is why the block-2 FAT is read rather than only used to corroborate.** Its 39 clusters are three runs — 640–658, 620–634, 579–583 — so a contiguous read stops at the first break, at byte 9 961 472, and lists **12** of the bank's **20** samples. The eight in the tail are real: `CES E_2 2`, `CES F#2 2`, `CES B_2 2`, `CES E_3 2`, `STR:VcsF#3 2`, `STR:VcsC_4 2`, `STR:VcsA_4 2`, `STR:VcsD_5 2` — the upper half of a velocity layer whose lower half is in the first run, all 44 100 Hz, all mono one-shots.
+
+So a bank whose FAT chain is **not** a single ascending run is gathered along that chain, and its samples become `embedded` slices of the gathered bank — the route the Kurzweil backend uses for a sample that is a window into a bank rather than a file the disc placed ([ADR-0036](../adr/0036-the-krz-bank-is-read-as-objects-and-verified-against-mpc2emu.md)). `read_file` re-gathers the chain (cached) and slices, so a sample whose PCM straddles a fragment boundary — `STR:VcsC_4 2` spans the second break — is read from the right clusters. `CES 1` goes 12 → 20, moving `eiv-vitous` 852 → 860; the eight are mono one-shots, so the loop and stereo counts do not move, only the payload digest ([ADR-0037](../adr/0037-a-fragmented-form-bank-is-read-along-the-fat-chain.md)).
+
+A contiguous bank is gated off this path (`_fat_contiguous`) and reads byte-for-byte the way it always did, which is what keeps the declared-size overrun above intact and every other disc unchanged. There is no fragmented EIII or flat E-IV bank in the collection; one would be read short exactly as `CES 1` was, visible as a bank listing fewer samples than its run declares, and the fix would be to extend the chain gather to it.
+
 ## Stereo: the payload is split, not interleaved
 
 **A previous revision of this section concluded "everything is mono". That conclusion is wrong, and the way it was wrong is worth more than the answer.**
@@ -722,13 +755,15 @@ Where mpc2emu reaches past the audio it reaches into what [ADR-0011](../adr/0011
 | `emu-classics` | 6 | 4 | 10 | yes | `0080 ff7f ff7f ff7f` |
 | `ditto-drums` | 9 | 6 | 15 | yes | `0080 ff7f ff7f ff7f` |
 
-**Two of mpc2emu's structures are real and we never documented them.** The superblock **checksum** — the sum modulo 2¹⁶ of the 255 little-endian u16 words spanning `0x000`–`0x1FD`, stored at `0x1FE` — matches on 7 of 7 discs; it is a validity test for the header we do not have. And a real **FAT** begins at block 2 on every disc (`0x0080` then `0x7fff` end-of-chain markers and ascending next-cluster words), which is very likely the actual allocation mechanism the empirical `unit × start + bias` fit in "Locating a bank" and "Resolving a chain to an address" approximates. Deriving the bank/sample addresses from the FAT instead of the measured fit is the most promising lead in this comparison — again a `src/` change for its own branch.
+**Two of mpc2emu's structures are real and we never documented them.** The superblock **checksum** — the sum modulo 2¹⁶ of the 255 little-endian u16 words spanning `0x000`–`0x1FD`, stored at `0x1FE` — matches on 7 of 7 discs; it is a validity test for the header we do not have. And a real **FAT** begins at block 2 on every disc (`0x0080` then `0x7fff` end-of-chain markers and ascending next-cluster words) — the actual allocation mechanism the empirical `unit × start + bias` fit in "Locating a bank" and "Resolving a chain to an address" approximates. **This is now confirmed and adopted** ([issue #67](https://github.com/bmxcode/samplerdisc/issues/67), [ADR-0037](../adr/0037-a-fragmented-form-bank-is-read-along-the-fat-chain.md)): `start` is a cluster index, the "allocation unit" is the cluster size, and `byte(cluster) = 512 × (unit × cluster + bias)` — so the fit's formula *is* the block address of a cluster, and the FAT reproduces every located address on all ten discs to the byte. The FAT does **not** remove the fit — the cluster size is not derivable (`protozoa` uses 1 MiB where its ceiling fits 256 KiB) — but it is the *independent* structure that corroborates it (asserted in `tests/test_discs.py`), and it is the authority when a file is fragmented: `eiv-vitous`'s `CES 1` is three cluster runs, and reading it along the chain recovers eight samples a contiguous read stranded (852 → 860). See "The block-2 FAT" and "A fragmented FORM bank" above.
 
 **The one genuine divergence is the fixedness.** mpc2emu's block geometry is not fixed across our corpus: `0x08 ∈ {6, 7, 9}`, `0x0C ∈ {2, 4, 6}`, `0x10 ∈ {9, 10, 12, 15}`, so the FAT's length and the directory's origin move per disc. A fixed-geometry read (root dir at 7–10) would misplace `ditto-drums`, whose directory is at block 15. Our pointer read subsumes mpc2emu's here rather than contradicting it: mpc2emu's numbers are the values `esi32-gm`/`eiiix` happen to take, accurate for its own medium or corpus and not universal. **So there is nothing to correct upstream** — its structural facts are right and enrich us; only its "fixed" framing is corpus-specific, which is a difference in generality, not an error. (`E-MU Vintage Pro`, a `.bin`, is excluded from the table: it is a 2352-byte-sector image whose filesystem does not start at byte 0 ([ADR-0005](../adr/0005-probe-for-the-filesystem-origin.md)), so a raw read of byte 0 sees sector sync, not `EMU3` — a probe artifact, not a divergence.)
 
 ## Traps
 
-- The EMU3 header carries a real superblock checksum at `0x1FE` (sum mod 2¹⁶ of the u16 words over `0x000`–`0x1FD`) and a FAT from block 2; the block geometry is **not** fixed. mpc2emu documents it as fixed — true for its corpus, not ours, where `0x10` takes four values. Read `0x08`/`0x0C`/`0x10`; never assume the geometry.
+- The EMU3 header carries a real superblock checksum at `0x1FE` (sum mod 2¹⁶ of the u16 words over `0x000`–`0x1FD`) and a FAT from block 2; the block geometry is **not** fixed. mpc2emu documents it as fixed — true for its corpus, not ours, where `0x10` takes four values. Read `0x08`/`0x0C`/`0x10`; never assume the geometry. The FAT's extent likewise: it runs block 2 up to `0x08`, which is 4, 5 or 7 blocks across our discs.
+- `start` is a FAT cluster index and the "allocation unit" is the cluster size; the FAT reproduces every located address exactly, but it does **not** let you drop the per-disc unit — `protozoa` uses 1 MiB clusters where its ceiling would fit 256 KiB, so the size is measured, not derived ([ADR-0037](../adr/0037-a-fragmented-form-bank-is-read-along-the-fat-chain.md)).
+- A `FORM/E4B0` bank read contiguously is **short** if it is fragmented. `eiv-vitous`'s `CES 1` is three cluster runs and holds 20 samples; a contiguous read gets 12. Read a fragmented bank along its FAT chain. No EIII or flat E-IV bank in the collection fragments, so those paths stay contiguous.
 - `0x08` is the folder table, not a bank directory. Only the flags word tells them apart, and reading the wrong one gives a believable short listing.
 - Names are padded with spaces **or** NULs. Requiring one silently drops banks.
 - Contiguity of `start`/`len` is a coincidence on simple discs. It breaks on 41 of 46 banks on `eiiix-2`.
