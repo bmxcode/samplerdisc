@@ -42,3 +42,19 @@ jobs:
             exit 1
           fi
           echo "clean"
+
+  # The Containerfile is a runner for untrusted images (ADR-0038), and a
+  # Containerfile nobody builds is one that quietly stops working. This job
+  # builds it and smoke-tests the entrypoint. It is deliberately separate from
+  # `verify` and not part of branch protection's required check: a registry
+  # hiccup pulling the base image should not block a merge.
+  container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build image
+        run: docker build -f Containerfile -t samplerdisc .
+
+      - name: Installed entrypoint
+        run: docker run --rm samplerdisc --version

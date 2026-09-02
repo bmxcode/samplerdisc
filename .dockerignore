@@ -1,0 +1,8 @@
+# Keep the build context to what the hatchling build needs: pyproject.toml,
+# src/, README.md and LICENSE are COPYed explicitly in the Containerfile, so
+# everything else is noise that only slows the build and busts its cache.
+*
+!pyproject.toml
+!README.md
+!LICENSE
+!src/

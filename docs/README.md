@@ -68,6 +68,8 @@ All of that vanishes into a working parser. Six months on, the code says *what* 
 | D27 | An EIII/ESI directory entry binds its own header, so a name written twice stops double-listing one bank's records ([ADR-0034](adr/0034-each-directory-entry-binds-its-own-header.md)) | done |
 | D28 | Kurzweil `KMSI` filesystem backend + `list` — the K2000/K2500 native disc format is FAT16, and its `.KRZ` banks are listed ([ADR-0035](adr/0035-kmsi-is-fat16-read-behind-the-kurzweil-signature.md)) | done |
 | D29 | The samples inside a Kurzweil `.KRZ` object bank convert to WAV — big-endian PCM byte-swapped, root key and loop carried, verified byte-for-byte against mpc2emu ([ADR-0036](adr/0036-the-krz-bank-is-read-as-objects-and-verified-against-mpc2emu.md)) | done |
+| D30 | A fragmented E-mu `FORM/E4B0` bank is read along the block-2 FAT chain, recovering the samples stranded past its first fragment ([ADR-0037](adr/0037-a-fragmented-form-bank-is-read-along-the-fat-chain.md)) | done |
+| D31 | A `Containerfile` runner for untrusted images — read-only image mounts, no network, capped resources, verified to produce byte-for-byte identical output to the host ([ADR-0038](adr/0038-the-container-is-a-runner-not-the-distribution-channel.md)) | done |
 
 Across the local collection, by listing: 96 of 104 images claimed, 4 270 volumes, 161 213 files, 126 361 of them samples. The AKAI discs are 45 of those images and 86 487 of those files, read across 318 partitions — 279 where the disk's table puts them and 39 displaced by blocks the rip lost. Before D15 they were 14 783 files, because only the partition at the origin was read.
 
