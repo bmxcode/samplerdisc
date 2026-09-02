@@ -37,8 +37,10 @@ IMAGE_SUFFIXES = (".iso", ".img", ".mdx", ".nrg", ".bin", ".cdr", ".tao", ".mds"
 #: Keyed by **size in bytes**. The name is a label for the test id; nothing
 #: looks a disc up by it. See _pinned_disc() for why.
 _EXPECT_NO_FILESYSTEM = {
-    "OMI Universe of Sounds Sonic Images Vol. 1 (SampleCell)": 295_833_600,
-    "OMI Universe of Sounds Sonic Images Vol. 2 (SampleCell)": 295_731_200,
+    # Roland S-550: a filesystem this project does not read, and unlike the two
+    # SampleCell discs (now read as HFS -- D32) no second specimen exists to
+    # reverse-engineer it from (docs/README.md "What is not done", ADR-0014).
+    "Roland LCD1": 148_690_944,
 }
 
 
@@ -273,11 +275,12 @@ def test_origin_resolution_is_deterministic(path: Path) -> None:
 
 @pytest.mark.parametrize("label", sorted(_EXPECT_NO_FILESYSTEM))
 def test_known_unreadable_discs_are_not_claimed(label: str) -> None:
-    """The discs that provoked ADR-0012, pinned by name where they are present.
+    """A disc that carries a filesystem no backend reads, pinned by size.
 
-    Both carry a filesystem this project does not read -- ``EMU3`` and
-    Digidesign SampleCell's ``ER`` -- and both were reported as AKAI at a
-    confident, wrong offset before the probe asked whether a volume held a file.
+    ``find_origin`` must return None rather than claim it at a confident, wrong
+    offset -- the failure ADR-0012 exists to reject. Roland's S-550 is the
+    standing example: unlike SampleCell's HFS, which D32 now reads, no second
+    S-550 specimen exists to reverse-engineer it from (ADR-0014).
     """
     path = _pinned_disc(label, _EXPECT_NO_FILESYSTEM[label])
     with open_image(path) as image:
@@ -2100,3 +2103,78 @@ def test_an_iso9660_volume_lists_no_path_twice(path: Path) -> None:
                 f"{len(names) - len(set(names))} entries under a path it already used, "
                 f"first: {duplicated[:3]}"
             )
+
+
+#: SampleCell HFS discs, pinned by size, with the file count their catalog
+#: declares (D32, ADR-0039). Verified against ``machfs``, an independent HFS
+#: reader, in ``test_hfs_forks_match_an_independent_reader`` below.
+_HFS = {
+    "sonic-images-v1": (295_833_600, "Sonic Images V1", 926),
+    "sonic-images-v2": (295_731_200, "Sonic Images V2", 404),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_HFS))
+def test_hfs_discs_resolve_and_list_their_catalog(label: str) -> None:
+    """A SampleCell disc reads as one HFS volume with its declared file count.
+
+    The count is the whole catalog -- AIFF samples, SampleCell instrument
+    documents, and the handful of Finder/system files -- because that is what
+    ``list`` walks. No volume may come back empty without a note (ADR-0012).
+    """
+    size, name, files = _HFS[label]
+    path = _pinned_disc(label, size)
+    with open_image(path) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "hfs"
+        volumes = list(origin.backend.volumes(image, origin.offset))
+    assert len(volumes) == 1
+    assert volumes[0].name == name
+    assert len(volumes[0].files) == files
+    assert volumes[0].files or volumes[0].note
+
+
+@pytest.mark.parametrize("label", sorted(_HFS))
+def test_hfs_forks_match_an_independent_reader(label: str) -> None:
+    """Every data fork we read is byte-identical to what ``machfs`` reads.
+
+    ``machfs`` is a pure-Python HFS implementation with no shared lineage with
+    this backend, so agreement on all ~900 forks is real cross-checking of the
+    B-tree walk, the extent resolution and the fork sizes -- the EBL/KRZ oracle
+    pattern, for a filesystem the host's own ``hdiutil`` no longer mounts
+    (modern macOS dropped legacy HFS). Skips where ``machfs`` is not installed.
+    """
+    machfs = pytest.importorskip("machfs")
+    from samplerdisc.fs.hfs import APPLE_BLOCK, HfsBackend
+
+    size, _, _ = _HFS[label]
+    path = _pinned_disc(label, size)
+    with open_image(path) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "hfs"
+        ours = {
+            entry.name: origin.backend.read_file(image, origin.offset, entry)
+            for volume in origin.backend.volumes(image, origin.offset)
+            for entry in volume.files
+        }
+        part_start = next(HfsBackend()._hfs_partitions(image, 0))
+    with path.open("rb") as handle:
+        handle.seek(part_start * APPLE_BLOCK)
+        volume_bytes = handle.read()
+
+    reference = machfs.Volume()
+    reference.read(volume_bytes)
+    checked = 0
+
+    def visit(folder, prefix: str) -> None:
+        nonlocal checked
+        for name, obj in folder.items():
+            full = f"{prefix}{name}"
+            if isinstance(obj, machfs.Folder):
+                visit(obj, full + "/")
+            elif full in ours:  # machfs lists zero-length forks we skip; ignore those
+                assert ours[full] == obj.data, f"fork mismatch on {full}"
+                checked += 1
+
+    visit(reference, "")
+    assert checked > 100, f"machfs matched only {checked} forks; expected the whole library"

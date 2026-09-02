@@ -1648,3 +1648,156 @@ def kurzweil_bank(samples, *, base_id: int = 200, extra_pool: int = 0) -> bytes:
     struct.pack_into(">i", header, OFF_POOL_START, pool_start)
     end_marker = struct.pack(">i", 0)
     return bytes(header) + bytes(blocks) + end_marker + bytes(pool) + b"\x00" * extra_pool
+
+
+def make_hfs(
+    files: dict[str, tuple[bytes, bytes]],
+    volume_name: str = "Sonic Images V1",
+    part_start: int = 4,
+    node_size: int = 2048,
+) -> bytes:
+    """A minimal HFS volume behind an Apple Partition Map (ADR-0039).
+
+    No disc byte is committed (ADR-0008); this is built from scratch. Enough of
+    the format to exercise the backend: a block-0 Driver Descriptor Record, a
+    partition map with one ``Apple_HFS`` entry, a Master Directory Block, a
+    two-node catalog B-tree (header + a single leaf), and each file's data fork
+    in its own allocation block run.
+
+    ``files`` maps a '/'-separated path to ``(finder_type, data)``. Intermediate
+    path components become HFS folders, so a subfolder path exercises the
+    parent-chain reconstruction. Allocation block size equals ``node_size`` for
+    simplicity; the catalog occupies the first two allocation blocks and the
+    data forks follow, each contiguous (one extent).
+    """
+    ablk = node_size
+    al_blk_start_512 = 8  # first allocation block, in 512-byte units
+
+    # -- assign folder CNIDs and lay out data forks in allocation blocks --
+    ROOT = 2
+    folders: dict[str, int] = {}
+    next_cnid = 16
+    # each entry: (parent CNID, name, finder type, data, file CNID, first alloc block)
+    file_specs: list[tuple[int, str, bytes, bytes, int, int]] = []
+    catalog_blocks = 2
+    cursor = catalog_blocks  # data forks start after the catalog
+    next_file_cnid = 100
+    for path, (ftype, data) in files.items():
+        parts = path.split("/")
+        parent = ROOT
+        for comp in parts[:-1]:
+            key = f"{parent}\x00{comp}"  # a folder is identified by (parent, name)
+            if key not in folders:
+                folders[key] = next_cnid
+                next_cnid += 1
+            parent = folders[key]
+        name = parts[-1]
+        nblocks = max(1, (len(data) + ablk - 1) // ablk)
+        file_specs.append((parent, name, ftype, data, next_file_cnid, cursor))
+        next_file_cnid += 1
+        cursor += nblocks
+
+    total_ablocks = cursor
+
+    # -- catalog leaf records ---------------------------------------------
+    def cat_record(parent: int, name: str, data: bytes) -> bytes:
+        nb = name.encode("mac_roman")
+        key = bytes([6 + len(nb), 0]) + struct.pack(">I", parent) + bytes([len(nb)]) + nb
+        if len(key) % 2:
+            key += b"\x00"
+        return key + data
+
+    records: list[bytes] = []
+    # folder records: recover (parent, name) for each assigned CNID
+    for key, cnid in folders.items():
+        parent_s, comp = key.split("\x00", 1)
+        d = bytearray(70)
+        d[0] = 0x01  # folder
+        struct.pack_into(">I", d, 6, cnid)  # dirDirID
+        records.append(cat_record(int(parent_s), comp, bytes(d)))
+    # file records
+    for parent, name, ftype, data, cnid, ablock in file_specs:
+        d = bytearray(102)
+        d[0] = 0x02  # file
+        d[4:8] = ftype.ljust(4)[:4]
+        struct.pack_into(">I", d, 20, cnid)  # filFlNum
+        struct.pack_into(">I", d, 26, len(data))  # filLgLen
+        nblocks = max(1, (len(data) + ablk - 1) // ablk)
+        struct.pack_into(">H", d, 74, ablock)  # filExtRec[0].startBlock
+        struct.pack_into(">H", d, 76, nblocks)  # filExtRec[0].blockCount
+        records.append(cat_record(parent, name, bytes(d)))
+
+    # -- pack a single leaf node with its tail offset table ---------------
+    def leaf_node(recs: list[bytes]) -> bytes:
+        node = bytearray(node_size)
+        node[8] = 0xFF  # ndType = leaf
+        node[9] = 1  # ndNHeight
+        struct.pack_into(">H", node, 10, len(recs))  # ndNRecs
+        offsets = [14]
+        pos = 14
+        for rec in recs:
+            node[pos : pos + len(rec)] = rec
+            pos += len(rec)
+            offsets.append(pos)
+        for i, off in enumerate(offsets):
+            struct.pack_into(">H", node, node_size - 2 * (i + 1), off)
+        return bytes(node)
+
+    header = bytearray(node_size)
+    header[8] = 0x01  # ndType = header
+    struct.pack_into(">I", header, 14 + 10, 1)  # bthFNode = node 1 (the leaf)
+    struct.pack_into(">I", header, 14 + 14, 1)  # bthLNode
+    struct.pack_into(">H", header, 14 + 18, node_size)  # bthNodeSize
+    catalog = bytes(header) + leaf_node(records)
+
+    # -- allocation-block region: catalog, then each data fork ------------
+    alloc = bytearray(total_ablocks * ablk)
+    alloc[0 : len(catalog)] = catalog
+    for _, _, _, data, _, ablock in file_specs:
+        alloc[ablock * ablk : ablock * ablk + len(data)] = data
+
+    # -- Master Directory Block -------------------------------------------
+    mdb = bytearray(512)
+    struct.pack_into(">H", mdb, 0, 0x4244)  # drSigWord 'BD'
+    struct.pack_into(">I", mdb, 20, ablk)  # drAlBlkSiz
+    struct.pack_into(">H", mdb, 18, total_ablocks)  # drNmAlBlks
+    struct.pack_into(">H", mdb, 28, al_blk_start_512)  # drAlBlSt
+    vn = volume_name.encode("mac_roman")[:27]
+    mdb[36] = len(vn)
+    mdb[37 : 37 + len(vn)] = vn
+    struct.pack_into(">I", mdb, 130, 0)  # drXTFlSize (empty extents-overflow)
+    struct.pack_into(">I", mdb, 146, catalog_blocks * ablk)  # drCTFlSize
+    struct.pack_into(">H", mdb, 150, 0)  # drCTExtRec[0].startBlock
+    struct.pack_into(">H", mdb, 152, catalog_blocks)  # drCTExtRec[0].blockCount
+
+    # -- volume image: boot(1024) + MDB(512) + pad to alloc start + blocks -
+    volume = bytearray(al_blk_start_512 * 512)
+    volume[1024 : 1024 + 512] = mdb
+    volume += alloc
+
+    # -- Apple Partition Map + Driver Descriptor Record -------------------
+    def apm_entry(map_blocks: int, pstart: int, pcount: int, ptype: bytes) -> bytes:
+        e = bytearray(512)
+        e[0:2] = b"PM"
+        struct.pack_into(">I", e, 4, map_blocks)
+        struct.pack_into(">I", e, 8, pstart)
+        struct.pack_into(">I", e, 12, pcount)
+        e[48 : 48 + len(ptype)] = ptype
+        return bytes(e)
+
+    vol_blocks = (len(volume) + 511) // 512
+    ddr = bytearray(512)
+    ddr[0:2] = b"ER"
+    struct.pack_into(">H", ddr, 2, 512)  # sbBlkSize
+    struct.pack_into(">I", ddr, 4, part_start + vol_blocks)  # sbBlkCount
+
+    image = bytearray()
+    image += ddr
+    image += apm_entry(2, 1, 63, b"Apple_partition_map")
+    image += apm_entry(2, part_start, vol_blocks, b"Apple_HFS")
+    image += b"\x00" * ((part_start - 3) * 512)  # pad to the partition start
+    image += volume
+    # pad the whole image up to a 2048-byte sector boundary for the container
+    if len(image) % 2048:
+        image += b"\x00" * (2048 - len(image) % 2048)
+    return bytes(image)
