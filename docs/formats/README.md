@@ -17,6 +17,7 @@ Without these docs, the next session re-derives the MDX block chain by hexdumpin
 | [iso9660.md](iso9660.md) | ISO 9660 and Joliet — discs whose payload is already audio |
 | [aiff.md](aiff.md) | AIFF — the payload inside those discs, and the one format carried rather than copied |
 | [emu-ebl.md](emu-ebl.md) | E-mu Emulator X `.EBL` sample banks — a sample format inside an ISO 9660 disc |
+| [hfs.md](hfs.md) | Macintosh HFS behind an Apple Partition Map — Digidesign SampleCell libraries |
 | [audio-cd.md](audio-cd.md) | Red Book audio CDs — no filesystem at all |
 
 ## How to read the constants
@@ -43,6 +44,8 @@ The reference discs are not in this repository ([ADR-0008](../adr/0008-no-media-
 | `prosamples-45` | `Best Service ProSamples vol.45 - Techno ID [AIFF, EXS24, HALion, WAV] 1CD.iso` | 433 889 280 |
 | `gigapack-cd1` | `Best Service - Gigapack I & II CD1 (Kurzweil).bin` + `.cue` | 684 702 480 |
 | `gigapack-cd2` | `Best Service - Gigapack I & II CD 2 (Kurzweil).bin` + `.cue` | 684 744 816 |
+| `sonic-images-v1` | `OMI Universe of Sounds Sonic Images Vol. 1 (SampleCell).iso` | 295 833 600 |
+| `sonic-images-v2` | `OMI Universe of Sounds Sonic Images Vol. 2 (SampleCell).iso` | 295 731 200 |
 
 Point `SAMPLERDISC_TEST_DISCS` at a directory containing them to run the disc-backed tests. The scan recurses, so pointing it at the collection root rather than one folder is fine.
 
