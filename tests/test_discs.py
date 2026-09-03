@@ -2136,13 +2136,15 @@ def test_hfs_discs_resolve_and_list_their_catalog(label: str) -> None:
 
 @pytest.mark.parametrize("label", sorted(_HFS))
 def test_hfs_forks_match_an_independent_reader(label: str) -> None:
-    """Every data fork we read is byte-identical to what ``machfs`` reads.
+    """Every fork we read is byte-identical to what ``machfs`` reads.
 
     ``machfs`` is a pure-Python HFS implementation with no shared lineage with
     this backend, so agreement on all ~900 forks is real cross-checking of the
     B-tree walk, the extent resolution and the fork sizes -- the EBL/KRZ oracle
     pattern, for a filesystem the host's own ``hdiutil`` no longer mounts
-    (modern macOS dropped legacy HFS). Skips where ``machfs`` is not installed.
+    (modern macOS dropped legacy HFS). Both forks are checked: the data fork
+    (the audio, and the AIFF path) and the resource fork (the SDII parameters,
+    D33/ADR-0040). Skips where ``machfs`` is not installed.
     """
     machfs = pytest.importorskip("machfs")
     from samplerdisc.fs.hfs import APPLE_BLOCK, HfsBackend
@@ -2153,7 +2155,10 @@ def test_hfs_forks_match_an_independent_reader(label: str) -> None:
         origin = find_origin(image)
         assert origin is not None and origin.backend.name == "hfs"
         ours = {
-            entry.name: origin.backend.read_file(image, origin.offset, entry)
+            entry.name: (
+                origin.backend.read_file(image, origin.offset, entry),
+                origin.backend.read_resource_fork(image, origin.offset, entry),
+            )
             for volume in origin.backend.volumes(image, origin.offset)
             for entry in volume.files
         }
@@ -2165,16 +2170,98 @@ def test_hfs_forks_match_an_independent_reader(label: str) -> None:
     reference = machfs.Volume()
     reference.read(volume_bytes)
     checked = 0
+    rsrc_checked = 0
 
     def visit(folder, prefix: str) -> None:
-        nonlocal checked
+        nonlocal checked, rsrc_checked
         for name, obj in folder.items():
             full = f"{prefix}{name}"
             if isinstance(obj, machfs.Folder):
                 visit(obj, full + "/")
             elif full in ours:  # machfs lists zero-length forks we skip; ignore those
-                assert ours[full] == obj.data, f"fork mismatch on {full}"
+                data_fork, rsrc_fork = ours[full]
+                assert data_fork == obj.data, f"data fork mismatch on {full}"
+                assert rsrc_fork == obj.rsrc, f"resource fork mismatch on {full}"
                 checked += 1
+                if obj.rsrc:
+                    rsrc_checked += 1
 
     visit(reference, "")
     assert checked > 100, f"machfs matched only {checked} forks; expected the whole library"
+    # sonic-images-v2 carries the 24 Sd2f resource forks; v1 carries none, so
+    # this only asserts the resource-fork walk ran where there was one to read.
+    if label == "sonic-images-v2":
+        assert rsrc_checked >= 24, f"expected the SDII resource forks; matched {rsrc_checked}"
+
+
+def test_hfs_sd2_files_decode_and_match_the_disc() -> None:
+    """The Sd2f files on ``sonic-images-v2`` decode, verified against the disc.
+
+    The audio is the data fork, which ``machfs`` returns byte-for-byte, so our
+    little-endian PCM swapped back to big-endian must equal it exactly -- the
+    "payload is the disc's own bytes" oracle AKAI uses, needing no Mac fork
+    magic. The rate/width/channels come from the resource fork's ``STR ``
+    resources; on this disc all 24 are uniformly 16-bit, 44 100 Hz, stereo
+    (D33/ADR-0040). ``sonic-images-v1`` carries none.
+    """
+    machfs = pytest.importorskip("machfs")
+    from samplerdisc.fs.hfs import APPLE_BLOCK, HfsBackend
+    from samplerdisc.sample import sd2
+    from samplerdisc.sample.aiff import _swap
+
+    v2_size = _HFS["sonic-images-v2"][0]
+    path = _pinned_disc("sonic-images-v2", v2_size)
+    with open_image(path) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "hfs"
+        sd2_entries = [
+            entry
+            for volume in origin.backend.volumes(image, origin.offset)
+            for entry in volume.files
+            if entry.kind == "sd2"
+        ]
+        assert len(sd2_entries) == 24
+        decoded = 0
+        for entry in sd2_entries:
+            data_fork = origin.backend.read_file(image, origin.offset, entry)
+            rsrc_fork = origin.backend.read_resource_fork(image, origin.offset, entry)
+            sample = sd2.parse(data_fork, rsrc_fork, fallback_name=entry.name)
+            assert (sample.width, sample.rate, sample.channels) == (2, 44100, 2)
+            assert sample.frames > 0
+            # The audio is a verbatim byte-swap of the data fork machfs returns.
+            assert _swap(sample.pcm, sample.width) == data_fork[: len(sample.pcm)]
+            decoded += 1
+        assert decoded == 24
+        part_start = next(HfsBackend()._hfs_partitions(image, 0))
+
+    with path.open("rb") as handle:
+        handle.seek(part_start * APPLE_BLOCK)
+        reference = machfs.Volume()
+        reference.read(handle.read())
+
+    def count_sd2(folder) -> int:
+        total = 0
+        for obj in folder.values():
+            if isinstance(obj, machfs.Folder):
+                total += count_sd2(obj)
+            elif getattr(obj, "type", b"") == b"Sd2f":
+                total += 1
+        return total
+
+    assert count_sd2(reference) == 24
+
+
+def test_hfs_v1_has_no_sd2_files() -> None:
+    """``sonic-images-v1`` carries no Sd2f, so nothing new is claimed there."""
+    v1_size = _HFS["sonic-images-v1"][0]
+    path = _pinned_disc("sonic-images-v1", v1_size)
+    with open_image(path) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "hfs"
+        sd2_entries = [
+            entry
+            for volume in origin.backend.volumes(image, origin.offset)
+            for entry in volume.files
+            if entry.kind == "sd2"
+        ]
+    assert sd2_entries == []
