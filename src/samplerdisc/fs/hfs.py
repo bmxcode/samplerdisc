@@ -14,10 +14,12 @@ tips it from "document it" to "build it" is that the byte oracle is free -- the
 host's own ``hdiutil`` reads the same image, so the walk is verifiable to the
 bar EBL and KRZ are held to (ADR-0039).
 
-Nothing is added at the sample layer: an AIFF entry rides the existing
-``extract`` path (``entry.kind == "aiff"``), dedup and all. See
-docs/formats/hfs.md; the numbers here are verified against ``Sonic Images V1``
-and ``V2``.
+An AIFF entry rides the existing ``extract`` path (``entry.kind == "aiff"``),
+dedup and all. A Sound Designer II entry (``Sd2f``) keeps its audio in the data
+fork too, but its rate/width/channels in the resource fork, so the backend also
+resolves the resource fork (``read_resource_fork``) and ``sample/sd2.py``
+decodes it (ADR-0040). See docs/formats/hfs.md; the numbers here are verified
+against ``Sonic Images V1`` and ``V2``.
 """
 
 from __future__ import annotations
@@ -60,9 +62,12 @@ NODE_LEAF = 0xFF
 
 #: The root directory is always CNID 2.
 ROOT_CNID = 2
-#: Data fork, in the extents-overflow B-tree key. (Resource forks are 0xFF and
-#: deliberately not read -- see ``_classify``.)
+#: Fork types, in the extents-overflow B-tree key. A file record carries a
+#: second extent list for its resource fork; SampleCell's Sound Designer II
+#: files keep their sample *parameters* there while the audio stays in the data
+#: fork, so both forks are resolved (ADR-0040, and ``sample/sd2.py``).
 FORK_DATA = 0x00
+FORK_RSRC = 0xFF
 
 #: Guard rails: these are rips, and a corrupt ``fLink`` must not loop forever
 #: and a fork's extent list must not grow without bound (ADR: degrade, never
@@ -246,7 +251,7 @@ class HfsBackend:
         catalog = self._read_fork(image, offset, vol, catalog_extents, vol.catalog_size)
 
         folders: dict[int, tuple[int, str]] = {}
-        files: list[tuple[int, str, int, list[_Extent], int, bytes]] = []
+        files: list[tuple[int, str, int, list[_Extent], int, bytes, int, list[_Extent]]] = []
         for rec in _btree_leaf_records(catalog):
             key_len = rec[0]
             if key_len < 6:
@@ -269,10 +274,18 @@ class HfsBackend:
                 first = _extent_rec(data, 74)
                 size_blocks = (logical + blk - 1) // blk
                 extents = self._full_extents(first, size_blocks, overflow, cnid)
-                files.append((parent, name, logical, extents, cnid, ostype))
+                # The resource fork's logical length is at datum offset 36 (36 is
+                # ``filRLgLen``; 40 is ``filRPyLen``, the block-rounded physical
+                # length, which would append padding) and its first extents at 86.
+                # SDII stores rate/width/channels here (ADR-0040).
+                r_logical = _u32(data, 36) if len(data) >= 40 else 0
+                r_first = _extent_rec(data, 86) if len(data) >= 98 else []
+                r_blocks = (r_logical + blk - 1) // blk
+                r_extents = self._full_extents(r_first, r_blocks, overflow, cnid, fork=FORK_RSRC)
+                files.append((parent, name, logical, extents, cnid, ostype, r_logical, r_extents))
 
         entries: list[File] = []
-        for parent, name, logical, extents, _cnid, ostype in files:
+        for parent, name, logical, extents, _cnid, ostype, r_logical, r_extents in files:
             full = _path(folders, parent, name)
             entries.append(
                 File(
@@ -281,7 +294,7 @@ class HfsBackend:
                     size=logical,
                     start_block=extents[0].start if extents else 0,
                     raw_type=int.from_bytes(ostype, "big"),
-                    meta=_pack_extents(vol, extents),
+                    meta=_pack_extents(vol, extents, r_extents, r_logical),
                 )
             )
 
@@ -291,18 +304,34 @@ class HfsBackend:
         return volume
 
     def read_file(self, image: SectorImage, offset: int, entry: File) -> bytes:
+        return self._read_packed(image, offset, entry, "x", entry.size)
+
+    def read_resource_fork(self, image: SectorImage, offset: int, entry: File) -> bytes:
+        """The bytes of a file's resource fork, or ``b""`` where it has none.
+
+        The audio of a SampleCell file is its data fork (``read_file``); its
+        sample parameters live in the resource fork, which nothing else reads.
+        Optional, and reached by ``getattr`` in ``extract.py`` the way
+        ``parse_sample`` is -- one backend needs it, so it does not belong on the
+        shared ``Backend`` protocol (ADR-0040).
+        """
+        return self._read_packed(image, offset, entry, "r", entry.get("rlen"))
+
+    def _read_packed(
+        self, image: SectorImage, offset: int, entry: File, prefix: str, size: int
+    ) -> bytes:
         al_blk_size = entry.get("albksz")
         fork_base = entry.get("forkbase")
         buf = bytearray()
         index = 0
         while True:
-            count = entry.get(f"x{index}c")
+            count = entry.get(f"{prefix}{index}c")
             if count <= 0:
                 break
-            start = entry.get(f"x{index}s")
+            start = entry.get(f"{prefix}{index}s")
             buf += image.read(offset + fork_base + start * al_blk_size, count * al_blk_size)
             index += 1
-        return bytes(buf[: entry.size])
+        return bytes(buf[:size])
 
     def original_suffix(self, entry: File) -> str:
         """A suffix for a kept SampleCell instrument file.
@@ -320,20 +349,30 @@ class HfsBackend:
         return DEFAULT_ORIGINAL_SUFFIX
 
 
-def _pack_extents(vol: _Volume, extents: list[_Extent]) -> tuple[tuple[str, int], ...]:
-    """Carry a fork's byte layout on the frozen ``File``.
+def _pack_extents(
+    vol: _Volume, extents: list[_Extent], r_extents: list[_Extent], r_size: int
+) -> tuple[tuple[str, int], ...]:
+    """Carry both forks' byte layout on the frozen ``File``.
 
-    ``read_file`` gets only the ``File`` and the backend origin, so everything
-    it needs to resolve allocation blocks to bytes rides in ``meta``: the fork
-    base (relative to origin) and block size, then the extent list as numbered
-    pairs. A zero ``count`` terminates the list, and an allocation block of 0 is
-    valid, which is why the terminator is the count and not the start.
+    ``read_file`` and ``read_resource_fork`` get only the ``File`` and the
+    backend origin, so everything needed to resolve allocation blocks to bytes
+    rides in ``meta``: the fork base (relative to origin) and block size, shared
+    by both forks, then each fork's extent list as numbered pairs -- ``x`` for
+    the data fork, ``r`` for the resource fork -- plus the resource fork's
+    logical length (``rlen``). A zero ``count`` terminates a list, and an
+    allocation block of 0 is valid, which is why the terminator is the count and
+    not the start.
     """
     fork_base = (vol.part_start + vol.al_blk_start) * APPLE_BLOCK
     meta: list[tuple[str, int]] = [("forkbase", fork_base), ("albksz", vol.al_blk_size)]
     for index, extent in enumerate(extents):
         meta.append((f"x{index}s", extent.start))
         meta.append((f"x{index}c", extent.count))
+    for index, extent in enumerate(r_extents):
+        meta.append((f"r{index}s", extent.start))
+        meta.append((f"r{index}c", extent.count))
+    if r_extents:
+        meta.append(("rlen", r_size))
     return tuple(meta)
 
 
@@ -366,9 +405,11 @@ def _classify(name: str, ostype: bytes) -> str:
     if lower.endswith(".wav") or ostype == b"WAVE":
         return "wav"
     if ostype == b"Sd2f":
-        # Sound Designer II keeps its audio in the HFS *resource* fork, with the
-        # sample rate and width in a resource beside it -- a different and harder
-        # format than the flat-PCM AIFF this backend reads. Listed, not read.
+        # Sound Designer II. The audio is the data fork (big-endian PCM); the
+        # sample rate, width and channel count live in the resource fork's
+        # ``STR `` resources. Decoded by ``sample/sd2.py`` through the ``sd2``
+        # branch in extract.py, which reads the resource fork for the parameters
+        # (ADR-0040).
         return "sd2"
     if ostype in _PROGRAM_TYPES or lower.endswith(".exb"):
         return "program"

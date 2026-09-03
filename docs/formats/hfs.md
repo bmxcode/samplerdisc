@@ -89,7 +89,11 @@ A catalog record is a key then a datum. Key: `keyLen` (1), reserved (1), `parent
 | Finder type (`fdType`) | 4 | 4 | classify: `AIFF`, `SCin`/`SCsi`/`MixD`, `Sd2f` |
 | `filFlNum` (CNID) | 20 | 4 | key into the extents-overflow tree |
 | `filLgLen` | 26 | 4 | data-fork logical length (bytes to keep) |
+| `filRLgLen` | 36 | 4 | **resource**-fork logical length (Sound Designer II parameters) |
 | `filExtRec` | 74 | 12 | the data fork's first three extents |
+| `filRExtRec` | 86 | 12 | the **resource** fork's first three extents |
+
+The resource-fork length is `filRLgLen` at **36**, the logical length — not `filRPyLen` at 40, which is the physical length rounded up to a whole allocation block and would append padding. The data fork makes the same distinction (`filLgLen` at 26, not `filPyLen` at 30). A fork's fork type in the extents-overflow key is `0x00` for the data fork and `0xFF` for the resource fork.
 
 A fork longer than three extents is continued in the **extents-overflow B\*-tree** (same node layout), keyed by `(forkType, CNID, startAllocationBlock)`. On these once-written cartridges files are contiguous and this is empty, but it is read so a fragmented fork is never silently truncated.
 
@@ -101,11 +105,25 @@ The catalog file count is the whole of it — `sonic-images-v1` declares **926**
 |---|---:|---:|---|
 | `AIFF` | 832 | 288 | `aiff` — converted to WAV through the existing path ([aiff.md](aiff.md), [ADR-0024](../adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)) |
 | `SCin` / `SCsi` / `MixD` | 89 | 86 | `program` — SampleCell instrument, setup and mix documents; kept with `--keep-originals`, left to ConvertWithMoss ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)) |
-| `Sd2f` | 0 | 24 | `sd2` — Sound Designer II, listed only (see below) |
+| `Sd2f` | 0 | 24 | `sd2` — Sound Designer II, converted to WAV (see below) |
 | Finder/system | 5 | 6 | `file` — Desktop DB/DF, TeachText, a read-me |
 
-**Sound Designer II is listed, not read.** SDII keeps its audio in the HFS *resource* fork, with the sample rate and width in a resource beside it — a different and harder format than the flat-PCM data-fork AIFF this backend reads. The 24 `Sd2f` files on `sonic-images-v2` are named in a `list` and skipped by extraction rather than written as noise ([ADR-0039](../adr/0039-samplecell-is-read-as-hfs-behind-an-apple-partition-map.md)). Resource forks in general are not read, the same call ISO 9660 makes for the associated-file records that are an Apple resource fork wearing the data file's name.
+### Sound Designer II
+
+**The audio is the data fork; the resource fork holds only the parameters.** The project long assumed the reverse — that SDII kept its audio in the resource fork — which turns out to be wrong, and which is why these files went unread through D32 ([ADR-0040](../adr/0040-sound-designer-ii-is-decoded-from-the-data-fork.md)). On `sonic-images-v2` each of the 24 `Sd2f` files has a **large data fork** (847 KB – 1.29 MB) of plain **big-endian, interleaved PCM** — which the backend already read — and a **tiny 1184-byte resource fork** carrying three `STR ` (trailing space) resources, each an ASCII decimal **Pascal string**:
+
+| Resource | Id | Value on this disc | Meaning |
+|---|---|---|---|
+| `STR ` | 1000 | `"2"` | sample size, in **bytes** (2 → 16-bit) |
+| `STR ` | 1001 | `"44100.000000"` | sample rate, in Hz (a float string) |
+| `STR ` | 1002 | `"2"` | channel count (2 → stereo) |
+
+All 24 are uniformly 16-bit, 44 100 Hz, stereo. The audio is carried to WAV by reversing the bytes within each sample (big-endian to little-endian), the same and only change AIFF gets — byte order, never sample values ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md), [ADR-0024](../adr/0024-the-aiff-twin-is-converted-and-deduplicated.md)). SD2 stereo is already interleaved in the data fork, so no channel de-planing is needed.
+
+**The resource fork container** is a standard Macintosh resource map: a 16-byte header (`dataOffset`, `mapOffset`, `dataLength`, `mapLength`, all big-endian), a data section where each resource is `[4-byte length][body]`, and a map whose type list (`typeListOffset` at `mapOffset + 24`) points to per-type reference lists (12-byte entries: id, name offset, a 3-byte data offset into the data section). The decoder enumerates the `STR ` type and reads ids 1000/1001/1002.
+
+**Loop points and a root key are not read.** The fork also carries Digidesign region/loop resources (`sdLL`, `sdDD`), but there is no open decoder or a render to verify one against, so the loop is left out rather than guessed ([ADR-0025](../adr/0025-the-loop-is-decoded-the-root-key-is-not.md)) — `sdLL` on the first file even looks like a loop (two in-range frame values), which is exactly why it is left for a specimen that can confirm it.
 
 ## The oracle
 
-`machfs` (pure Python, `uv run --with machfs`) reads the same HFS volume with no shared lineage, so agreement on all ~900 data forks per disc is a real cross-check of the B-tree walk and extent resolution — the [emu-ebl.md](emu-ebl.md)/[kurzweil-krz.md](kurzweil-krz.md) oracle pattern. It stands in for the host's own `hdiutil`, which on current macOS reports *no mountable file systems* for these images: Apple dropped read support for legacy HFS (HFS+ only), so `hdiutil` parses the partition map and then cannot mount the volume. `test_hfs_forks_match_an_independent_reader` gates on `machfs` being installed and skips otherwise.
+`machfs` (pure Python, `uv run --with machfs`) reads the same HFS volume with no shared lineage, so agreement on all ~900 forks per disc is a real cross-check of the B-tree walk and extent resolution — the [emu-ebl.md](emu-ebl.md)/[kurzweil-krz.md](kurzweil-krz.md) oracle pattern. `test_hfs_forks_match_an_independent_reader` checks **both** forks: every data fork (the AIFF audio) and every resource fork (the SDII parameters) matches `machfs` byte for byte, including the 24 resource forks on `sonic-images-v2`. The SDII decode has a second, self-contained oracle in `test_hfs_sd2_files_decode_and_match_the_disc`: because the audio is a verbatim byte-swap of the data fork, our little-endian PCM swapped back to big-endian equals `machfs`'s `obj.data` exactly — the "payload is the disc's own bytes" check AKAI uses, needing no Mac fork magic. Both stand in for the host's own `hdiutil`, which on current macOS reports *no mountable file systems* for these images: Apple dropped read support for legacy HFS (HFS+ only), so `hdiutil` parses the partition map and then cannot mount the volume. The tests gate on `machfs` being installed and skip otherwise.

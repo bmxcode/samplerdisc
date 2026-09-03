@@ -19,7 +19,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Protocol
 
 from samplerdisc.fs.base import original_suffix
-from samplerdisc.sample import NotASample, PayloadMismatch, aiff, emu_ebl
+from samplerdisc.sample import NotASample, PayloadMismatch, aiff, emu_ebl, sd2
 from samplerdisc.sample.akai import parse
 from samplerdisc.stereo import find_pairs, interleave
 from samplerdisc.wav import LOOP_FORWARD, Loop, read_header, write_wav
@@ -219,6 +219,16 @@ def extract_volume(
                 os.makedirs(out_dir, exist_ok=True)
                 made = True
             yield _convert_ebl(image, backend, origin, volume, entry, out_dir)
+            continue
+        if entry.kind == "sd2":
+            # A Sound Designer II file on a SampleCell HFS disc. Its audio is the
+            # data fork and its parameters the resource fork, so unlike every
+            # other format the decoder needs both -- there is no on-disc twin, so
+            # nothing is deferred or deduplicated (ADR-0040).
+            if not made:
+                os.makedirs(out_dir, exist_ok=True)
+                made = True
+            yield _convert_sd2(image, backend, origin, volume, entry, out_dir)
             continue
         if entry.kind != "sample":
             continue
@@ -537,6 +547,60 @@ def _convert_ebl(
     os.makedirs(folder, exist_ok=True)
     stem, _ = os.path.splitext(os.path.basename(entry.name))
     path = unique_path(folder, safe_name(sample.name or stem))
+    write_wav(
+        path,
+        sample.pcm,
+        rate=sample.rate,
+        channels=sample.channels,
+        sample_width=sample.width,
+        loops=_wav_loops(sample),
+        name=sample.name or stem,
+    )
+    return Extracted(
+        volume=volume.name,
+        name=entry.name,
+        path=path,
+        rate=sample.rate,
+        frames=sample.frames,
+        pitch=0,
+        partition=volume.partition,
+        channels=sample.channels,
+    )
+
+
+def _convert_sd2(
+    image: SectorImage,
+    backend: Backend,
+    origin: int,
+    volume: Volume,
+    entry: File,
+    out_dir: str,
+) -> Extracted | Skipped:
+    """Write one Sound Designer II file as a WAV.
+
+    The audio is the data fork and the parameters (rate, width, channels) the
+    resource fork, so both are read and handed to ``sd2.parse``. Like the AIFF
+    path on the same disc the output is flat in the volume directory, named from
+    the file's own basename (ADR-0040).
+    """
+    read_rsrc = getattr(backend, "read_resource_fork", None)
+    if read_rsrc is None:
+        return Skipped(volume.name, entry.name, "backend has no resource fork", volume.partition)
+    data_fork = backend.read_file(image, origin, entry)
+    if not data_fork:
+        return Skipped(volume.name, entry.name, "no data on disc", volume.partition)
+    rsrc_fork = read_rsrc(image, origin, entry)
+    if not rsrc_fork:
+        return Skipped(volume.name, entry.name, "no resource fork on disc", volume.partition)
+    try:
+        sample = sd2.parse(data_fork, rsrc_fork, fallback_name=os.path.basename(entry.name))
+    except NotASample as exc:
+        return Skipped(volume.name, entry.name, str(exc), volume.partition)
+    if sample.frames == 0:
+        return Skipped(volume.name, entry.name, "zero-length sample", volume.partition)
+
+    stem, _ = os.path.splitext(os.path.basename(entry.name))
+    path = unique_path(out_dir, safe_name(sample.name or stem))
     write_wav(
         path,
         sample.pcm,

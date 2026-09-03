@@ -6,14 +6,25 @@ counterparts, including the ``machfs`` byte oracle, live in ``test_discs.py``.
 
 from __future__ import annotations
 
+import struct
+
 from samplerdisc.container.flat import FlatImage
-from samplerdisc.extract import Extracted, extract_disc
+from samplerdisc.extract import Extracted, Skipped, extract_disc
 from samplerdisc.fs.akai import AkaiBackend
 from samplerdisc.fs.base import File
 from samplerdisc.fs.hfs import APPLE_BLOCK, HfsBackend
 from samplerdisc.fs.iso9660 import Iso9660Backend
 from samplerdisc.fs.probe import find_origin
+from samplerdisc.sample.aiff import _swap
+from samplerdisc.wav import read_header
 from tests import fixtures
+
+
+def _be_pcm(frames: int, channels: int = 2) -> bytes:
+    """A run of distinct big-endian 16-bit samples, so a byte-order slip shows."""
+    values = [((i * 37) % 60000) - 30000 for i in range(frames * channels)]
+    return struct.pack(f">{len(values)}h", *values)
+
 
 BACKEND = HfsBackend()
 
@@ -84,7 +95,7 @@ def test_finder_type_and_name_classify_the_payload(tmp_path):
             "TAKE.AIF": (b"\x00\x00\x00\x00", b"b"),  # by name, no Finder type
             "INSTR": (b"SCin", b"c"),  # SampleCell instrument -> program
             "MIX": (b"MixD", b"d"),  # SampleCell mix document -> program
-            "OLD": (b"Sd2f", b"e"),  # Sound Designer II -> listed, not read
+            "OLD": (b"Sd2f", b"e"),  # Sound Designer II -> sd2 (decoded, ADR-0040)
             "NOTES": (b"TEXT", b"f"),  # anything else -> file
         },
     )
@@ -164,6 +175,98 @@ def test_an_aiff_payload_converts_through_the_existing_path(tmp_path):
     assert len(extracted) == 1
     assert extracted[0].frames == 64
     assert extracted[0].path.endswith(".wav")
+
+
+def test_read_resource_fork_returns_the_exact_bytes(tmp_path):
+    """A Sound Designer II file's resource fork is read whole (ADR-0040).
+
+    The audio stays the data fork; the resource fork carries the parameters, and
+    the backend must hand back its exact bytes for the decoder to read.
+    """
+    rsrc = fixtures.make_sd2_rsrc(sample_size=2, rate=44100, channels=2)
+    image = hfs_image(tmp_path, {"Samples/Brass": (b"Sd2f", _be_pcm(64), rsrc)})
+    entry = next(e for e in next(iter(BACKEND.volumes(image, 0))).files if e.kind == "sd2")
+    assert BACKEND.read_resource_fork(image, 0, entry) == rsrc
+    # The data fork is still the audio, unchanged.
+    assert BACKEND.read_file(image, 0, entry) == _be_pcm(64)
+
+
+def test_read_resource_fork_spans_several_extents(tmp_path):
+    """A fragmented resource fork is stitched from its own extent list.
+
+    Real forks are contiguous, but the ``r``-keyed extents must be walked the
+    same way the data fork's are -- degrade-never-crash if they could not be.
+    """
+    al = 2048
+    raw = bytearray(al * 5)
+    first = b"R" * al
+    second = b"S" * al
+    raw[0:al] = first  # allocation block 0
+    raw[2 * al : 3 * al] = second  # allocation block 2
+    path = tmp_path / "forks.bin"
+    path.write_bytes(bytes(raw))
+    entry = File(
+        name="frag",
+        kind="sd2",
+        size=0,
+        start_block=0,
+        meta=(
+            ("forkbase", 0),
+            ("albksz", al),
+            ("r0s", 0),
+            ("r0c", 1),
+            ("r1s", 2),
+            ("r1c", 1),
+            ("rlen", al + 10),
+        ),
+    )
+    assert BACKEND.read_resource_fork(FlatImage(path), 0, entry) == first + second[:10]
+
+
+def test_a_file_without_a_resource_fork_reads_as_empty(tmp_path):
+    """No resource fork means no ``rlen`` in meta, and an empty read -- not a
+    stray tail of another fork."""
+    image = hfs_image(tmp_path, {"CLAP": (b"AIFF", b"data")})
+    entry = next(iter(BACKEND.volumes(image, 0))).files[0]
+    assert BACKEND.read_resource_fork(image, 0, entry) == b""
+
+
+def test_a_sound_designer_ii_file_converts_to_stereo_wav(tmp_path):
+    """An Sd2f entry decodes: data-fork BE PCM to a little-endian stereo WAV.
+
+    The parameters come from the resource fork; the audio is the data fork with
+    its byte order reversed and its values untouched (ADR-0011/0040).
+    """
+    data = _be_pcm(frames=128, channels=2)
+    rsrc = fixtures.make_sd2_rsrc(sample_size=2, rate=44100, channels=2)
+    image = hfs_image(tmp_path, {"SI Samples/Brass Tutti/Brass C5": (b"Sd2f", data, rsrc)})
+    origin = find_origin(image)
+    out = tmp_path / "out"
+    results = list(extract_disc(image, origin.backend, origin.offset, str(out)))
+    extracted = [r for r in results if isinstance(r, Extracted)]
+    assert len(extracted) == 1
+    assert extracted[0].channels == 2
+    assert extracted[0].rate == 44100
+    assert extracted[0].frames == 128
+    with open(extracted[0].path, "rb") as handle:
+        written = handle.read()
+    header = read_header(written)
+    assert header is not None
+    assert (header.channels, header.rate, header.width) == (2, 44100, 2)
+    # The data chunk is the data fork with byte order reversed, nothing more.
+    body = written[header.offset : header.offset + header.length]
+    assert _swap(body, 2) == data
+
+
+def test_a_malformed_sound_designer_ii_file_is_skipped_not_crashed(tmp_path):
+    """A resource fork with no usable STR parameters degrades to a reasoned
+    skip, never a traceback (ADR-0012)."""
+    image = hfs_image(tmp_path, {"BROKEN": (b"Sd2f", _be_pcm(16), b"not a resource map")})
+    origin = find_origin(image)
+    out = tmp_path / "out"
+    results = list(extract_disc(image, origin.backend, origin.offset, str(out)))
+    assert [r for r in results if isinstance(r, Skipped)]
+    assert not [r for r in results if isinstance(r, Extracted)]
 
 
 def test_an_empty_catalog_yields_a_volume_with_a_note(tmp_path):

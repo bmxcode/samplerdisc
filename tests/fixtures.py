@@ -1651,7 +1651,7 @@ def kurzweil_bank(samples, *, base_id: int = 200, extra_pool: int = 0) -> bytes:
 
 
 def make_hfs(
-    files: dict[str, tuple[bytes, bytes]],
+    files: dict[str, tuple[bytes, ...]],
     volume_name: str = "Sonic Images V1",
     part_start: int = 4,
     node_size: int = 2048,
@@ -1661,28 +1661,32 @@ def make_hfs(
     No disc byte is committed (ADR-0008); this is built from scratch. Enough of
     the format to exercise the backend: a block-0 Driver Descriptor Record, a
     partition map with one ``Apple_HFS`` entry, a Master Directory Block, a
-    two-node catalog B-tree (header + a single leaf), and each file's data fork
-    in its own allocation block run.
+    two-node catalog B-tree (header + a single leaf), and each fork in its own
+    allocation block run.
 
-    ``files`` maps a '/'-separated path to ``(finder_type, data)``. Intermediate
-    path components become HFS folders, so a subfolder path exercises the
-    parent-chain reconstruction. Allocation block size equals ``node_size`` for
-    simplicity; the catalog occupies the first two allocation blocks and the
-    data forks follow, each contiguous (one extent).
+    ``files`` maps a '/'-separated path to ``(finder_type, data)`` or, for a file
+    with a resource fork (a Sound Designer II sample, ADR-0040),
+    ``(finder_type, data, resource_fork)``. Intermediate path components become
+    HFS folders, so a subfolder path exercises the parent-chain reconstruction.
+    Allocation block size equals ``node_size`` for simplicity; the catalog
+    occupies the first two allocation blocks and each fork's run follows,
+    contiguous (one extent).
     """
     ablk = node_size
     al_blk_start_512 = 8  # first allocation block, in 512-byte units
 
-    # -- assign folder CNIDs and lay out data forks in allocation blocks --
+    # -- assign folder CNIDs and lay out forks in allocation blocks --
     ROOT = 2
     folders: dict[str, int] = {}
     next_cnid = 16
-    # each entry: (parent CNID, name, finder type, data, file CNID, first alloc block)
-    file_specs: list[tuple[int, str, bytes, bytes, int, int]] = []
+    # each entry: (parent, name, type, data, cnid, data block, rsrc, rsrc block)
+    file_specs: list[tuple[int, str, bytes, bytes, int, int, bytes, int]] = []
     catalog_blocks = 2
-    cursor = catalog_blocks  # data forks start after the catalog
+    cursor = catalog_blocks  # forks start after the catalog
     next_file_cnid = 100
-    for path, (ftype, data) in files.items():
+    for path, spec in files.items():
+        ftype, data = spec[0], spec[1]
+        rsrc = spec[2] if len(spec) > 2 else b""
         parts = path.split("/")
         parent = ROOT
         for comp in parts[:-1]:
@@ -1692,10 +1696,14 @@ def make_hfs(
                 next_cnid += 1
             parent = folders[key]
         name = parts[-1]
-        nblocks = max(1, (len(data) + ablk - 1) // ablk)
-        file_specs.append((parent, name, ftype, data, next_file_cnid, cursor))
+        data_block = cursor
+        cursor += max(1, (len(data) + ablk - 1) // ablk)
+        rsrc_block = 0
+        if rsrc:
+            rsrc_block = cursor
+            cursor += max(1, (len(rsrc) + ablk - 1) // ablk)
+        file_specs.append((parent, name, ftype, data, next_file_cnid, data_block, rsrc, rsrc_block))
         next_file_cnid += 1
-        cursor += nblocks
 
     total_ablocks = cursor
 
@@ -1716,7 +1724,7 @@ def make_hfs(
         struct.pack_into(">I", d, 6, cnid)  # dirDirID
         records.append(cat_record(int(parent_s), comp, bytes(d)))
     # file records
-    for parent, name, ftype, data, cnid, ablock in file_specs:
+    for parent, name, ftype, data, cnid, ablock, rsrc, rblock in file_specs:
         d = bytearray(102)
         d[0] = 0x02  # file
         d[4:8] = ftype.ljust(4)[:4]
@@ -1725,6 +1733,11 @@ def make_hfs(
         nblocks = max(1, (len(data) + ablk - 1) // ablk)
         struct.pack_into(">H", d, 74, ablock)  # filExtRec[0].startBlock
         struct.pack_into(">H", d, 76, nblocks)  # filExtRec[0].blockCount
+        if rsrc:
+            r_nblocks = max(1, (len(rsrc) + ablk - 1) // ablk)
+            struct.pack_into(">I", d, 36, len(rsrc))  # filRLgLen (logical, not @40)
+            struct.pack_into(">H", d, 86, rblock)  # filRExtRec[0].startBlock
+            struct.pack_into(">H", d, 88, r_nblocks)  # filRExtRec[0].blockCount
         records.append(cat_record(parent, name, bytes(d)))
 
     # -- pack a single leaf node with its tail offset table ---------------
@@ -1753,8 +1766,10 @@ def make_hfs(
     # -- allocation-block region: catalog, then each data fork ------------
     alloc = bytearray(total_ablocks * ablk)
     alloc[0 : len(catalog)] = catalog
-    for _, _, _, data, _, ablock in file_specs:
+    for _, _, _, data, _, ablock, rsrc, rblock in file_specs:
         alloc[ablock * ablk : ablock * ablk + len(data)] = data
+        if rsrc:
+            alloc[rblock * ablk : rblock * ablk + len(rsrc)] = rsrc
 
     # -- Master Directory Block -------------------------------------------
     mdb = bytearray(512)
@@ -1801,3 +1816,54 @@ def make_hfs(
     if len(image) % 2048:
         image += b"\x00" * (2048 - len(image) % 2048)
     return bytes(image)
+
+
+def make_sd2_rsrc(
+    sample_size: int = 2, rate: int = 44100, channels: int = 2, rate_text: str | None = None
+) -> bytes:
+    """A minimal Sound Designer II resource fork (ADR-0040).
+
+    Just the ``STR `` parameter resources the decoder reads -- sample size (in
+    bytes), rate (as the ``"44100.000000"`` float string these files use) and
+    channel count -- laid out as a real Macintosh resource fork: a 16-byte
+    header, a data section of length-prefixed resources, and a resource map with
+    a single ``STR `` type and one reference per id. ``rate_text`` overrides the
+    rate string, so a malformed value can be exercised.
+    """
+
+    def pstr(s: str) -> bytes:
+        b = s.encode("ascii")
+        return bytes([len(b)]) + b
+
+    resources = [
+        (1000, pstr(str(sample_size))),
+        (1001, pstr(rate_text if rate_text is not None else f"{rate:.6f}")),
+        (1002, pstr(str(channels))),
+    ]
+
+    data = bytearray()
+    offsets: list[int] = []
+    for _rid, body in resources:
+        offsets.append(len(data))
+        data += struct.pack(">I", len(body)) + body
+
+    type_list_off = 28  # the map's fields end and the type list begins here
+    ref_list_off = 2 + 8  # from the type-list start: past numTypes and one type entry
+    type_list = struct.pack(">H", 0)  # one type -> count-1 = 0
+    type_list += b"STR " + struct.pack(">H", len(resources) - 1) + struct.pack(">H", ref_list_off)
+    ref_list = bytearray()
+    for i, (rid, _body) in enumerate(resources):
+        ref_list += struct.pack(">h", rid)
+        ref_list += struct.pack(">H", 0xFFFF)  # no name
+        ref_list += bytes([0]) + offsets[i].to_bytes(3, "big")  # attrs + data offset
+        ref_list += b"\x00\x00\x00\x00"  # reserved
+
+    resource_map = bytearray(28)
+    struct.pack_into(">H", resource_map, 24, type_list_off)
+    struct.pack_into(">H", resource_map, 26, type_list_off + len(type_list) + len(ref_list))
+    resource_map += type_list + ref_list
+
+    data_off = 16
+    map_off = 16 + len(data)
+    header = struct.pack(">IIII", data_off, map_off, len(data), len(resource_map))
+    return header + bytes(data) + bytes(resource_map)
