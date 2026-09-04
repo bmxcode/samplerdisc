@@ -15,12 +15,20 @@ sample rate (which varies wildly across a bank -- 282 distinct rates on Vintage
 Pro, only 27 of them 44 100) and, on most files, a loop.
 
 Stereo is stored non-interleaved -- a whole left block then a whole right block
-(``LLLL...RRRR``) -- and would need interleaving to become a WAV. No disc in
-hand carries a stereo ``.EBL`` (Vintage Pro is 1 061 mono files), and no stereo
-``.EBL`` is available paired with a known-good render to check an interleave
-against, so a stereo record is refused with a reason rather than converted by a
-rule nothing has verified (ADR-0026, #57). The channel
-count is read from the record; the mono path is what ships.
+(``LLLL...RRRR``) -- and would need interleaving to become a WAV. Stereo is
+refused with a reason rather than converted by a rule nothing has verified
+(ADR-0026, #57); the mono path is what ships.
+
+The channel count and the audio geometry are read from the record, and both are
+computed the same way on every bank. The three constants D33 fitted to Vintage
+Pro alone -- the channel count from the two spans' equality, the audio at a
+fixed ``block + 184``, the mono length as ``V4 - V3 + 2`` -- each misfire on
+other banks (a second bank, Dance 2000, inverts the span test, pads the audio
+by 4 not 8, and yields a length of 0). What generalises, verified byte-for-byte
+against two banks' publisher renders (Vintage Pro all-mono, Dance 2000 mono +
+stereo), is read here instead: the channel byte of the ``V12`` field, the audio
+anchored at ``V2``, and the length taken to the trailer or the end of the file.
+See docs/formats/emu-ebl.md.
 """
 
 from __future__ import annotations
@@ -56,22 +64,32 @@ SECOND_SECTION_OFFSET_FIELD = FIRST_SECTION + 8
 SECOND_SECTION_LEN = 14
 
 #: The data-description block: a 64-byte UTF-16LE name, twelve 32-bit
-#: little-endian fields, then a 64-byte comment. The audio follows, after eight
-#: bytes of padding.
+#: little-endian fields, then a 64-byte comment. The audio follows the block.
 NAME_LEN = 64
 #: Offsets of the little-endian fields, from the start of the block: the twelve
 #: numbered fields begin right after the 64-byte name, so field N is at
-#: ``NAME_LEN + (N - 1) * 4``. V2..V5 give the two channel spans, the tenth is
-#: the sample rate.
-V2_SPAN_1_START = NAME_LEN + 4
-V3_SPAN_1_END = NAME_LEN + 8
-V4_SPAN_2_START = NAME_LEN + 12
-V5_SPAN_2_END = NAME_LEN + 16
+#: ``NAME_LEN + (N - 1) * 4``.
+#:
+#: ``V2`` (block + 68) anchors the audio: it is ``180`` plus the pad the bank
+#: writes before the PCM, so the audio starts at ``block + V2 - 4`` -- 184 on
+#: Vintage Pro (pad 8), 180 on Dance 2000 (pad 4). D33's fixed ``block + 184``
+#: was that one bank's pad. ``V12`` (block + 108) carries the channel byte; the
+#: tenth field is the sample rate.
+V2_AUDIO_ANCHOR = NAME_LEN + 4
 RATE_OFFSET = NAME_LEN + 36
-#: HeaderData is 176 bytes (name 64 + twelve fields 48 + comment 64) and the
-#: audio begins eight bytes further on, past a run of padding that is eight
-#: bytes wide on every file measured.
-AUDIO_AFTER_BLOCK = 176 + 8
+CHANNEL_FIELD = NAME_LEN + 44
+#: The pad ``V2`` counts past: ``V2 - AUDIO_PAD_BASE`` is the byte pad, so the
+#: audio starts ``AUDIO_PAD_BASE - 4`` past the block plus that pad.
+AUDIO_PAD_BASE = 180
+
+#: The channel byte of ``V12`` -- ``(V12 >> 16) & 0xFF``. ``0x03`` is the only
+#: value that means stereo; ``0x01`` is the common mono value and ``0x02`` is a
+#: second mono sub-type (38 files on Vintage Pro, all verified mono against the
+#: render). So the test is equality to STEREO, not inequality to MONO: reading
+#: it the other way would misclassify those 38 as stereo. The sibling byte
+#: ``(V12 >> 8) & 0xFF`` is ``0x02``, the 16-bit sample width.
+CHANNEL_MONO = 0x01
+CHANNEL_STEREO = 0x03
 
 #: The optional loop trailer, at the very end of a file that carries a loop.
 #: ``EXLZ`` opens it; ``MARK`` is followed by the loop's start and end frames,
@@ -138,19 +156,34 @@ def _name(raw: bytes) -> str:
     return raw.decode("utf-16-le", "replace").split("\x00", 1)[0].strip()
 
 
-def _loop(payload: bytes, frames: int) -> tuple[SampleLoop, ...]:
-    """The loop from the EXLZ trailer, or none.
+def _trailer_offset(payload: bytes) -> int:
+    """Where the optional EXLZ trailer begins, or -1.
 
-    The trailer is optional and sits at the end of the file. A loop that does
-    not run forwards, or runs past the audio, is dropped rather than written --
-    a loop a DAW would refuse is worse than none.
+    The trailer sits at the very end of a file that carries a loop, so it is
+    found from the end. A trailer counts only if its ``MARK`` sub-chunk is
+    present and complete; a bare or truncated marker is ignored, which leaves
+    the bytes it sits in counted as audio (damage degrades, never crashes).
+    This offset is where the audio ends -- verified byte-for-byte on two banks
+    -- so the same call locates the loop and bounds the PCM.
     """
     marker = payload.rfind(LOOP_MARKER)
     if marker < 0:
-        return ()
+        return -1
     mark = payload.find(MARK, marker)
     if mark < 0 or mark + 16 > len(payload):
+        return -1
+    return marker
+
+
+def _loop(payload: bytes, frames: int, trailer: int) -> tuple[SampleLoop, ...]:
+    """The loop from the EXLZ trailer, or none.
+
+    A loop that does not run forwards, or runs past the audio, is dropped rather
+    than written -- a loop a DAW would refuse is worse than none.
+    """
+    if trailer < 0:
         return ()
+    mark = payload.find(MARK, trailer)
     # The MARK chunk is its id (4), a size (4, always 8), then the loop's start
     # and end frames, little-endian.
     start = _u32le(payload, mark + 8)
@@ -175,31 +208,34 @@ def parse(payload: bytes, fallback_name: str = "") -> EmuEblSample:
     if payload[second : second + 4] != SECTION:
         raise NotASample("EBL second section is not where the header says")
     block = second + SECOND_SECTION_LEN
-    if block + AUDIO_AFTER_BLOCK > len(payload):
+    # The block must at least reach V12 to be read; a file shorter than that is
+    # too damaged to convert (damage degrades, never crashes).
+    if block + CHANNEL_FIELD + 4 > len(payload):
         raise NotASample("EBL data-description block runs past the end of the file")
 
     name = _name(payload[block : block + NAME_LEN])
-    v2 = _u32le(payload, block + V2_SPAN_1_START)
-    v3 = _u32le(payload, block + V3_SPAN_1_END)
-    v4 = _u32le(payload, block + V4_SPAN_2_START)
-    v5 = _u32le(payload, block + V5_SPAN_2_END)
     rate = _u32le(payload, block + RATE_OFFSET)
 
-    # The two channel spans. Equal spans -- the common case, and every file on
-    # the one disc in hand -- mean mono, and the mono block's length is stated
-    # apart, as V4 - V3 + 2. Unequal spans mean a left block then a right block.
-    if v3 - v2 != v5 - v4:
+    # The channel count is the channel byte of V12, not the spans D33 read: the
+    # spans invert between banks, while V12 agrees with both banks' renders.
+    channel_byte = (_u32le(payload, block + CHANNEL_FIELD) >> 16) & 0xFF
+    channels = 2 if channel_byte == CHANNEL_STEREO else 1
+    if channels == 2:
         raise NotASample(
-            "stereo EBL (non-interleaved L/R) is not yet supported: no stereo "
-            "specimen exists to verify the interleave against"
+            "stereo EBL (non-interleaved L/R) is not yet supported: the record "
+            "declares two channels (V12) and the interleave is deferred to #57"
         )
 
-    audio_start = block + AUDIO_AFTER_BLOCK
-    length = v4 - v3 + 2
-    # Damage degrades, never crashes: a truncated rip declares a length it does
-    # not carry, so the audio is clamped to what is actually on the disc and to
-    # a whole number of samples (ADR: damaged input degrades).
-    length = max(0, min(length, len(payload) - audio_start))
+    # The audio is anchored at V2 (the pad varies by bank) and runs to the EXLZ
+    # trailer or, with no loop, the end of the file. That end is the length the
+    # renders agree with -- reading a fixed span or to EOF regardless is wrong
+    # by a frame on every looped file.
+    audio_start = block + _u32le(payload, block + V2_AUDIO_ANCHOR) - 4
+    trailer = _trailer_offset(payload)
+    audio_end = trailer if trailer >= 0 else len(payload)
+    # Damage degrades, never crashes: a truncated rip loses its tail, so the
+    # audio is clamped to what is on the disc and to a whole number of samples.
+    length = max(0, min(audio_end, len(payload)) - audio_start)
     length -= length % SAMPLE_WIDTH
     pcm = payload[audio_start : audio_start + length]
     frames = length // SAMPLE_WIDTH
@@ -211,5 +247,5 @@ def parse(payload: bytes, fallback_name: str = "") -> EmuEblSample:
         channels=1,
         width=SAMPLE_WIDTH,
         pcm=pcm,
-        loops=_loop(payload, frames),
+        loops=_loop(payload, frames, trailer),
     )

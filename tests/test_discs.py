@@ -804,6 +804,101 @@ def test_a_converted_ebl_matches_the_publishers_own_render() -> None:
         assert checked >= 1000
 
 
+#: The second EBL bank, read to prove the reader generalises past Vintage Pro:
+#: E-mu Classic Series Vol 13 Dance 2000. It is not a disc -- it is loose
+#: ``.ebl`` from archive.org's ``emuexbsoundbanks``, used strictly as a local
+#: validation input, never committed and never treated as a disc (ADR-0033) --
+#: so unlike Vintage Pro it is reached by a plain directory of files, not the
+#: container/fs pipeline. Its channel split is 972 mono / 636 stereo, the 636
+#: matching the oracle's 636 stereo FLAC exactly.
+_DANCE_MONO = 972
+_DANCE_STEREO = 636
+
+
+def _ebl_dance() -> tuple[Path, Path] | None:
+    """The Dance 2000 input tree and its render, if both are present.
+
+    Set ``SAMPLERDISC_EBL_DANCE_INPUT`` to the extracted ``.exb`` tree of loose
+    ``.ebl`` and ``SAMPLERDISC_EBL_DANCE_ORACLE`` to mattetti's matching ``E-MU
+    Sounds`` render folder. Both are copyrighted and stay outside the tree, so
+    the check skips without them.
+    """
+    src = os.environ.get("SAMPLERDISC_EBL_DANCE_INPUT")
+    oracle = os.environ.get("SAMPLERDISC_EBL_DANCE_ORACLE")
+    if src and oracle and Path(src).is_dir() and Path(oracle).is_dir():
+        return Path(src), Path(oracle)
+    return None
+
+
+@pytest.mark.skipif(_ebl_dance() is None, reason="set SAMPLERDISC_EBL_DANCE_INPUT/_ORACLE")
+def test_the_mono_half_of_a_second_ebl_bank_matches_its_render() -> None:
+    """The generalised reader on a bank that is not Vintage Pro. Every loose
+    ``.ebl`` classifies to the channel its render carries (972 mono, 636 stereo
+    refused), and every uniquely-named mono file whose render the publisher did
+    not resample decodes PCM byte-for-byte -- proving the channel field, the V2
+    audio anchor and the trailer/EOF length hold on a second bank, not just the
+    one they were first read on. Stereo interleave is #57.
+
+    A handful of renders are normalised to 44 100 Hz where the record's own rate
+    is something odd (E-mu writes rates like 44 001); the record is the
+    authority (see docs/formats/emu-ebl.md), so those are the publisher's audio,
+    not ours to match, and are skipped by rate. The skip is capped so a broken
+    rate reader -- which would disagree on every file -- cannot hide behind it.
+
+    FLAC is decoded with ``soundfile`` -- test tooling only; the converter stays
+    pure-Python (ADR-0001).
+    """
+    from samplerdisc.sample import NotASample as _NotASample
+
+    sf = pytest.importorskip("soundfile")
+    src, oracle_dir = _ebl_dance()
+
+    renders: dict[str, Path] = {}
+    for flac in oracle_dir.glob("*.flac"):
+        renders[flac.stem.split(" - ", 1)[-1].rstrip("_")] = flac
+
+    mono = stereo = other = 0
+    seen: dict[str, int] = {}
+    samples = []
+    for path in sorted(src.rglob("*.ebl")):
+        payload = path.read_bytes()
+        try:
+            s = emu_ebl.parse(payload)
+        except _NotASample as exc:
+            if "stereo" in str(exc):
+                stereo += 1
+            else:
+                other += 1
+            continue
+        mono += 1
+        seen[s.name] = seen.get(s.name, 0) + 1
+        samples.append(s)
+
+    # The channel census is the ground truth: the reader must split the bank the
+    # way the oracle's own stereo/mono FLAC split does, with nothing left over.
+    assert (mono, stereo, other) == (_DANCE_MONO, _DANCE_STEREO, 0)
+
+    checked = resampled = 0
+    for s in samples:
+        if seen[s.name] > 1:
+            continue
+        flac = renders.get(s.name.replace(" ", "_"))
+        if flac is None:
+            continue
+        data, rate = sf.read(str(flac), dtype="int16")
+        if rate != s.rate:
+            resampled += 1
+            continue
+        assert data.reshape(-1).tobytes() == s.pcm, s.name
+        checked += 1
+    # Publisher resampling is a rare hand-normalisation; a rate reader that
+    # broke would disagree on nearly every file, so cap the skip well below that.
+    assert resampled <= 5
+    # Most of the 972 mono files are uniquely named and match; pin a floor so a
+    # broken decoder cannot pass by matching nothing.
+    assert checked >= 800
+
+
 def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
     """Root key and loop points from a WAV's own smpl chunk."""
     pos = 12

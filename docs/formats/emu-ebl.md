@@ -4,25 +4,24 @@ The sample banks Emulator X-3 -- E-mu's Windows software sampler -- writes, as t
 
 ## Why this format needed a document
 
-It looked like the note said it would be: an IFF wrapper around PCM, so a header walk and a copy. Three things the bytes corrected. The two public descriptions of the format disagree with each other and with the disc on endianness. The audio does not start at a fixed offset -- the header before it is variable-width, so the offset is computed, not assumed. And the audio the file *claims* to hold is stated indirectly, as the gap between two header fields, so a decoder that reads to the end of the file is one frame long on every sample that carries a loop.
+It looked like the note said it would be: an IFF wrapper around PCM, so a header walk and a copy. Three things the bytes corrected. The two public descriptions of the format disagree with each other and with the disc on endianness. The audio does not start at a fixed offset -- the header before it is variable-width, so the offset is computed, not assumed. And the audio the file *claims* to hold ends at its loop trailer, not the end of the file, so a decoder that reads to the end is one frame long on every sample that carries a loop.
+
+A fourth thing a *second* bank corrected, after the first shipped (D33 → #73). Three of the constants read cleanly off Vintage Pro turned out to be that one bank's values, not the format's: the channel count taken from the two spans' equality inverts on the next bank; the audio's 8-byte pad is 4 bytes wide there; and the mono length `V4 − V3 + 2` yields 0. What generalises -- verified byte-for-byte against two banks' publisher renders -- is read instead: the channel byte of `V12`, the audio anchored at `V2`, and the length taken to the trailer (or the end of the file). The lesson the project already knew, paid for again: a constant is only as trustworthy as the number of discs it was checked against.
 
 ## The census
 
-*Verified across all 1 061 `.EBL` on the one disc in hand -- Digital Sound Factory's Vintage Pro:*
+*Verified across all 1 061 `.EBL` on Digital Sound Factory's Vintage Pro -- the one EBL **disc** in hand -- and cross-checked against a second **bank**, E-mu Classic Series Vol 13 Dance 2000 (1 608 loose `.ebl`, a local validation input, never a disc; ADR-0033):*
 
-| | Value | Count |
-|---|---|---|
-| Wrapper | `FORM` … `E5B0TOC2` | 1 061 |
-| Bit depth | 16 | 1 061 |
-| Channels | 1 (mono) | 1 061 |
-| | 2 (stereo) | **0** |
-| Sample rate | distinct values | **282** |
-| | 44 100 | 27 |
-| | most common (24 000) | 165 |
-| Loop trailer | present | 849 |
-| | absent | 212 |
+| | Value | Vintage Pro | Dance 2000 |
+|---|---|---|---|
+| Wrapper | `FORM` … `E5B0TOC2` | 1 061 | 1 608 |
+| Bit depth | 16 | 1 061 | 1 608 |
+| Channels | 1 (mono) | 1 061 | 972 |
+| | 2 (stereo) | **0** | **636** |
+| Loop trailer | present | 849 | 0 |
+| | absent | 212 | 1 608 |
 
-Two facts the census settles before anything else. **The rate is not a constant.** Vintage Pro carries 282 distinct rates -- 24 000, 32 000, 47 360, 48 139, 42 193 -- and only 27 of its files are 44 100. A decoder that assumed a rate would be wrong far more often than right, so the rate is read from the record. **Every file is mono.** The format stores stereo, but no `.EBL` on this disc uses it, and no stereo `.EBL` is available paired with a known-good render to check an interleave against -- so a stereo record is refused rather than converted (see *Stereo* below).
+Vintage Pro alone carries 282 distinct sample rates -- 24 000, 32 000, 47 360, 48 139, 42 193 -- and only 27 of its files are 44 100. Three facts the two banks settle together. **The rate is not a constant**, so it is read from the record; the record is also the authority when a render was hand-normalised (a few Dance 2000 files whose record says 44 001 were rendered at 44 100). **The channel count is not a constant either** -- Vintage Pro happens to be all mono, but Dance 2000 is 972 / 636, and that 636 is exactly the count of stereo FLAC in its render. **And stereo is still refused**: no interleave has been checked against a render (that is #57), so a stereo record is refused rather than converted (see *Stereo* below). The channel split is read the same way on both banks -- from `V12`, not from the spans (see below).
 
 The disc's 1 062nd file is `Vintage Pro.exb` itself, the 5.9 MB bank definition -- the instrument layer (keygroups, zones), which is read for naming and not converted (ADR-0011).
 
@@ -52,28 +51,32 @@ The second section is 14 bytes -- `E5S1`, a size, six more -- and the fixed-layo
 |---|---|---|
 | 0 | 64 | Name, UTF-16LE (a copy of the one above) |
 | 64 | 4 | V1 |
-| 68 | 4 | V2 — channel-1 span start |
-| 72 | 4 | V3 — channel-1 span end |
-| 76 | 4 | V4 — channel-2 span start |
-| 80 | 4 | V5 — channel-2 span end |
-| 84–96 | 16 | V6–V9 |
+| 68 | 4 | **V2 — audio anchor** (`audio_start = block + V2 − 4`) |
+| 72–96 | 28 | V3–V9 |
 | 100 | 4 | **Sample rate** |
-| 104–112 | 12 | V11, V12 |
+| 104 | 4 | V11 |
+| 108 | 4 | **V12 — channel / format field** |
 | 112 | 64 | Comment, UTF-16LE |
 
-All twelve numeric fields are little-endian. The audio begins **8 bytes past the end of the block** -- past a short run of padding that is 8 bytes wide on every file measured, on two banks -- so `audio_start = block + 184`.
+All twelve numeric fields are little-endian.
+
+**The audio offset is `block + V2 − 4`, computed, not fixed.** `V2` records the pad before the audio (`V2 − 180` bytes of it): 188 on Vintage Pro → `block + 184` (an 8-byte pad), 184 on Dance 2000 → `block + 180` (a 4-byte pad). D33's fixed `block + 184` was Vintage Pro's pad mistaken for the format's; `block + V2 − 4` matches the render-verified start on every file of both banks. The pad is not reliably zero -- loop metadata leaks into it -- so it cannot be found by scanning for silence.
+
+**The channel count is the channel byte of `V12` -- `(V12 >> 16) & 0xFF`.** `0x03` is stereo; `0x01` is the common mono value, and `0x02` is a second mono sub-type (38 files on Vintage Pro -- the `Vox3*` and `Finger Bass` samples -- all verified mono against the render). So the test is **equality to `0x03`**, not inequality to `0x01`: reading it the other way would misclassify those 38 as stereo. The sibling byte `(V12 >> 8) & 0xFF` is `0x02`, the 16-bit sample width. This is the discriminator that agrees with both banks' renders -- 0 stereo on Vintage Pro, 636 on Dance 2000, the latter matching its 636 stereo FLAC exactly.
+
+**The spans do not give the channel count.** D33 read two spans (`V3 − V2`, `V5 − V4`) and called equal spans mono, unequal stereo. That inverts between banks: Vintage Pro has `V3 − V2 = 0` on every file, and on Dance 2000 the stereo files have *equal* spans and the mono files *unequal* ones. The spans are not a reliable channel signal and are no longer read as one.
 
 **The name is UTF-16LE, not UTF-8.** Both public descriptions call it UTF-8; the bytes are `45 00 50 00 …` = `E·P·…`. It is the sample's real name -- `EP4MKIIL A0`, `909 Tom Low`, `Happy Hat` -- and it is what the output WAV is named after, because the ISO 9660 names are a bare sequence (`Vintage ProSL001.ebl` … `SL1062`) that would tell a user nothing.
 
-### The channel spans, and the mono length
+### The length, from the end
 
-`Channel1 = V3 − V2`, `Channel2 = V5 − V4`. Equal spans mean mono, and the mono audio length is stated apart, as **V4 − V3 + 2**. On `Vintage ProSL001` that is 46 244 − 188 + 2 = 46 058 bytes = 23 029 frames, which is exactly what the publisher's render carries. Unequal spans mean a whole left block then a whole right block (`LLLL…RRRR`).
+The audio runs from `audio_start` to the start of the `EXLZ` loop trailer, or to the end of the file when there is no loop. That end is the length the renders agree with: it reproduces Vintage Pro's `V4 − V3 + 2` on all 1 061 files (849 looped, 212 not) and Dance 2000's per-channel `V3 − V2` on all 1 608 -- exactly, no off-by-one.
 
-Reading to the end of the file instead is wrong by design: a file with a loop has a 42-byte trailer after the audio, and even without one the `V4 − V3 + 2` length is the authority the render agrees with.
+There is no single header field that holds the length: the "large" field sits in `V4` on Vintage Pro and in `V3` on Dance 2000, which is why any fixed-slot formula (`V4 − V3 + 2`, or `V3 − V2`) is right on one bank and wrong on the other. Anchoring the end at the trailer sidesteps the question, and it degrades safely -- a truncated rip simply ends sooner. Reading to the end of the file regardless would instead be one frame long on every looped file, since the trailer follows the audio.
 
-### The loop trailer (optional, last 42 bytes)
+### The loop trailer (optional, last 40 bytes)
 
-Present on 849 of the 1 061. `EXLZ`, then `INFO` and `MARK` sub-chunks, all sizes and flags little-endian:
+Present on 849 of the 1 061 on Vintage Pro (and on none of Dance 2000). It begins exactly where the audio ends -- that is what makes it the length anchor above. `EXLZ`, then `INFO` and `MARK` sub-chunks, all sizes and flags little-endian:
 
 | From `EXLZ` | Size | Field |
 |---|---|---|
@@ -94,9 +97,9 @@ An `.EBL` payload is already signed 16-bit little-endian PCM -- exactly a WAV da
 
 ## Stereo
 
-The format stores stereo non-interleaved, and stereo `.EBL` exist -- other banks (Studio Grand, EW PS18 Steinberg Grand) are entirely stereo. But **Vintage Pro, the only EBL disc in hand, is 1 061 mono files**, and the reference renders that could verify an interleave (mattetti's `E-MU Sounds/`) ship without their EBL inputs for any stereo bank -- the three input banks that do ship (PROcussion, SP-1200, Vintage Keys) are all mono. So there is no stereo-in / known-good-out pair to check the `LLLL…RRRR` → interleaved conversion against.
+The format stores stereo non-interleaved -- a whole left block then a whole right block (`LLLL…RRRR`) -- and a stereo record is now recognised for the right reason: its `V12` channel byte is `0x03`. On Dance 2000 that is 636 of the 1 608 files, and their per-channel length is `V3 − V2` (half the audio the end-anchor bounds).
 
-Rather than convert by a rule nothing has verified -- an off-by-a-channel interleave opens, plays as noise, and reports nothing wrong -- a stereo record is **refused with a reason** and reported as skipped (ADR-0026: the record declares the channel count). Supporting it is left to a stereo specimen with an oracle ([#57](https://github.com/bmxcode/samplerdisc/issues/57)).
+A stereo record is still **refused with a reason** and reported as skipped (ADR-0026: the record declares the channel count). What is deferred is only the last step -- interleaving the two blocks -- because an off-by-a-channel interleave opens, plays as noise, and reports nothing wrong. That step, `stereo.interleave(L, R)`, has been checked against Dance 2000's stereo render byte-for-byte, so the remaining work is small; it is tracked in [#57](https://github.com/bmxcode/samplerdisc/issues/57).
 
 ## The oracle
 
@@ -114,6 +117,12 @@ The check that proves the bytes were understood rather than merely copied. matte
 The 4 that fall out are the disc's four duplicate names (`Kick 9`, `Kick SP ff`, `ArpSquareA1`, `ArpSquareD#1`, each written twice) -- the extractor writes both, disambiguated by `unique_path`; the oracle simply cannot tell which render is which. Nothing in the 1 007 is off by a frame, a byte, or a hertz.
 
 The oracle is FLAC and stdlib cannot decode it, so the check reads it with `soundfile` -- test tooling only. The shipped converter stays pure-Python (ADR-0001). The renders are copyrighted DSF audio and mattetti's licence is unstated, so they are never committed (ADR-0008): the check is gated on `SAMPLERDISC_EBL_ORACLE` and skips without it.
+
+### The second bank (Dance 2000)
+
+The one disc is one bank, and one bank's constants can be that bank's rather than the format's -- which is exactly what D33 shipped. So the generalised reader (#73) is held to a *second* bank's render: E-mu Classic Series Vol 13 Dance 2000, obtained as loose `.ebl` from archive.org's `emuexbsoundbanks` and paired with mattetti's render (1 605 FLAC, 636 stereo). It is a **local validation input, never a disc and never committed** (ADR-0033) -- so, unlike Vintage Pro, the test reads it as a plain directory of files, gated on `SAMPLERDISC_EBL_DANCE_INPUT` and `SAMPLERDISC_EBL_DANCE_ORACLE`, skipping without them.
+
+*Verified:* every `.ebl` classifies to the channel its render carries (972 mono, 636 stereo refused -- the 636 matching the render's stereo FLAC exactly), and every uniquely-named mono file whose render was not hand-normalised (one, `Snare 2`, resampled 44 001 → 44 100) decodes PCM byte-for-byte -- 819 of them. The mono path is thus pinned on two banks, and the stereo geometry is proven ready for #57.
 
 ## Reference disc
 
