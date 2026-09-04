@@ -625,6 +625,8 @@ def make_ebl(
     frames: int = 32,
     loop: tuple[int, int] | None = None,
     stereo: bool = False,
+    channel_byte: int | None = None,
+    pad: int = 8,
     toc: bytes = b"E5B0TOC2",
 ) -> bytes:
     """One E-mu Emulator X ``.EBL`` payload. See docs/formats/emu-ebl.md.
@@ -632,26 +634,29 @@ def make_ebl(
     Built to the same layout the disc uses: a ``FORM`` wrapper with big-endian
     outer headers, a variable-width header ending at a second ``E5S1`` section
     whose offset the first section declares, then a 176-byte data-description
-    block of little-endian fields, ``header_pad`` bytes of padding, and the
-    audio. ``loop`` is a ``(start, end)`` frame pair adding the EXLZ trailer.
-    With ``stereo`` the two channel spans differ, which the parser refuses.
-    ``toc`` is exposed so a test can build the non-EBL FORM the parser rejects.
+    block of little-endian fields, ``pad`` bytes of padding, and the audio.
+    ``loop`` is a ``(start, end)`` frame pair adding the EXLZ trailer.
+
+    The channel count is the channel byte of V12; ``stereo`` sets it to ``0x03``
+    (which the parser refuses), and ``channel_byte`` overrides it directly so a
+    test can build the ``0x02`` mono sub-type. ``pad`` is the bytes before the
+    audio -- V2 records it, so the parser locates the audio from V2 rather than
+    a fixed offset, and the fixture varies it to prove that. ``toc`` is exposed
+    so a test can build the non-EBL FORM the parser rejects.
     """
     if pcm is None:
         pcm = bytes(itertools.islice(itertools.cycle(range(256)), frames * 2))
     name16 = name.encode("utf-16-le").ljust(64, b"\x00")[:64]
 
     # The data-description block: 64-byte name, twelve LE fields, 64-byte
-    # comment. V2..V5 are the two channel spans; mono means equal spans and a
-    # mono length stated as V4 - V3 + 2, so V3 and V4 straddle the audio.
-    base = 0x1000
-    v3 = base
-    v4 = base + len(pcm) - 2
-    if stereo:
-        # Unequal spans: V3 - V2 != V5 - V4.
-        fields = [301, v3, v3, v3 + len(pcm) // 2, v4, 0, 0, 0, 0, rate, 0, 0]
-    else:
-        fields = [301, v3, v3, v4, v4, 0, 0, 0, 0, rate, 0, 0]
+    # comment. V2 (the second field) anchors the audio at ``block + V2 - 4``, so
+    # V2 is the pad plus 180. V12 (the twelfth) carries the channel byte in
+    # ``(V12 >> 16) & 0xFF`` beside the 0x02 sample-width byte.
+    if channel_byte is None:
+        channel_byte = 0x03 if stereo else 0x01
+    v2 = pad + 180
+    v12 = (channel_byte << 16) | (0x02 << 8) | 0x01
+    fields = [301, v2, 0, 0, 0, 0, 0, 0, 0, rate, 0, v12]
     block = name16 + b"".join(struct.pack("<I", f) for f in fields) + b"\x00" * 64
     assert len(block) == 176
 
@@ -659,8 +664,7 @@ def make_ebl(
     if loop is not None:
         start, end = loop
         trailer = (
-            b"\x00\x00"
-            + b"EXLZ"
+            b"EXLZ"
             + struct.pack("<I", 0x20)
             + b"INFO"
             + struct.pack("<III", 8, 1, 1)
@@ -668,8 +672,8 @@ def make_ebl(
             + struct.pack("<III", 8, start, end)
         )
 
-    # The audio begins eight bytes past the 176-byte block, then the trailer.
-    body = block + b"\x00" * 8 + pcm + trailer
+    # The audio begins ``pad`` bytes past the 176-byte block, then the trailer.
+    body = block + b"\x00" * pad + pcm + trailer
 
     # The header up to the second section, then the second section (14 bytes),
     # then ``body``. The first section declares where the second one starts.

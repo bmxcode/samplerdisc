@@ -64,10 +64,50 @@ def test_a_loop_past_the_audio_is_dropped_not_written():
 
 
 def test_a_stereo_record_is_refused_with_a_reason():
-    """No stereo specimen exists to verify an interleave, so a stereo EBL is
-    refused rather than converted by an unverified rule (ADR-0026)."""
+    """Stereo is detected from the record's channel field (V12), and the
+    interleave is deferred to #57, so a stereo EBL is refused rather than
+    converted by an unverified rule (ADR-0026)."""
     with pytest.raises(NotASample, match="stereo"):
         parse(fixtures.make_ebl(stereo=True))
+
+
+def test_the_channel_count_is_read_from_v12_not_the_spans():
+    """The channel byte of V12 is the authority. 0x03 is stereo and refused;
+    0x01 is mono and converted -- the spans D33 read invert between banks."""
+    assert parse(fixtures.make_ebl(channel_byte=0x01)).channels == 1
+    with pytest.raises(NotASample, match="stereo"):
+        parse(fixtures.make_ebl(channel_byte=0x03))
+
+
+def test_the_0x02_channel_byte_is_a_mono_subtype_not_stereo():
+    """Vintage Pro has 38 mono files whose V12 channel byte is 0x02, verified
+    mono against the render. The test is equality to 0x03, so 0x02 stays mono --
+    reading it as 'not 0x01, therefore stereo' would misclassify all 38."""
+    pcm = bytes(range(256)) * 2
+    sample = parse(fixtures.make_ebl(pcm=pcm, channel_byte=0x02))
+    assert sample.channels == 1
+    assert sample.pcm == pcm
+
+
+def test_the_audio_is_located_from_v2_whatever_the_pad():
+    """The pad before the audio varies by bank (8 on Vintage Pro, 4 on Dance
+    2000); V2 records it, so the audio is found at block + V2 - 4 rather than a
+    fixed offset. The same PCM is recovered whichever pad the bank wrote."""
+    pcm = bytes(range(256)) * 3
+    for pad in (4, 8, 12):
+        sample = parse(fixtures.make_ebl(pcm=pcm, pad=pad))
+        assert sample.pcm == pcm, pad
+
+
+def test_the_length_runs_to_the_trailer_or_the_end_of_the_file():
+    """The audio ends at the EXLZ trailer when there is one and at the end of
+    the file when there is not -- both give exactly the PCM, no trailing frame
+    from the loop trailer and none short."""
+    pcm = b"\x01\x02" * 500
+    assert parse(fixtures.make_ebl(pcm=pcm)).pcm == pcm
+    looped = parse(fixtures.make_ebl(pcm=pcm, loop=(10, 400)))
+    assert looped.pcm == pcm
+    assert looped.frames == len(pcm) // 2
 
 
 def test_a_form_that_is_not_an_ebl_is_refused():
