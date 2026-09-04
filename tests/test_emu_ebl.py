@@ -4,7 +4,7 @@ The parser's real oracle is mattetti's publisher-grade renders of the Vintage
 Pro bank: every one of the disc's 1 057 mono samples decodes byte-for-byte to
 the same PCM at the same rate. That check needs the disc and the oracle, so it
 lives in test_discs.py. What is here is the shape of the format and the edges
-that oracle does not reach -- the loop trailer, a refused stereo record, a
+that oracle does not reach -- the loop trailer, a stereo record's interleave, a
 truncated tail.
 """
 
@@ -17,6 +17,7 @@ import pytest
 from samplerdisc.extract import extract_volume
 from samplerdisc.sample import NotASample
 from samplerdisc.sample.emu_ebl import parse
+from samplerdisc.stereo import interleave
 from tests import fixtures
 
 
@@ -63,20 +64,34 @@ def test_a_loop_past_the_audio_is_dropped_not_written():
     assert sample.loops == ()
 
 
-def test_a_stereo_record_is_refused_with_a_reason():
-    """Stereo is detected from the record's channel field (V12), and the
-    interleave is deferred to #57, so a stereo EBL is refused rather than
-    converted by an unverified rule (ADR-0026)."""
-    with pytest.raises(NotASample, match="stereo"):
-        parse(fixtures.make_ebl(stereo=True))
+def test_a_stereo_record_is_interleaved():
+    """Stereo stores a whole left block then a whole right block (LLLL...RRRR);
+    the two are split at the span's midpoint and interleaved to LRLR (ADR-0041,
+    #57). ``frames`` is the per-channel count, not the pair's total."""
+    left = bytes(range(256)) * 2
+    right = bytes(reversed(range(256))) * 2
+    sample = parse(fixtures.make_ebl(stereo=True, pcm=left + right))
+    assert sample.channels == 2
+    assert sample.frames == len(left) // 2
+    assert sample.pcm == interleave(left, right)
+
+
+def test_a_stereo_loop_survives_and_is_in_per_channel_frames():
+    """A stereo record's loop is bounded by the per-channel frame count, the
+    same unit the WAV ``smpl`` chunk carries -- not the interleaved total."""
+    left = right = b"\x00\x00" * 256
+    sample = parse(fixtures.make_ebl(stereo=True, pcm=left + right, loop=(50, 200)))
+    assert sample.channels == 2
+    assert sample.frames == 256
+    assert (sample.loops[0].start, sample.loops[0].end) == (50, 200)
+    assert sample.pcm == interleave(left, right)
 
 
 def test_the_channel_count_is_read_from_v12_not_the_spans():
-    """The channel byte of V12 is the authority. 0x03 is stereo and refused;
-    0x01 is mono and converted -- the spans D33 read invert between banks."""
+    """The channel byte of V12 is the authority. 0x03 is stereo, 0x01 is mono --
+    the spans D33 read invert between banks, so they are not the signal."""
     assert parse(fixtures.make_ebl(channel_byte=0x01)).channels == 1
-    with pytest.raises(NotASample, match="stereo"):
-        parse(fixtures.make_ebl(channel_byte=0x03))
+    assert parse(fixtures.make_ebl(channel_byte=0x03)).channels == 2
 
 
 def test_the_0x02_channel_byte_is_a_mono_subtype_not_stereo():

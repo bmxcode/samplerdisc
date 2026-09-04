@@ -21,7 +21,7 @@ A fourth thing a *second* bank corrected, after the first shipped (D33 → #73).
 | Loop trailer | present | 849 | 0 |
 | | absent | 212 | 1 608 |
 
-Vintage Pro alone carries 282 distinct sample rates -- 24 000, 32 000, 47 360, 48 139, 42 193 -- and only 27 of its files are 44 100. Three facts the two banks settle together. **The rate is not a constant**, so it is read from the record; the record is also the authority when a render was hand-normalised (a few Dance 2000 files whose record says 44 001 were rendered at 44 100). **The channel count is not a constant either** -- Vintage Pro happens to be all mono, but Dance 2000 is 972 / 636, and that 636 is exactly the count of stereo FLAC in its render. **And stereo is still refused**: no interleave has been checked against a render (that is #57), so a stereo record is refused rather than converted (see *Stereo* below). The channel split is read the same way on both banks -- from `V12`, not from the spans (see below).
+Vintage Pro alone carries 282 distinct sample rates -- 24 000, 32 000, 47 360, 48 139, 42 193 -- and only 27 of its files are 44 100. Three facts the two banks settle together. **The rate is not a constant**, so it is read from the record; the record is also the authority when a render was hand-normalised (a few Dance 2000 files whose record says 44 001 were rendered at 44 100). **The channel count is not a constant either** -- Vintage Pro happens to be all mono, but Dance 2000 is 972 / 636, and that 636 is exactly the count of stereo FLAC in its render. **And stereo now converts**: its interleave is checked against that render byte-for-byte (#57, [ADR-0041](../adr/0041-stereo-ebl-is-interleaved-and-verified-by-the-render.md); see *Stereo* below). The channel split is read the same way on both banks -- from `V12`, not from the spans (see below).
 
 The disc's 1 062nd file is `Vintage Pro.exb` itself, the 5.9 MB bank definition -- the instrument layer (keygroups, zones), which is read for naming and not converted (ADR-0011).
 
@@ -52,7 +52,8 @@ The second section is 14 bytes -- `E5S1`, a size, six more -- and the fixed-layo
 | 0 | 64 | Name, UTF-16LE (a copy of the one above) |
 | 64 | 4 | V1 |
 | 68 | 4 | **V2 — audio anchor** (`audio_start = block + V2 − 4`) |
-| 72–96 | 28 | V3–V9 |
+| 72 | 4 | **V3 — per-channel length** (`V3 − V2` bytes; anchors the stereo split from the end) |
+| 76–96 | 24 | V4–V9 |
 | 100 | 4 | **Sample rate** |
 | 104 | 4 | V11 |
 | 108 | 4 | **V12 — channel / format field** |
@@ -93,13 +94,15 @@ The start and end are frame positions, little-endian. Every loop measured ends s
 
 ## The audio is copied, not converted
 
-An `.EBL` payload is already signed 16-bit little-endian PCM -- exactly a WAV data chunk. So a mono sample is written out byte-for-byte, no value altered and no byte reordered, unlike [AIFF](aiff.md). The interleaving that stereo would need is the only conversion the format could demand, and it is deferred.
+An `.EBL` payload is already signed 16-bit little-endian PCM -- exactly a WAV data chunk. So a mono sample is written out byte-for-byte, no value altered and no byte reordered, unlike [AIFF](aiff.md). A stereo sample needs the one conversion the format could demand -- interleaving the two blocks -- and no value is altered there either: the left and right samples are the record's own, only reordered from `LLLL…RRRR` to `LRLR` (see *Stereo* below).
 
 ## Stereo
 
-The format stores stereo non-interleaved -- a whole left block then a whole right block (`LLLL…RRRR`) -- and a stereo record is now recognised for the right reason: its `V12` channel byte is `0x03`. On Dance 2000 that is 636 of the 1 608 files, and their per-channel length is `V3 − V2` (half the audio the end-anchor bounds).
+The format stores stereo non-interleaved -- a whole left block then a whole right block (`LLLL…RRRR`), equal and contiguous -- recognised by its `V12` channel byte, `0x03`. Each block is **`V3 − V2` bytes**, the same per-channel length that bounds a mono file, so the audio is `2 · (V3 − V2)` bytes total and the two blocks are interleaved to `LRLR` with the shared `stereo.interleave` -- the same call the [EMU3](emu3.md) backend uses for its block-split stereo, and the same one that joins AKAI's `-L`/`-R` pairs.
 
-A stereo record is still **refused with a reason** and reported as skipped (ADR-0026: the record declares the channel count). What is deferred is only the last step -- interleaving the two blocks -- because an off-by-a-channel interleave opens, plays as noise, and reports nothing wrong. That step, `stereo.interleave(L, R)`, has been checked against Dance 2000's stereo render byte-for-byte, so the remaining work is small; it is tracked in [#57](https://github.com/bmxcode/samplerdisc/issues/57).
+**The split is anchored from the end, not the front.** The obvious reading -- take the mono path's `audio_start = block + V2 − 4` and split the span at its midpoint -- is right on Dance 2000 and **two bytes wrong on the grand banks**. There the true audio begins at `block + V2 − 6`: the front anchor lands two bytes into the first left sample, and every frame after it is shifted, which an interleave then scrambles across both channels. What holds on every bank is the length and the end: per-channel is `V3 − V2`, the audio ends at the `EXLZ` trailer or EOF (as for mono), so the left block starts at `audio_end − 2 · (V3 − V2)`. `left = payload[start : start + (V3 − V2)]`, `right = payload[start + (V3 − V2) : audio_end]`. A truncated rip, whose lost tail would pull that from-the-end start off the front of the file, falls back to a front-anchored midpoint split so it degrades from the tail rather than the head.
+
+An off-by-a-channel interleave -- a swap, a mis-split -- opens, plays as noise, and reports nothing wrong, so this is exactly the step that has to be verified rather than assumed: `stereo.interleave(left, right)` reproduces the stereo render **byte-for-byte on every uniquely-named stereo file** across four banks -- Dance 2000 and the three grands -- the order and the block boundary both confirmed against the publisher's own audio. The loop and channel count come straight off the record (ADR-0026: the record declares the channel count), the loop's frames the per-channel count the WAV `smpl` chunk carries. Verified and shipped in [#57](https://github.com/bmxcode/samplerdisc/issues/57) ([ADR-0041](../adr/0041-stereo-ebl-is-interleaved-and-verified-by-the-render.md)).
 
 ## The oracle
 
@@ -122,7 +125,9 @@ The oracle is FLAC and stdlib cannot decode it, so the check reads it with `soun
 
 The one disc is one bank, and one bank's constants can be that bank's rather than the format's -- which is exactly what D33 shipped. So the generalised reader (#73) is held to a *second* bank's render: E-mu Classic Series Vol 13 Dance 2000, obtained as loose `.ebl` from archive.org's `emuexbsoundbanks` and paired with mattetti's render (1 605 FLAC, 636 stereo). It is a **local validation input, never a disc and never committed** (ADR-0033) -- so, unlike Vintage Pro, the test reads it as a plain directory of files, gated on `SAMPLERDISC_EBL_DANCE_INPUT` and `SAMPLERDISC_EBL_DANCE_ORACLE`, skipping without them.
 
-*Verified:* every `.ebl` classifies to the channel its render carries (972 mono, 636 stereo refused -- the 636 matching the render's stereo FLAC exactly), and every uniquely-named mono file whose render was not hand-normalised (one, `Snare 2`, resampled 44 001 → 44 100) decodes PCM byte-for-byte -- 819 of them. The mono path is thus pinned on two banks, and the stereo geometry is proven ready for #57.
+*Verified:* every `.ebl` classifies to the channel its render carries (972 mono, 636 stereo -- the 636 matching the render's stereo FLAC exactly), and every uniquely-named file whose render was not hand-normalised (a few, e.g. `Snare 2`, resampled 44 001 → 44 100) decodes PCM byte-for-byte -- 816 mono files raw and 375 stereo files interleaved. The mono path is pinned on two banks and the stereo interleave on the one that has stereo, each against the publisher's own render (#57).
+
+The interleave is checked wider still: Giga Schimme Grand (120 stereo), EW PS18 Steinberg Grand (449 stereo, 441 rendered) and Studio Grand (408 stereo) -- mattetti's entirely-stereo grands -- are read the same way when their loose `.ebl` and renders are present, gated on `SAMPLERDISC_EBL_BANKS` and `SAMPLERDISC_EBL_RENDERS`. A publisher render is a subset of the input (a bank ships a few more `.ebl` than were rendered), so the reader's stereo count is checked to be **at least** the render's stereo-FLAC count, and every uniquely-named file that matches by name and rate is byte-exact -- the two-byte from-the-front error that the end anchor fixes was found precisely here, on the grands. The interleave is thus proven on sustained piano, not only Dance 2000's drums.
 
 ## Reference disc
 
