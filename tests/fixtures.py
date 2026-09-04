@@ -638,8 +638,10 @@ def make_ebl(
     ``loop`` is a ``(start, end)`` frame pair adding the EXLZ trailer.
 
     The channel count is the channel byte of V12; ``stereo`` sets it to ``0x03``
-    (which the parser refuses), and ``channel_byte`` overrides it directly so a
-    test can build the ``0x02`` mono sub-type. ``pad`` is the bytes before the
+    (which the parser reads as two blocks to interleave), and ``channel_byte``
+    overrides it directly so a test can build the ``0x02`` mono sub-type. When
+    ``stereo`` is set, pass ``pcm`` as the left block followed by the right.
+    ``pad`` is the bytes before the
     audio -- V2 records it, so the parser locates the audio from V2 rather than
     a fixed offset, and the fixture varies it to prove that. ``toc`` is exposed
     so a test can build the non-EBL FORM the parser rejects.
@@ -650,13 +652,16 @@ def make_ebl(
 
     # The data-description block: 64-byte name, twelve LE fields, 64-byte
     # comment. V2 (the second field) anchors the audio at ``block + V2 - 4``, so
-    # V2 is the pad plus 180. V12 (the twelfth) carries the channel byte in
-    # ``(V12 >> 16) & 0xFF`` beside the 0x02 sample-width byte.
+    # V2 is the pad plus 180. V3 - V2 is the per-channel byte length, which the
+    # stereo reader uses to anchor the split from the end. V12 (the twelfth)
+    # carries the channel byte in ``(V12 >> 16) & 0xFF`` beside the 0x02 width.
     if channel_byte is None:
         channel_byte = 0x03 if stereo else 0x01
     v2 = pad + 180
+    per_channel = len(pcm) // 2 if channel_byte == 0x03 else len(pcm)
+    v3 = v2 + per_channel
     v12 = (channel_byte << 16) | (0x02 << 8) | 0x01
-    fields = [301, v2, 0, 0, 0, 0, 0, 0, 0, rate, 0, v12]
+    fields = [301, v2, v3, 0, 0, 0, 0, 0, 0, rate, 0, v12]
     block = name16 + b"".join(struct.pack("<I", f) for f in fields) + b"\x00" * 64
     assert len(block) == 176
 

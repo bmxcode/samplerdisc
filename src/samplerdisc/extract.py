@@ -526,8 +526,9 @@ def _convert_ebl(
     The output is named after the sample's own 64-byte header name and kept
     under the ISO 9660 bank folder it came from: the disc's filenames are a
     meaningless sequence (``Vintage ProSL001.ebl``) while the header carries
-    ``EP4MKIIL A0``. A stereo EBL is refused with a reason by the parser and
-    reported as skipped rather than converted by an unverified rule.
+    ``EP4MKIIL A0``. Mono and stereo both convert: the parser interleaves a
+    stereo record's two blocks (verified against the publisher's render), and
+    the ``smpl`` loop and channel count come straight off the record.
     """
     payload = backend.read_file(image, origin, entry)
     if not payload:

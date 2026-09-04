@@ -15,9 +15,11 @@ sample rate (which varies wildly across a bank -- 282 distinct rates on Vintage
 Pro, only 27 of them 44 100) and, on most files, a loop.
 
 Stereo is stored non-interleaved -- a whole left block then a whole right block
-(``LLLL...RRRR``) -- and would need interleaving to become a WAV. Stereo is
-refused with a reason rather than converted by a rule nothing has verified
-(ADR-0026, #57); the mono path is what ships.
+(``LLLL...RRRR``), the two blocks equal and contiguous, so the audio span the
+mono path already bounds splits at its midpoint into the two channels. They are
+interleaved with the shared ``stereo.interleave`` -- the same call the EMU3
+backend uses for its block-split stereo -- and the result is verified
+byte-for-byte against the publisher's render (ADR-0026, ADR-0041, #57).
 
 The channel count and the audio geometry are read from the record, and both are
 computed the same way on every bank. The three constants D33 fitted to Vintage
@@ -37,6 +39,7 @@ import struct
 from dataclasses import dataclass
 
 from samplerdisc.sample import NotASample as _NotASample
+from samplerdisc.stereo import interleave
 from samplerdisc.wav import LOOP_FORWARD
 
 MAGIC = b"FORM"
@@ -76,11 +79,22 @@ NAME_LEN = 64
 #: was that one bank's pad. ``V12`` (block + 108) carries the channel byte; the
 #: tenth field is the sample rate.
 V2_AUDIO_ANCHOR = NAME_LEN + 4
+#: ``V3`` (block + 72). ``V3 - V2`` is the **per-channel** byte length on every
+#: bank measured -- mono and stereo alike -- so a stereo record's two blocks are
+#: each ``V3 - V2`` bytes and its audio is ``2 * (V3 - V2)`` bytes total. This is
+#: what anchors a stereo split from the end (see ``parse``): the front anchor
+#: ``block + V2 - 4`` is exact on Dance 2000 but two bytes late on the grand
+#: banks, whereas ``audio_end - 2 * (V3 - V2)`` is exact on both.
+V3_LENGTH_FIELD = NAME_LEN + 8
 RATE_OFFSET = NAME_LEN + 36
 CHANNEL_FIELD = NAME_LEN + 44
 #: The pad ``V2`` counts past: ``V2 - AUDIO_PAD_BASE`` is the byte pad, so the
 #: audio starts ``AUDIO_PAD_BASE - 4`` past the block plus that pad.
 AUDIO_PAD_BASE = 180
+#: The fixed size of the data-description block (64-byte name, twelve 32-bit
+#: fields, 64-byte comment). The audio can never start before it, so it is the
+#: floor a from-the-end stereo anchor is clamped to on a truncated file.
+BLOCK_LEN = NAME_LEN + 12 * 4 + NAME_LEN
 
 #: The channel byte of ``V12`` -- ``(V12 >> 16) & 0xFF``. ``0x03`` is the only
 #: value that means stereo; ``0x01`` is the common mono value and ``0x02`` is a
@@ -220,16 +234,12 @@ def parse(payload: bytes, fallback_name: str = "") -> EmuEblSample:
     # spans invert between banks, while V12 agrees with both banks' renders.
     channel_byte = (_u32le(payload, block + CHANNEL_FIELD) >> 16) & 0xFF
     channels = 2 if channel_byte == CHANNEL_STEREO else 1
-    if channels == 2:
-        raise NotASample(
-            "stereo EBL (non-interleaved L/R) is not yet supported: the record "
-            "declares two channels (V12) and the interleave is deferred to #57"
-        )
 
     # The audio is anchored at V2 (the pad varies by bank) and runs to the EXLZ
     # trailer or, with no loop, the end of the file. That end is the length the
     # renders agree with -- reading a fixed span or to EOF regardless is wrong
-    # by a frame on every looped file.
+    # by a frame on every looped file. The same span bounds both channels of a
+    # stereo record, since stereo stores one block after the other.
     audio_start = block + _u32le(payload, block + V2_AUDIO_ANCHOR) - 4
     trailer = _trailer_offset(payload)
     audio_end = trailer if trailer >= 0 else len(payload)
@@ -237,14 +247,44 @@ def parse(payload: bytes, fallback_name: str = "") -> EmuEblSample:
     # audio is clamped to what is on the disc and to a whole number of samples.
     length = max(0, min(audio_end, len(payload)) - audio_start)
     length -= length % SAMPLE_WIDTH
-    pcm = payload[audio_start : audio_start + length]
-    frames = length // SAMPLE_WIDTH
+    span = payload[audio_start : audio_start + length]
+
+    if channels == 2:
+        # Stereo is a whole left block then a whole right block, equal and
+        # contiguous (LLLL...RRRR). Each block is V3 - V2 bytes, so the audio is
+        # 2 * (V3 - V2) and its true start is audio_end - that: the front anchor
+        # block + V2 - 4 is exact on Dance 2000 but two bytes late on the grand
+        # banks, while the from-the-end anchor is exact on both (verified
+        # byte-for-byte against the render -- docs/formats/emu-ebl.md, ADR-0041).
+        per_channel = _u32le(payload, block + V3_LENGTH_FIELD) - _u32le(
+            payload, block + V2_AUDIO_ANCHOR
+        )
+        stereo_start = audio_end - 2 * per_channel
+        if per_channel > 0 and stereo_start >= block + BLOCK_LEN:
+            left = payload[stereo_start : stereo_start + per_channel]
+            right = payload[stereo_start + per_channel : audio_end]
+            frames = per_channel // SAMPLE_WIDTH
+        else:
+            # A truncated rip lost its tail, so the from-the-end anchor would run
+            # off the front into the header. Degrade instead: split what is on
+            # the disc at the front anchor's midpoint, losing the tail not the
+            # head. ``interleave`` trims each side to whole samples and pads a
+            # short one, so the odd-byte case does not crash.
+            half = length // 2
+            left, right = span[:half], span[half:]
+            frames = half // SAMPLE_WIDTH
+        # ``frames`` is the per-channel count -- the unit the loop and the WAV
+        # smpl chunk use, not the interleaved total.
+        pcm = interleave(left, right)
+    else:
+        pcm = span
+        frames = length // SAMPLE_WIDTH
 
     return EmuEblSample(
         name=name or fallback_name,
         rate=rate,
         frames=frames,
-        channels=1,
+        channels=channels,
         width=SAMPLE_WIDTH,
         pcm=pcm,
         loops=_loop(payload, frames, trailer),
