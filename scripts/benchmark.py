@@ -15,7 +15,9 @@ this and pasting the result: as discs are downloaded and filed under
 ``<state>/<source-slug>/``, the source breakdown and container counts follow
 without editing the script. Source names and URLs are read from each
 ``incoming/<source-slug>/_details.md`` when present, so a new source documents
-itself.
+itself. Only the curated disc states (``active``/``archive``/``blocked``) are
+walked; ``incoming/`` staging and ``oracles/`` are skipped, so the loose E-mu
+bank trees staged there for the EBL oracle do not count as disc images.
 
 Run it from a release branch when cutting a version, the way 0.3.0 did.
 """
@@ -40,10 +42,12 @@ FS_LABEL = {
     "akai": "AKAI",
     "emu3": "E-mu `EMU3`",
     "iso9660": "ISO 9660",
+    "hfs": "HFS (SampleCell)",
+    "kurzweil": "Kurzweil `KMSI`",
     "roland_s7xx": "Roland `S770 MR25A`",
     "none (Red Book audio)": "Audio CD",
 }
-FS_ORDER = ["akai", "emu3", "iso9660", "roland_s7xx", "none (Red Book audio)"]
+FS_ORDER = ["akai", "emu3", "iso9660", "hfs", "kurzweil", "roland_s7xx", "none (Red Book audio)"]
 
 #: A readable label per container kind reported by the manifest.
 CONTAINER_LABEL = {
@@ -157,10 +161,23 @@ def main() -> int:
         print("set SAMPLERDISC_TEST_DISCS or pass a collection root", file=sys.stderr)
         return 2
 
+    # The "Tested against" benchmark is the curated *disc* collection, which the
+    # shelf keeps under active/archive/blocked. ``incoming/`` is staging and the
+    # E-mu ``.exb`` oracle corpus (mattetti's rendered banks, D34's stereo
+    # oracle), and ``oracles/`` is reference material -- neither is a disc image
+    # from the six sources the section counts, and the loose E-mu banks D35
+    # converts are documented in their own "E-mu EBL banks" prose. So walk the
+    # curated states where they exist, and fall back to the whole root for a
+    # flat collection that has none of them.
+    curated = [
+        root / state for state in ("active", "archive", "blocked") if (root / state).is_dir()
+    ]
+    walk_roots = curated or [root]
+
     out = Path(tempfile.mkdtemp(prefix="samplerdisc-bench-"))
     try:
         started = time.monotonic()
-        reports = list(convert_tree(str(root), str(out)))
+        reports = [r for wr in walk_roots for r in convert_tree(str(wr), str(out))]
         elapsed = time.monotonic() - started
         files, silent, silent_by_dir, rates = _wav_stats(out)
     finally:
