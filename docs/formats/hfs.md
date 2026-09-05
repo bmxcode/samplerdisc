@@ -122,7 +122,28 @@ All 24 are uniformly 16-bit, 44 100 Hz, stereo. The audio is carried to WAV by r
 
 **The resource fork container** is a standard Macintosh resource map: a 16-byte header (`dataOffset`, `mapOffset`, `dataLength`, `mapLength`, all big-endian), a data section where each resource is `[4-byte length][body]`, and a map whose type list (`typeListOffset` at `mapOffset + 24`) points to per-type reference lists (12-byte entries: id, name offset, a 3-byte data offset into the data section). The decoder enumerates the `STR ` type and reads ids 1000/1001/1002.
 
-**Loop points and a root key are not read.** The fork also carries Digidesign region/loop resources (`sdLL`, `sdDD`), but there is no open decoder or a render to verify one against, so the loop is left out rather than guessed ([ADR-0025](../adr/0025-the-loop-is-decoded-the-root-key-is-not.md)) — `sdLL` on the first file even looks like a loop (two in-range frame values), which is exactly why it is left for a specimen that can confirm it.
+**The loop is read from the `sdLL` resource; a root key still is not.** The fork carries a Digidesign `sdLL` loop-list resource (id 1000), whose layout is the Sound Designer II specification (© Digidesign 1988-1990, recovered from the Wayback Machine copy of `lim.di.unimi.it/IEEE/DGDES/SDII.HTM`; the live page is gone). The resource is an 8-byte header followed by `NumLoops` loop records, all big-endian:
+
+| Field | Offset | Width | Meaning |
+|---|---|---|---|
+| `Version` | 0 | 2 | resource version (1) |
+| `HScale` | 2 | 2 | unused (0) |
+| `VScale` | 4 | 2 | unused (0) |
+| `NumLoops` | 6 | 2 | number of `LoopRecord`s to follow |
+
+Then `NumLoops` × a 14-byte `LoopRecord`:
+
+| Field | Offset | Width | Meaning |
+|---|---|---|---|
+| `LoopStart` | 0 | 4 | start **sample frame** of the loop |
+| `LoopEnd` | 4 | 4 | end **sample frame** of the loop (inclusive) |
+| `LoopIndex` | 8 | 2 | which loop this is (`1..NumLoops`) |
+| `LoopSense` | 10 | 2 | `117` forward, `118` alternating |
+| `Channel` | 12 | 2 | channel the loop was authored on (`0..channels-1`) |
+
+The positions are **sample frames**, per-channel — identical across an interleaved stereo file — so one record becomes one WAV loop, not one per channel. On `sonic-images-v2` every one of the 24 files carries exactly one `sdLL` of 22 bytes (`8 + 14×1`, no trailing bytes), `Version` 1, `NumLoops` 1, `LoopSense` 117 (forward), `LoopIndex` 1, `Channel` 0 or 1, and `0 <= LoopStart < LoopEnd <= frameCount`. `LoopEnd` is the loop's inclusive end frame; the decoder carries it as an exclusive end and the WAV writer makes it inclusive again for the RIFF `smpl` chunk. The ≤1-frame end ambiguity (inclusive vs exclusive) is below audio resolution — a splice at `LoopEnd-1`, `LoopEnd` and `LoopEnd+1` scores identically — and is recorded rather than hidden.
+
+This is the oracle [ADR-0025](../adr/0025-the-loop-is-decoded-the-root-key-is-not.md) asks for, confirmed three ways ([ADR-0046](../adr/0046-the-sd2-loop-is-decoded-from-sdll.md)): the Digidesign specification; the layout decoding all 24 resources with zero leftover bytes and every field on a documented, in-range value; and the [emu3.md](emu3.md) forward shape/join oracle corroborating 21 of the 24 loops (correlation of the waveform at the loop start against the recorded continuation past the loop end, *r* ≥ 0.9; 23 at *r* ≥ 0.6). The weak ones are inharmonic guitar/stack loops (`F#2 Gtr Str`, `E1 Gtr Str`, `Obiestack C2`) where a forward window has less power — a lack of power, not a refutation, and they are emitted and named rather than hidden. A **root key** is still not read: `sdLL` carries none, so the WAV keeps the neutral `MIDIUnityNote` 60, exactly as the E-mu path does. The `sdDD` document record (id 1000, 420 bytes on this disc) and the other `sd`/`dd` resources are display and session state, not audio loops, and are ignored.
 
 ## The oracle
 
