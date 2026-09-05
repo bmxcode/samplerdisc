@@ -2,6 +2,12 @@
 
 Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](docs/formats/); decisions and their rejected alternatives live in [docs/adr/](docs/adr/). This file records what changed for someone using the tool.
 
+## 0.5.1 — 2026-09-05
+
+### Added
+
+- **`samplerdisc` is now on PyPI.** Install it with `uv tool install samplerdisc`, run it once with `uvx samplerdisc`, or reach for `pipx`/`pip` — no `git+` URL and no clone. Releases publish automatically when a `vX.Y.Z` tag is pushed, through PyPI Trusted Publishing (OIDC), so no API token is stored in the repository; a guard fails the release if the tag disagrees with the packaged version. The tool itself is unchanged — this is distribution only, and installing from `main` still works for the unreleased edge. ([README.md](README.md#install), [.github/workflows/release.yml](.github/workflows/release.yml))
+
 ## 0.5.0 — 2026-09-05
 
 ### Fixed
