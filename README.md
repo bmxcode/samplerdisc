@@ -7,6 +7,12 @@
 
 Convert vintage sampler CD-ROM images into uncompressed `.wav` files you can use anywhere. No proprietary disk-mounting software, no dead commercial tools, no dependencies beyond the Python standard library.
 
+<p align="center">
+  <img src="docs/demo.gif" alt="samplerdisc detecting an AKAI disc image, listing its volumes, and extracting the samples to WAV" width="720">
+</p>
+
+<sub>The disc above is a synthetic fixture built in code, not a real library ([ADR-0008](docs/adr/0008-no-media-in-the-repo.md)); regenerate the recording with `uv run --with-editable . python scripts/demo_gif.py`.</sub>
+
 The point is to get these sounds **out of the hardware they were trapped in** — not into a different sampler's format. You get plain WAV: drag it into any DAW, load it in whatever sampler you already own, keep it for the next twenty years.
 
 Thousands of 1990s sample libraries survive only as disc images built for hardware samplers — AKAI S1000/S3000, E-mu, Roland, Ensoniq. They are not ISO 9660: the sampler wrote its own filesystem straight onto the disc, so a modern computer mounts nothing and shows you an unreadable volume. `samplerdisc` reads those filesystems directly out of the image file and writes the samples back out as plain PCM WAV.

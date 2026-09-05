@@ -42,3 +42,6 @@ build/
 .DS_Store
 .idea/
 .claude/
+
+# Generated demo recording (intermediate for docs/demo.gif; regenerate with scripts/demo_gif.py)
+docs/demo.cast
