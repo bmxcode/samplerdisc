@@ -1963,43 +1963,51 @@ def test_akai_discs_list_their_volumes_and_files(label: str) -> None:
 #: displacement that stopped being one would mean the search had begun stepping
 #: in something that is not the container's unit.
 #:
-#: The last five columns are for the **displaced partitions alone**, not the
-#: whole disc, which is the same reasoning as `_AKAI_FIRST_PARTITION` the other
-#: way round: pinned apart, they say what recovery contributed rather than
-#: leaving it to be subtracted. `refused` counts payloads that are not the file
-#: their entry placed, and it is pinned as tightly as the rest -- 43 of the
-#: 15 808 recovered samples, 99.7 % passing, is what says these partitions are
-#: the disc's own and not something header-shaped (ADR-0027).
+#: The last columns are for the **displaced partitions alone**, not the whole
+#: disc, which is the same reasoning as `_AKAI_FIRST_PARTITION` the other way
+#: round: pinned apart, they say what recovery contributed rather than leaving
+#: it to be subtracted. `refused` counts payloads that are not the file their
+#: entry placed. It was 43 across these partitions when D20 shipped -- a gap
+#: inside a displaced partition displacing a file a second time, which the
+#: partition-level search could not follow; D38 now recovers those by the file's
+#: own name and word count, so `refused` is 0 here and `recovered` carries what
+#: it caught (ADR-0027, ADR-0045, issue #35).
 #: ``label: (size, declared, present, {index: displacement in blocks}, volumes,
-#: files, samples, written, refused)``.
+#: files, samples, written, refused, recovered)``. ``recovered`` counts, of the
+#: written samples in the displaced partitions, how many had *also* slipped by a
+#: gap inside the partition and were read back a whole number of container blocks
+#: earlier, confirmed by their own name and word count (issue #35, ADR-0045). It
+#: is what once was ``refused`` on the three discs that carried a second gap:
+#: `Library.5`, `Global Trance Mission 2` and `Kickin' CD1` recover 23, 5 and 15
+#: this way, so their displaced partitions now refuse nothing.
 _AKAI_SHORT = {
     "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (
         378_443_564, 11, 8, {3: 52, 4: 52, 5: 52, 6: 52, 7: 52, 8: 52, 10: 200},
-        121, 7723, 7308, 7293, 15,
+        121, 7723, 7308, 7308, 0, 15,
     ),
     "AMG - Kickin' Lunatic Beats 2 AKAI CD2": (
         371_768_845, 9, 8, {3: 4, 4: 4, 5: 4, 6: 4, 7: 4, 8: 4, 9: 4},
-        100, 6203, 5912, 5912, 0,
+        100, 6203, 5912, 5912, 0, 0,
     ),
     "AKAI.S3000.Sound.Library.5": (
-        294_252_089, 9, 6, {5: 12, 7: 32, 8: 32}, 34, 473, 400, 377, 23,
+        294_252_089, 9, 6, {5: 12, 7: 32, 8: 32}, 34, 473, 400, 400, 0, 23,
     ),
     "AKAI.S3000.Sound.Library.6": (
         320_291_524, 9, 8, {3: 68, 4: 68, 5: 68, 6: 68, 7: 68, 8: 68, 9: 68},
-        84, 1054, 955, 955, 0,
+        84, 1054, 955, 955, 0, 0,
     ),
     "AKAI.S3000.Sound.Library.7": (
-        221_665_577, 11, 4, {3: 5508, 4: 2028, 5: 512}, 20, 660, 546, 546, 0,
+        221_665_577, 11, 4, {3: 5508, 4: 2028, 5: 512}, 20, 660, 546, 546, 0, 0,
     ),
     "Back In Time Rrcords - Elektra Vox AKAI": (
         353_568_222, 13, 6, {3: 488, 5: 964, 7: 1844, 9: 2664, 11: 1928},
-        33, 661, 463, 463, 0,
+        33, 661, 463, 463, 0, 0,
     ),
     "AMG - Global Trance Mission 2 AKAI": (
-        392_438_329, 9, 7, {6: 8, 7: 8, 9: 32}, 22, 217, 144, 139, 5,
+        392_438_329, 9, 7, {6: 8, 7: 8, 9: 32}, 22, 217, 144, 144, 0, 5,
     ),
     "Audio Factory - Classical Wild Takes AKAI": (
-        226_074_906, 11, 10, {8: 16, 9: 16, 10: 16, 11: 16}, 18, 189, 80, 80, 0,
+        226_074_906, 11, 10, {8: 16, 9: 16, 10: 16, 11: 16}, 18, 189, 80, 80, 0, 0,
     ),
 }  # fmt: skip
 
@@ -2023,22 +2031,33 @@ def test_a_short_akai_image_yields_the_partitions_the_lost_blocks_moved(label: s
     the table gave *that* partition, and never reaching into a partition already
     read, finds 39 of them across the eight.
 
-    Four things are asserted together and each would fail differently. The
+    Five things are asserted together and each would fail differently. The
     **displacement per partition** is the finding. The **volume and file counts**
-    are the yield. The **written and refused counts** are what says the audio is
-    the disc's own: a displaced partition's directory and its audio moved
-    together, so the payload check that condemns a misplaced file passes on
-    99.7 % of what this recovers. And **every recovered partition's header block
-    is distinct** from every other partition's on the disc, which is what
-    separates a partition from the stale copies of a header that sit in these
-    discs' free space -- 148 byte-identical ones on `ProSamples vol.14`.
+    are the yield. The **written, refused and recovered counts** are what says
+    the audio is the disc's own: a displaced partition's directory and its audio
+    moved together, and where a gap inside one displaced a file a second time D38
+    reads it from its own header -- so `refused` is 0 on all eight and
+    `recovered` is the residual D20 could not follow (ADR-0045, #35). And
+    **every recovered partition's header block is distinct** from every other
+    partition's on the disc, which is what separates a partition from the stale
+    copies of a header that sit in these discs' free space -- 148 byte-identical
+    ones on `ProSamples vol.14`.
     """
     from samplerdisc.fs.akai import BLOCK_SIZE, partition_table, partitions
     from samplerdisc.sample import NotASample, PayloadMismatch
 
-    size, declared, present, displacements, volumes, files, samples, written, refused = _AKAI_SHORT[
-        label
-    ]
+    (
+        size,
+        declared,
+        present,
+        displacements,
+        volumes,
+        files,
+        samples,
+        written,
+        refused,
+        recovered_expected,
+    ) = _AKAI_SHORT[label]
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
         assert origin is not None and origin.backend.name == "akai"
@@ -2066,7 +2085,7 @@ def test_a_short_akai_image_yields_the_partitions_the_lost_blocks_moved(label: s
             heads[head] = part.index
 
         moved = {index for index, _ in displacements.items()}
-        seen = kept = mismatched = 0
+        seen = kept = mismatched = recovered = 0
         volumes_seen = files_seen = 0
         for volume in origin.backend.volumes(image, origin.offset):
             if volume.partition not in moved:
@@ -2076,7 +2095,11 @@ def test_a_short_akai_image_yields_the_partitions_the_lost_blocks_moved(label: s
             files_seen += len(volume.files)
             for entry in volume.samples():
                 seen += 1
-                payload = origin.backend.read_file(image, origin.offset, entry)
+                # A gap inside a displaced partition displaces a file again, on
+                # top of the partition's own shift: placement reports where the
+                # bytes really are and how far, and the read follows it (#35).
+                read_offset, displaced = origin.backend.placement(image, origin.offset, entry)
+                payload = image.read(read_offset, entry.size)
                 try:
                     origin.backend.parse_sample(entry, payload)
                 except PayloadMismatch:
@@ -2085,12 +2108,15 @@ def test_a_short_akai_image_yields_the_partitions_the_lost_blocks_moved(label: s
                     pass
                 else:
                     kept += 1
-        assert (volumes_seen, files_seen, seen, kept, mismatched) == (
+                    if displaced:
+                        recovered += 1
+        assert (volumes_seen, files_seen, seen, kept, mismatched, recovered) == (
             volumes,
             files,
             samples,
             written,
             refused,
+            recovered_expected,
         )
 
 
@@ -2275,28 +2301,33 @@ def test_akai_keeps_the_files_of_a_volume_the_allocation_map_calls_free() -> Non
 
 #: AKAI discs pinned by what their **payloads** say, as opposed to what their
 #: directories say above. ``label: (size, samples, s3000 headers, mismatches,
-#: damaged)``, where the last two account for every sample not written:
-#: a *mismatch* is a payload that is not the file its entry placed, and
-#: *damaged* is one that is that file with a field unusable -- four corrupt
-#: rate bytes across the collection, and nothing else (ADR-0027).
+#: damaged, recovered)``, where mismatches, damaged and recovered account for
+#: every sample not written at its declared position: a *mismatch* is a payload
+#: that is not the file its entry placed and could not be found elsewhere, a
+#: *damaged* one is that file with a field unusable -- four corrupt rate bytes
+#: across the collection, and nothing else -- and a *recovered* one is a sample
+#: displaced by a gap inside its partition, read back from its own header a whole
+#: number of container blocks earlier (ADR-0027, ADR-0045, issue #35).
 #:
 #: The eight are chosen to cover every case the collection offers. Four whole
 #: S3000 discs, because the 192-byte header was read as 150 on every sample of
 #: them and a regression would be silent -- the WAVs would still open. Three
-#: discs carrying mismatches, one of which (`Alpha Dance II`) declares six
-#: partitions and holds all six, so its 21 refusals are damage the partition
-#: table cannot see. And `Advance Orchestra`, which is 2 236 samples with
-#: nothing wrong anywhere: the control that says these numbers measure the
-#: discs and not the checks.
+#: discs that carried mismatches before D38, one of which (`Alpha Dance II`)
+#: declares six partitions and holds all six, so its 21 displaced samples are
+#: damage the partition table cannot see -- all 21 now recovered. `Loop Soup`
+#: keeps its one true mismatch, a record whose start block lands mid-sample with
+#: no header to find. And `Advance Orchestra`, 2 236 samples with nothing wrong
+#: anywhere: the control that says these numbers measure the discs, not the
+#: checks.
 _AKAI_PAYLOAD = {
-    "AKAI.S3000.Sound.Library.1": (264_088_447, 4455, 4451, 3, 1),
-    "AKAI.S3000.Sound.Library.2": (298_155_354, 3086, 3083, 0, 3),
-    "East Connexion Piano": (277_092_352, 730, 730, 0, 0),
-    "AMG - Now CD-Rom for (AKAI)": (521_322_496, 1193, 1193, 0, 0),
-    "Best Service - Alpha Dance II AKAI": (309_865_547, 1740, 0, 21, 0),
-    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 7932, 0, 24, 0),
-    "AMG - Loop Soup AKAI": (542_419_100, 3434, 0, 1, 0),
-    "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 2236, 0, 0, 0),
+    "AKAI.S3000.Sound.Library.1": (264_088_447, 4455, 4454, 0, 1, 3),
+    "AKAI.S3000.Sound.Library.2": (298_155_354, 3086, 3083, 0, 3, 0),
+    "East Connexion Piano": (277_092_352, 730, 730, 0, 0, 0),
+    "AMG - Now CD-Rom for (AKAI)": (521_322_496, 1193, 1193, 0, 0, 0),
+    "Best Service - Alpha Dance II AKAI": (309_865_547, 1740, 0, 0, 0, 21),
+    "AMG - Kickin' Lunatic Beats 2 AKAI CD1": (378_443_564, 7932, 0, 0, 0, 24),
+    "AMG - Loop Soup AKAI": (542_419_100, 3434, 0, 1, 0, 0),
+    "AKAI Advance Orchestra Upgrade 97 Vol.1": (545_720_320, 2236, 0, 0, 0, 0),
 }
 
 
@@ -2315,27 +2346,38 @@ def test_akai_payloads_are_the_files_their_directory_entries_placed(label: str) 
     56 490** AKAI samples read before D20, on nine discs, and four of them are
     pinned here whole.
 
-    **The identity.** 65 payloads across the 44 discs are not the file their
-    entry placed or are that file with a field unusable, and all 65 were
-    already being refused -- as "does not begin with an AKAI sample header",
-    which is true of a payload that is mid-audio and of one that is a perfectly
-    good sample under the wrong name alike. The mismatch count is pinned as
-    tightly as the sample count for ADR-0012's reason: a refusal appearing
-    where none was measured is a check that has started condemning real audio,
-    and one disappearing is a check that has stopped looking.
+    **The identity.** A payload that is not the file its entry placed is refused
+    -- unless the reason is a run of blocks lost inside its partition, in which
+    case D38 finds the real bytes a whole number of container blocks earlier by
+    the entry's own name and word count and reads them there (ADR-0045). So a
+    displaced sample now counts as `recovered`, not `mismatched`: `Alpha Dance
+    II`'s 21, `Kickin' CD1`'s 24 and `Library.1`'s 3 all move columns. What stays
+    a mismatch is a payload with no such header to find -- `Loop Soup`'s one
+    mid-sample record. Each of mismatch, damaged and recovered is pinned as
+    tightly as the sample count for ADR-0012's reason: a refusal appearing where
+    none was measured is a check condemning real audio, one disappearing is a
+    check that stopped looking, and a recovery appearing where none was is the
+    search reaching a file it should not.
     """
     from samplerdisc.sample import NotASample, PayloadMismatch
     from samplerdisc.sample.akai import HEADER_LEN_S1000, HEADER_LEN_S3000
 
-    size, samples, s3000_expected, mismatch_expected, damaged_expected = _AKAI_PAYLOAD[label]
+    size, samples, s3000_expected, mismatch_expected, damaged_expected, recovered_expected = (
+        _AKAI_PAYLOAD[label]
+    )
     with open_image(_pinned_disc(label, size)) as image:
         origin = find_origin(image)
         assert origin is not None and origin.backend.name == "akai"
-        seen = s3000 = mismatched = damaged = 0
+        seen = s3000 = mismatched = damaged = recovered = 0
         for volume in origin.backend.volumes(image, origin.offset):
             for entry in volume.samples():
                 seen += 1
-                payload = origin.backend.read_file(image, origin.offset, entry)
+                # placement relocates a sample the rip displaced inside its
+                # partition to where its own header sits; read_file follows it,
+                # so the identity below is checked at the recovered offset and a
+                # recovered sample is no longer a mismatch (ADR-0045, #35).
+                read_offset, displaced = origin.backend.placement(image, origin.offset, entry)
+                payload = image.read(read_offset, entry.size)
                 try:
                     sample = origin.backend.parse_sample(entry, payload)
                 except PayloadMismatch:
@@ -2344,6 +2386,8 @@ def test_akai_payloads_are_the_files_their_directory_entries_placed(label: str) 
                 except NotASample:
                     damaged += 1
                     continue
+                if displaced:
+                    recovered += 1
                 assert sample.header_len in (HEADER_LEN_S1000, HEADER_LEN_S3000)
                 if sample.header_len == HEADER_LEN_S3000:
                     s3000 += 1
@@ -2362,11 +2406,12 @@ def test_akai_payloads_are_the_files_their_directory_entries_placed(label: str) 
                 # merely the right number of them. A count cannot see a 42-byte
                 # slip; this is the check that would have caught it.
                 assert sample.pcm == payload[sample.header_len : sample.header_len + words * 2]
-        assert (seen, s3000, mismatched, damaged) == (
+        assert (seen, s3000, mismatched, damaged, recovered) == (
             samples,
             s3000_expected,
             mismatch_expected,
             damaged_expected,
+            recovered_expected,
         )
 
 
@@ -2376,10 +2421,13 @@ def test_an_akai_payload_is_never_written_under_another_files_name(path: Path) -
 
     The tables above are this collection's; this is the invariant, and it is
     the one issue #23 asked for: **no AKAI sample is written whose payload
-    header names a different file**. It holds trivially now, since such a
-    payload is refused -- which is the point. If a future change relaxes the
-    name test, or reads the header at an offset where another file's name
-    happens to land, this fails on any shelf rather than on ours.
+    header names a different file**. It stopped holding trivially with D38: 102
+    samples that were refused are now written, each read from a position the
+    recovery *chose*, and this is what says the recovery chose right -- the
+    header it landed on carries the entry's own name. If the search ever reads a
+    header at an offset where a different file's name happens to land, or a
+    future change relaxes the name test, this fails on any shelf rather than on
+    ours (ADR-0045).
     """
     from samplerdisc.fs.akai import NAME_LEN, decode_name
     from samplerdisc.sample import NotASample

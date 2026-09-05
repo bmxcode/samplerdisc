@@ -152,6 +152,39 @@ def _check_identity(payload: bytes, declared_name: str | None) -> str:
     return name
 
 
+def header_len(s3000: bool) -> int:
+    """The bytes in front of the audio: 192 on the S3000 family, 150 on S1000."""
+    return HEADER_LEN_S3000 if s3000 else HEADER_LEN_S1000
+
+
+def is_placed_here(payload: bytes, declared_name: str, declared_size: int, s3000: bool) -> bool:
+    """Is *this* directory entry's sample header sitting at the front of ``payload``?
+
+    The full anchor a displaced-sample search confirms a candidate position by,
+    read from the header alone (~192 bytes): the id, the valid flag, the name
+    equal to the entry's, a plausible rate, and the word-count identity the
+    directory's declared size states independently -- ``size == words*2 +
+    header_len``. Name says *which* file this is; the word count is a second
+    structure confirming it, which is the shape ADR-0028 recovers a partition
+    by, one layer down. It is what makes searching backward for a lost run of
+    blocks a confirmation rather than a scan: on the 103 recoverable payloads
+    across the collection exactly one backward position passes this, never two
+    (ADR-0045, #35).
+    """
+    if len(payload) <= OFF_RATE + 2:
+        return False
+    if payload[OFF_ID] != SAMPLE_ID or not payload[OFF_VALID] & VALID_FLAG:
+        return False
+    raw = payload[OFF_NAME : OFF_NAME + NAME_LEN]
+    if not is_plausible_name(raw) or decode_name(raw) != declared_name:
+        return False
+    (rate,) = struct.unpack_from("<H", payload, OFF_RATE)
+    if not MIN_RATE <= rate <= MAX_RATE:
+        return False
+    (words,) = struct.unpack_from("<I", payload, OFF_WORDS)
+    return declared_size == words * 2 + header_len(s3000)
+
+
 def parse(
     payload: bytes,
     fallback_name: str = "",
@@ -185,16 +218,16 @@ def parse(
         # sits inside any range generous enough to be "safe".
         raise NotASample(f"implausible sample rate {rate}")
 
-    header_len = HEADER_LEN_S3000 if s3000 else HEADER_LEN_S1000
-    available = (len(payload) - header_len) // 2
+    hlen = header_len(s3000)
+    available = (len(payload) - hlen) // 2
     frames = min(words, max(available, 0))
-    pcm = payload[header_len : header_len + frames * 2]
+    pcm = payload[hlen : hlen + frames * 2]
     return AkaiSample(
         name=name,
         rate=rate,
         pitch=pitch,
         frames=frames,
-        header_len=header_len,
+        header_len=hlen,
         pcm=pcm,
         loops=_loops(payload, frames),
         cents=_cents(payload),

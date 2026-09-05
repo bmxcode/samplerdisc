@@ -736,6 +736,104 @@ def test_partition_one_cannot_move_on_any_disc(tmp_path):
     assert displaced_header(image, 0, 0, _SHORT_BLOCKS, 0) is None
 
 
+# --- a sample displaced by a gap inside its partition (ADR-0045, #35) -----
+
+
+def _sample_at(size: int, start_block: int, part_off: int, real: int, sample: bytes) -> bytearray:
+    """A flat image with ``sample`` at byte ``real`` and mid-audio at the
+    entry's declared position -- the shape a run of blocks lost inside a
+    partition produces."""
+    from samplerdisc.fs.akai import BLOCK_SIZE
+
+    declared = part_off + start_block * BLOCK_SIZE
+    data = bytearray(declared + BLOCK_SIZE)
+    if real is not None:
+        data[real : real + len(sample)] = sample
+    # The declared position holds mid-PCM, not a header -- what the slide leaves.
+    data[declared : declared + size] = b"\x11" * size
+    return data
+
+
+def test_a_sample_displaced_inside_its_partition_is_recovered(tmp_path):
+    """A gap inside a partition pulls a sample's bytes a whole container unit
+    towards the front; placement finds them by the entry's own header and the
+    read follows (ADR-0045)."""
+    from samplerdisc.fs.akai import BLOCK_SIZE
+    from samplerdisc.fs.base import File
+
+    sample = fixtures.akai_sample("KICK 1")  # 278 bytes, S1000 header
+    start_block, unit = 10, 32768
+    declared = start_block * BLOCK_SIZE
+    real = declared - unit
+    image = image_of(tmp_path, bytes(_sample_at(len(sample), start_block, 0, real, sample)))
+    entry = File("KICK 1", "sample", len(sample), start_block, raw_type=0x73, origin=0)
+    assert BACKEND.placement(image, 0, entry) == (real, unit)
+    assert BACKEND.read_file(image, 0, entry) == sample
+
+
+def test_a_sample_already_where_its_entry_places_it_is_not_searched_for(tmp_path):
+    """The fast path: a correct payload relocates nothing and reports 0."""
+    from samplerdisc.fs.akai import BLOCK_SIZE
+    from samplerdisc.fs.base import File
+
+    sample = fixtures.akai_sample("KICK 1")
+    start_block = 10
+    declared = start_block * BLOCK_SIZE
+    data = bytearray(declared + BLOCK_SIZE)
+    data[declared : declared + len(sample)] = sample
+    image = image_of(tmp_path, bytes(data))
+    entry = File("KICK 1", "sample", len(sample), start_block, raw_type=0x73, origin=0)
+    assert BACKEND.placement(image, 0, entry) == (declared, 0)
+
+
+def test_a_sample_with_no_header_to_find_stays_at_its_declared_position(tmp_path):
+    """`Loop Soup`'s residual: nothing matches, so it stays refused downstream."""
+    from samplerdisc.fs.akai import BLOCK_SIZE
+    from samplerdisc.fs.base import File
+
+    sample = fixtures.akai_sample("KICK 1")
+    start_block = 10
+    declared = start_block * BLOCK_SIZE
+    image = image_of(tmp_path, bytes(_sample_at(len(sample), start_block, 0, None, sample)))
+    entry = File("KICK 1", "sample", len(sample), start_block, raw_type=0x73, origin=0)
+    assert BACKEND.placement(image, 0, entry) == (declared, 0)
+
+
+def test_a_sample_is_never_recovered_from_before_its_partition(tmp_path):
+    """`Library.3`'s case, and the whole safety argument.
+
+    The only matching header is a same-named, same-sized file in the previous
+    partition, below the floor. Taking it would write one sample's audio under
+    another's name, so the search refuses to leave the partition and the sample
+    stays a mismatch (ADR-0045, ADR-0027).
+    """
+    from samplerdisc.fs.akai import BLOCK_SIZE, _placed_here
+    from samplerdisc.fs.base import File
+
+    sample = fixtures.akai_sample("KICK 1")
+    part_off, start_block, unit = 20 * BLOCK_SIZE, 5, 32768
+    declared = part_off + start_block * BLOCK_SIZE
+    below = part_off - unit  # a valid namesake header, but before the partition
+    image = image_of(tmp_path, bytes(_sample_at(len(sample), start_block, part_off, below, sample)))
+    entry = File("KICK 1", "sample", len(sample), start_block, raw_type=0x73, origin=part_off)
+    # The match really is there ...
+    assert _placed_here(image.read(below, 256), "KICK 1", len(sample), False)
+    # ... and is refused for being below the partition floor.
+    assert BACKEND.placement(image, 0, entry) == (declared, 0)
+
+
+def test_a_displaced_program_is_not_relocated(tmp_path):
+    """Only samples relocate: a program's payload has no name to confirm by."""
+    from samplerdisc.fs.akai import BLOCK_SIZE
+    from samplerdisc.fs.base import File
+
+    start_block = 10
+    declared = start_block * BLOCK_SIZE
+    image = image_of(tmp_path, bytes(bytearray(declared + BLOCK_SIZE)))
+    entry = File("PROG 1", "program", 278, start_block, raw_type=0x70, origin=0)
+    assert BACKEND.placement(image, 0, entry) == (declared, 0)
+
+
 def test_the_search_steps_in_the_unit_the_container_states(tmp_path):
     """The step is the container's word, not the filesystem's guess (ADR-0003).
 

@@ -118,6 +118,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         skipped = 0
         duplicates = 0
         mismatches = 0
+        recovered = 0
         credited: Credited | None = None
         results = extract_disc(
             image,
@@ -137,6 +138,8 @@ def cmd_extract(args: argparse.Namespace) -> int:
                 written += 1
                 if result.channels > 1:
                     stereo += 1
+                if result.displaced:
+                    recovered += 1
                 if args.verbose:
                     seconds = result.frames / result.rate if result.rate else 0
                     channels = "stereo" if result.channels > 1 else "mono"
@@ -175,6 +178,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
         # Not damage, and saying so matters: a disc that lists 423 skips reads
         # as a bad rip when every one of them is a sound already written.
         print(f"skipped {duplicates} duplicates of audio already written")
+    if recovered:
+        # The image is short of its disc by blocks lost *inside* a partition,
+        # so these samples' bytes slid forward and were read a whole number of
+        # container blocks earlier, each confirmed by its own header carrying
+        # this entry's name and word count (issue #35, ADR-0045).
+        print(f"recovered {recovered} samples displaced inside a partition by lost blocks")
     if mismatches:
         # The loudest line on a short image, and the one ADR-0012's argument
         # applies to: a payload that is not the file the directory placed is

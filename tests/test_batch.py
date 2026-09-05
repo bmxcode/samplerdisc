@@ -136,6 +136,7 @@ def test_manifest_records_totals_and_failures(tmp_path):
         "skipped": 0,
         "duplicates": 0,
         "mismatches": 0,
+        "recovered": 0,
     }
     failed = [d for d in payload["discs"] if d["error"]]
     assert len(failed) == 1

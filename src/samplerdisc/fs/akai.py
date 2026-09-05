@@ -276,6 +276,67 @@ def displaced_header(
     return None
 
 
+#: Bytes read at a candidate position to test whether a sample header sits
+#: there. The last field the anchor reads is the rate at 138, so 256 is ample
+#: and one short read per candidate -- the payload itself is fetched once, only
+#: after the search settles.
+_SAMPLE_HEADER_PROBE = 256
+
+
+def displaced_sample(image: SectorImage, origin: int, entry: File) -> int | None:
+    """Where a sample's real bytes are, when a run of blocks was lost *inside*
+    its partition (issue #35, ADR-0045).
+
+    This is ``displaced_header`` one layer down, and it carries the same three
+    load-bearing words. It searches **backwards from the byte position the
+    directory entry places this file at**, in **the container's own storage
+    unit**, for a header that restates **this entry's own name and word count**
+    -- and it **stops at the start of the entry's own partition**. Returns the
+    offset or None.
+
+    A gap inside a partition removes whole container blocks, so every file after
+    it sits that much nearer the front while its directory entry -- in the intact
+    header ahead of the gap -- still points where the file was on the disk. The
+    real bytes are therefore a whole number of container blocks before the
+    declared position, carrying the file's own header (ADR-0027's identity, now
+    the anchor rather than only the refusal).
+
+    **The floor is the partition, and it is the whole safety argument.** On
+    `AKAI.S3000.Sound.Library.3` the one refused file's only backward match is a
+    *different* volume's `20  CHINA2-R` in the previous partition -- same name,
+    same size, intact where it sits. Its bytes belong to that file; writing them
+    here would be the one failure ADR-0027 exists to prevent. Flooring at the
+    partition start refuses it, so that file stays named rather than recovered
+    wrongly. Within a partition no such collision occurs: across the collection
+    exactly one position per recovered file passes the anchor, never two.
+    """
+    step = image.granularity
+    if step <= 0:
+        return None
+    s3000 = bool(entry.raw_type & 0x80)
+    floor = origin + entry.origin
+    declared = floor + entry.start_block * BLOCK_SIZE
+    position = declared - step
+    while position >= floor:
+        head = image.read(position, _SAMPLE_HEADER_PROBE)
+        if _placed_here(head, entry.name, entry.size, s3000):
+            return position
+        position -= step
+    return None
+
+
+def _placed_here(payload: bytes, name: str, size: int, s3000: bool) -> bool:
+    """``sample.akai.is_placed_here``, imported late to break the import cycle.
+
+    ``sample.akai`` imports the charset and name helpers from this module, so a
+    top-level import would be circular -- the same reason ``parse_sample``
+    imports it inside the method.
+    """
+    from samplerdisc.sample.akai import is_placed_here
+
+    return is_placed_here(payload, name, size, s3000)
+
+
 def partitions(image: SectorImage, origin: int) -> Iterator[Partition]:
     """Every partition of the disk that this image actually holds.
 
@@ -598,11 +659,45 @@ class AkaiBackend:
                 origin=partition_offset,
             )
 
+    def placement(self, image: SectorImage, origin: int, entry: File) -> tuple[int, int]:
+        """Where to read this file from, and how far it is displaced (bytes).
+
+        The declared position and 0 for every file that is where its entry puts
+        it -- which is all of them on a complete image and the fast path here.
+        When a sample's payload at the declared position is *not* the file its
+        entry placed, though, the image may be short of the disc it was made
+        from by whole container blocks lost *inside* a partition: the real bytes
+        then sit that much earlier, still carrying this file's own header, and
+        ``displaced_sample`` finds them under the partition floor (issue #35,
+        ADR-0045).
+
+        Only samples relocate: the anchor that makes the search safe is the
+        payload repeating the directory's name and word count, and a program has
+        no such field to confirm by (ADR-0045). A sample that finds nothing --
+        `Loop Soup`'s mid-sample record, `Library.3`'s cross-partition namesake,
+        a corrupt-in-place rate byte -- stays at its declared position and is
+        refused and named downstream exactly as before.
+        """
+        declared = origin + entry.origin + entry.start_block * BLOCK_SIZE
+        if entry.kind != "sample":
+            return declared, 0
+        head = image.read(declared, _SAMPLE_HEADER_PROBE)
+        if _placed_here(head, entry.name, entry.size, bool(entry.raw_type & 0x80)):
+            return declared, 0
+        found = displaced_sample(image, origin, entry)
+        if found is None:
+            return declared, 0
+        return found, declared - found
+
     def read_file(self, image: SectorImage, origin: int, entry: File) -> bytes:
         # entry.origin is where the file's partition begins; its start block is
         # relative to that, so the same number in two partitions is two
-        # different files and dropping the term reads the wrong audio.
-        return image.read(origin + entry.origin + entry.start_block * BLOCK_SIZE, entry.size)
+        # different files and dropping the term reads the wrong audio. A sample
+        # displaced by blocks the rip lost inside its partition is read from
+        # where its own header actually sits, so every consumer -- the WAV path,
+        # --keep-originals, the stereo joiner -- gets the real bytes (ADR-0045).
+        offset, _ = self.placement(image, origin, entry)
+        return image.read(offset, entry.size)
 
     def layout(self, image: SectorImage, offset: int) -> str:
         """One line on how the disk is divided, for ``list``.
