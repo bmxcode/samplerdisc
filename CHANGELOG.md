@@ -2,6 +2,12 @@
 
 Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](docs/formats/); decisions and their rejected alternatives live in [docs/adr/](docs/adr/). This file records what changed for someone using the tool.
 
+## 0.5.3 — 2026-09-05
+
+### Maintenance
+
+- **No change to the tool.** The CI and release workflows were moved off GitHub Actions' deprecated Node 20 runtime — `actions/checkout`, `astral-sh/setup-uv`, and the release job's `upload-artifact`/`download-artifact` now run on their Node 24 majors. This is also the first release built and published by the upgraded workflow, so the artifact handoff is exercised end-to-end for the first time. Nothing a user installs is different from 0.5.2. ([.github/workflows/](.github/workflows/))
+
 ## 0.5.2 — 2026-09-05
 
 ### Fixed
