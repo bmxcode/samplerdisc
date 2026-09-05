@@ -1,6 +1,6 @@
 [project]
 name = "samplerdisc"
-version = "0.5.0"
+version = "0.5.1"
 description = "Convert vintage sampler CD-ROM images (AKAI, E-mu, Roland) to uncompressed WAV"
 readme = "README.md"
 license = "MIT"

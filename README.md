@@ -1,6 +1,7 @@
 # samplerdisc
 
 [![CI](https://github.com/bmxcode/samplerdisc/actions/workflows/ci.yml/badge.svg)](https://github.com/bmxcode/samplerdisc/actions/workflows/ci.yml)
+[![PyPI](https://img.shields.io/pypi/v/samplerdisc)](https://pypi.org/project/samplerdisc/)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 ![Python 3.11+](https://img.shields.io/badge/python-3.11%2B-blue)
 
@@ -15,13 +16,26 @@ Thousands of 1990s sample libraries survive only as disc images built for hardwa
 Python 3.11 or newer. No other dependencies — the whole tool is standard library.
 
 ```bash
-uv tool install git+https://github.com/bmxcode/samplerdisc
+uv tool install samplerdisc
 ```
 
-Or with pip:
+Or run it once without installing:
 
 ```bash
-pip install git+https://github.com/bmxcode/samplerdisc
+uvx samplerdisc --help
+```
+
+Or with pip / pipx:
+
+```bash
+pipx install samplerdisc      # isolated, on your PATH
+pip install samplerdisc       # into the current environment
+```
+
+To install the unreleased `main`:
+
+```bash
+uv tool install git+https://github.com/bmxcode/samplerdisc
 ```
 
 ## Use
