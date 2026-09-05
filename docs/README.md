@@ -10,7 +10,7 @@ For a new session, in this order:
 2. **[architecture.md](architecture.md)** — the three layers, and why keeping them independent is the whole design.
 3. **[../CLAUDE.md](../CLAUDE.md)** — the rules for working in this repo.
 4. **[formats/](formats/)** — what the bytes mean. Read the doc for the format you are touching, before you touch it.
-5. **[adr/](adr/)** — decisions already made, and what was rejected to make them. Skim the index; read the ones your change touches.
+5. **[adr/](adr/)** — decisions already made, and what was rejected to make them. Skim the **[index](adr/README.md)**; read the ones your change touches.
 
 ## What lives where
 
