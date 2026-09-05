@@ -513,40 +513,43 @@ def _convert_aiff(
     )
 
 
-def _convert_ebl(
-    image: SectorImage,
-    backend: Backend,
-    origin: int,
-    volume: Volume,
-    entry: File,
+def ebl_to_wav(
+    payload: bytes,
+    rel_name: str,
+    volume: str,
     out_dir: str,
+    partition: int = 0,
 ) -> Extracted | Skipped:
-    """Write one E-mu Emulator X EBL entry as a WAV.
+    """Decode one E-mu Emulator X EBL payload and write it as a WAV.
 
-    The output is named after the sample's own 64-byte header name and kept
-    under the ISO 9660 bank folder it came from: the disc's filenames are a
-    meaningless sequence (``Vintage ProSL001.ebl``) while the header carries
-    ``EP4MKIIL A0``. Mono and stereo both convert: the parser interleaves a
-    stereo record's two blocks (verified against the publisher's render), and
-    the ``smpl`` loop and channel count come straight off the record.
+    Shared by the on-disc path (ISO 9660/HFS) and the loose-file source
+    (``banks``): both hand the same bytes to the same verified ``emu_ebl``
+    decoder, differing only in where the bytes came from. ``rel_name`` is the
+    file's name relative to ``out_dir``; any directory part becomes an output
+    subfolder so a bank's grouping survives, and the leaf is named from the
+    sample's own 64-byte header (``EP4MKIIL A0``) rather than the meaningless
+    on-disc filename (``Vintage ProSL001.ebl``). Mono and stereo both convert:
+    the parser interleaves a stereo record's two blocks (verified against the
+    publisher's render), and the ``smpl`` loop and channel count come straight
+    off the record. A payload that is not a usable EBL is refused with a reason,
+    never raised (damage degrades, never crashes).
     """
-    payload = backend.read_file(image, origin, entry)
     if not payload:
-        return Skipped(volume.name, entry.name, "no data on disc", volume.partition)
+        return Skipped(volume, rel_name, "no data on disc", partition)
     try:
-        sample = emu_ebl.parse(payload, fallback_name=os.path.basename(entry.name))
+        sample = emu_ebl.parse(payload, fallback_name=os.path.basename(rel_name))
     except NotASample as exc:
-        return Skipped(volume.name, entry.name, str(exc), volume.partition)
+        return Skipped(volume, rel_name, str(exc), partition)
     if sample.frames == 0:
-        return Skipped(volume.name, entry.name, "zero-length sample", volume.partition)
+        return Skipped(volume, rel_name, "zero-length sample", partition)
 
-    # Keep the disc's bank grouping in the output tree; name the leaf from the
-    # header. The ISO 9660 path separates on '/'; each component is sanitised
-    # on its own, since safe_name would turn a '/' into part of one long name.
-    parts = [safe_name(p) for p in os.path.dirname(entry.name).split("/") if p]
+    # Keep the bank grouping in the output tree; name the leaf from the header.
+    # The path separates on '/'; each component is sanitised on its own, since
+    # safe_name would turn a '/' into part of one long name.
+    parts = [safe_name(p) for p in os.path.dirname(rel_name).split("/") if p]
     folder = os.path.join(out_dir, *parts)
     os.makedirs(folder, exist_ok=True)
-    stem, _ = os.path.splitext(os.path.basename(entry.name))
+    stem, _ = os.path.splitext(os.path.basename(rel_name))
     path = unique_path(folder, safe_name(sample.name or stem))
     write_wav(
         path,
@@ -558,15 +561,28 @@ def _convert_ebl(
         name=sample.name or stem,
     )
     return Extracted(
-        volume=volume.name,
-        name=entry.name,
+        volume=volume,
+        name=rel_name,
         path=path,
         rate=sample.rate,
         frames=sample.frames,
         pitch=0,
-        partition=volume.partition,
+        partition=partition,
         channels=sample.channels,
     )
+
+
+def _convert_ebl(
+    image: SectorImage,
+    backend: Backend,
+    origin: int,
+    volume: Volume,
+    entry: File,
+    out_dir: str,
+) -> Extracted | Skipped:
+    """Read one EBL entry off the disc and convert it (see ``ebl_to_wav``)."""
+    payload = backend.read_file(image, origin, entry)
+    return ebl_to_wav(payload, entry.name, volume.name, out_dir, volume.partition)
 
 
 def _convert_sd2(

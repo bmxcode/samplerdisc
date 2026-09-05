@@ -10,8 +10,10 @@ from __future__ import annotations
 import json
 import os
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from samplerdisc import banks
 from samplerdisc.audiocd import detect as detect_audio_cd
 from samplerdisc.audiocd import extract_tracks
 from samplerdisc.container.detect import open_image, sniff
@@ -154,11 +156,54 @@ def convert_disc(
     return report
 
 
+def convert_bank(bank_dir: str, out_root: str) -> DiscReport:
+    """Convert one loose ``.ebl`` bank directory. Never raises.
+
+    A loose bank has no container and no on-disc filesystem -- the OS presents
+    the files directly (ADR-0042) -- so the report names those layers ``none``
+    and records the bank as a single volume. Reported alongside disc images so a
+    mixed tree runs in one pass and lands in one manifest.
+    """
+    name = banks.bank_name(Path(bank_dir))
+    report = DiscReport(source=bank_dir, container="loose-ebl", filesystem="none")
+    out_dir = os.path.join(out_root, safe_name(name))
+    samples = 0
+    try:
+        for result in banks.extract_bank(Path(bank_dir), out_dir, name):
+            if isinstance(result, Extracted):
+                report.samples += 1
+                samples += 1
+                if result.channels > 1:
+                    report.stereo_samples += 1
+            elif isinstance(result, Skipped):
+                report.skipped.append(
+                    {
+                        "volume": result.volume,
+                        "partition": result.partition,
+                        "name": result.name,
+                        "reason": result.reason,
+                        "duplicate": result.duplicate,
+                        "mismatch": result.mismatch,
+                    }
+                )
+    except OSError as exc:  # pragma: no cover - filesystem-level failure
+        report.error = str(exc)
+        return report
+    report.volumes = [{"name": name, "partition": 0, "samples": samples}]
+    return report
+
+
 def convert_tree(
     root: str, out_root: str, join_stereo: bool = True, keep_originals: bool = False
 ) -> Iterator[DiscReport]:
     for path in find_images(root):
         yield convert_disc(path, out_root, join_stereo, keep_originals)
+    # Loose banks are files in the clear, not disc images, so find_images passes
+    # them over (.ebl is not an image suffix); they are discovered separately and
+    # converted through their own source. A render/oracle tree carries no .ebl
+    # and is skipped by construction.
+    for bank_dir in banks.find_bank_dirs(root):
+        yield convert_bank(str(bank_dir), out_root)
 
 
 def write_manifest(path: str, reports: list[DiscReport]) -> None:

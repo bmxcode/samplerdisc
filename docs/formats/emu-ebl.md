@@ -1,6 +1,6 @@
 # E-mu Emulator X `.EBL`
 
-The sample banks Emulator X-3 -- E-mu's Windows software sampler -- writes, as they appear inside an ISO 9660 disc rather than as a sampler's own filesystem. An `.EBL` is one sample: an IFF `FORM` wrapper around uncompressed 16-bit PCM, sitting in an `.exb` bank folder beside a `SamplePool`. This is a different layer entirely from the `EMU3` filesystem in [emu3.md](emu3.md): that is written straight to a CD by an EIIIX/ESI/E-IV, this is an ordinary file an ISO 9660 backend already finds.
+The sample banks Emulator X-3 -- E-mu's Windows software sampler -- writes, as they appear inside an ISO 9660 disc rather than as a sampler's own filesystem. An `.EBL` is one sample: an IFF `FORM` wrapper around uncompressed 16-bit PCM, sitting in an `.exb` bank folder beside a `SamplePool`. This is a different layer entirely from the `EMU3` filesystem in [emu3.md](emu3.md): that is written straight to a CD by an EIIIX/ESI/E-IV, this is an ordinary file an ISO 9660 backend already finds. The decoder is the same wherever the file comes from: an `.ebl` reached inside a disc (Vintage Pro) and one sitting loose in a directory (Proteus 1/2/3, shipped as files in the clear) are byte-identical inputs, and D35's loose-bank source runs the identical `emu_ebl.parse` the disc path does (see *Loose banks* below, [ADR-0042](../adr/0042-loose-sample-banks-are-a-source-not-a-container.md)).
 
 ## Why this format needed a document
 
@@ -129,8 +129,22 @@ The one disc is one bank, and one bank's constants can be that bank's rather tha
 
 The interleave is checked wider still: Giga Schimme Grand (120 stereo), EW PS18 Steinberg Grand (449 stereo, 441 rendered) and Studio Grand (408 stereo) -- mattetti's entirely-stereo grands -- are read the same way when their loose `.ebl` and renders are present, gated on `SAMPLERDISC_EBL_BANKS` and `SAMPLERDISC_EBL_RENDERS`. A publisher render is a subset of the input (a bank ships a few more `.ebl` than were rendered), so the reader's stereo count is checked to be **at least** the render's stereo-FLAC count, and every uniquely-named file that matches by name and rate is byte-exact -- the two-byte from-the-front error that the end anchor fixes was found precisely here, on the grands. The interleave is thus proven on sustained piano, not only Dance 2000's drums.
 
+## Loose banks
+
+Some libraries never ship as a disc. archive.org's `e-mu-sample-sets` carries **Proteus 1/2/3** as loose `.exb` + `SamplePool/*.ebl` in the clear -- no ISO, no container, no installer to unpack. D35 converts these through a dedicated source (`extract-banks`), not the disc pipeline: the operating system's filesystem has already done what a container and an on-disc filesystem do for a disc, so the source walks the tree for `*.ebl` and hands each file's bytes to the same decoder ([ADR-0042](../adr/0042-loose-sample-banks-are-a-source-not-a-container.md)). The `.exb` beside the pool is the bank definition and is not read, exactly as on a disc (ADR-0011).
+
+Census over the three banks, by the reader's own `V12` classification: **685 mono, 1 stereo, 0 refused** — Proteus 1 217 (216 mono + one stereo `Snare w/Verb 28K`), Proteus 2 298, Proteus 3 171. The rates are the E-mu spread again (most are 44 001, read from the record). The one stereo file has **no render to check its interleave against** — Proteus is not among the rendered banks — so it is classified and interleaved by the rules verified on 636 stereo files elsewhere, and that is recorded as borrowed evidence rather than an independent confirmation ([ADR-0042](../adr/0042-loose-sample-banks-are-a-source-not-a-container.md) *Watch for*).
+
 ## Reference disc
 
 | Short name | File | Size |
 |---|---|---|
 | Vintage Pro | `Digital Sound Factory - E-MU Vintage Pro.bin` | 45 558 240 |
+
+## Loose reference banks
+
+| Short name | Tree | `.ebl` |
+|---|---|---|
+| Proteus 1 | `e-mu-sample-sets/Proteus 1/SamplePool/` | 217 |
+| Proteus 2 | `e-mu-sample-sets/Proteus 2/SamplePool/` | 298 |
+| Proteus 3 | `e-mu-sample-sets/Proteus 3/SamplePool/` | 171 |

@@ -24,6 +24,7 @@ import samplerdisc.fs  # noqa: F401  (importing registers the backends)
 from samplerdisc.container.base import SECTOR_SIZE
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.container.mdsmdf import find_mdf
+from samplerdisc.extract import Extracted
 from samplerdisc.fs.probe import find_origin
 from samplerdisc.sample import aiff, emu_ebl
 from samplerdisc.wav import read_header
@@ -1002,6 +1003,45 @@ def test_every_located_stereo_bank_matches_its_render() -> None:
         # exercised on this bank rather than skipped past.
         assert r.checked_stereo > 0, label
         assert r.resampled <= max(5, (r.mono + r.stereo) // 100), label
+
+
+def _loose_ebl_root() -> str | None:
+    """A directory of loose ``.exb``/``SamplePool`` banks in the clear.
+
+    Point ``SAMPLERDISC_LOOSE_EBL`` at the parent of the extracted Proteus
+    1/2/3 trees (archive.org ``e-mu-sample-sets``). Copyrighted local input,
+    never committed and never treated as a disc.
+    """
+    root = os.environ.get("SAMPLERDISC_LOOSE_EBL")
+    return root if root and Path(root).is_dir() else None
+
+
+@pytest.mark.skipif(_loose_ebl_root() is None, reason="set SAMPLERDISC_LOOSE_EBL")
+def test_a_loose_ebl_tree_converts_to_wav(tmp_path) -> None:
+    """The loose-file source end to end on the real Proteus banks (ADR-0042).
+
+    The decode is oracle-verified above; this guards the ingest and write path
+    -- every ``.ebl`` in the tree is discovered, converted to a WAV that exists
+    on disk, and none is refused. The Proteus banks are overwhelmingly mono ROM
+    samples with the odd genuine stereo (``Snare w/Verb 28K``), classified by
+    the same V12 channel byte D34 verified against the renders, so a skip or an
+    exception -- not a stereo file -- is the news worth failing on.
+    """
+    from samplerdisc import banks as banks_src
+
+    root = _loose_ebl_root()
+    found = banks_src.find_bank_dirs(root)
+    assert found, "no .ebl banks discovered under SAMPLERDISC_LOOSE_EBL"
+    written = skipped = 0
+    for result in banks_src.extract_banks(root, str(tmp_path)):
+        if isinstance(result, Extracted):
+            written += 1
+            assert result.channels in (1, 2)
+            assert Path(result.path).is_file()
+        else:
+            skipped += 1
+    assert written > 0
+    assert skipped == 0
 
 
 def _smpl(payload: bytes) -> tuple[int, list[tuple[int, int]]]:
