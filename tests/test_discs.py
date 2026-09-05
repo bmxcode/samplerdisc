@@ -14,6 +14,7 @@ import hashlib
 import math
 import os
 import struct
+import tempfile
 from array import array
 from dataclasses import dataclass
 from functools import lru_cache
@@ -28,7 +29,7 @@ from samplerdisc.container.mdsmdf import find_mdf
 from samplerdisc.extract import Extracted
 from samplerdisc.fs.probe import find_origin
 from samplerdisc.sample import aiff, emu_ebl
-from samplerdisc.wav import read_header
+from samplerdisc.wav import LOOP_FORWARD, read_header, write_wav
 
 #: ``.mds`` and not ``.mdf``: the pair is reached through the descriptor, the
 #: member that is actually opened, so listing both would open the disc twice.
@@ -2717,6 +2718,147 @@ def test_hfs_sd2_files_decode_and_match_the_disc() -> None:
         return total
 
     assert count_sd2(reference) == 24
+
+
+#: The forward shape/join oracle (emu3.md, ADR-0025) scored on the 24 SDII
+#: loops: a 256-frame window at the loop start correlated with the recorded
+#: continuation past the loop end -- for a periodic instrument tone the audio
+#: after the end is one period-multiple of the audio at the start, so a real
+#: loop scores high and a wrong one near zero. ``confirm`` is r >= 0.9.
+_SD2_SHAPE_WINDOW = 256
+_SD2_SHAPE_CONFIRM = 0.9
+_SD2_SHAPE_SCORABLE = 0.6
+
+#: The loops the forward window has less power on -- inharmonic guitar/stack
+#: loops whose start does not periodically predict the post-end audio. They are
+#: emitted like every other (the spec confirms the interpretation for all 24;
+#: this is a lack of power, not a refutation) and named rather than hidden
+#: (ADR-0046). Pinned so a currently-confirmed loop falling below the bar breaks
+#: the set. On this disc only ``F#2 Gtr Str`` is below the r >= 0.6 scorable bar.
+_SD2_WEAK_LOOPS = {"F#2 Gtr Str", "E1 Gtr Str", "Obiestack C2"}
+
+
+def _first_smpl_loop(payload: bytes) -> tuple[int, int, int] | None:
+    """The first smpl loop's ``(type, start, end)`` from a WAV, or ``None``.
+
+    The write path is what a DAW reads; this parses it back rather than trusting
+    ``write_wav``. The smpl body is nine leading u32s, then 6-u32 loop records
+    (id, type, start, end, fraction, playCount).
+    """
+    pos = 12
+    while pos + 8 <= len(payload):
+        tag = payload[pos : pos + 4]
+        size = struct.unpack_from("<I", payload, pos + 8 - 4)[0]
+        body = pos + 8
+        if tag == b"smpl":
+            num = struct.unpack_from("<I", payload, body + 28)[0]
+            if num < 1:
+                return None
+            rec = body + 36
+            _id, ltype, start, end, _frac, _count = struct.unpack_from("<IIIIII", payload, rec)
+            return ltype, start, end
+        pos = body + size + (size & 1)
+    return None
+
+
+def test_hfs_sd2_loops_decode_and_splice() -> None:
+    """The SDII loop is read from ``sdLL`` and reaches the WAV, and the disc's
+    own audio corroborates it (ADR-0046).
+
+    Three checks, gated on the disc like the rest of the SDII family. **Decode:**
+    all 24 ``Sd2f`` files carry exactly one in-range forward loop from the
+    ``sdLL`` resource, the layout the Digidesign spec gives. **Write path:** each
+    loop reaches the WAV ``smpl`` chunk with the frames the decoder read, its end
+    made inclusive as the RIFF spec wants -- parsed back out of the file a DAW
+    would open, not trusted. **Content:** the emu3.md forward shape/join oracle
+    -- the 256 frames at the loop start correlated with the recorded continuation
+    past the loop end -- confirms the loop on the great majority of the 24, the
+    same instrument that establishes the E-mu loops. The few it cannot vouch for
+    are inharmonic guitar/stack loops where the forward window has no power; they
+    are emitted and pinned by name (``_SD2_WEAK_LOOPS``), not hidden, exactly as
+    ADR-0044 emits ``eiv-analogia``'s unscorable loops. Nothing here changes what
+    ships -- ``sample.loops`` is what the extractor already emits.
+    """
+    np = pytest.importorskip("numpy")
+    from samplerdisc.extract import _wav_loops
+    from samplerdisc.sample import sd2
+
+    def pearson(u, v):
+        u = u - u.mean()
+        v = v - v.mean()
+        d = math.sqrt(float((u * u).sum()) * float((v * v).sum()))
+        return float((u * v).sum() / d) if d > 0 else 0.0
+
+    def shape(pcm: bytes, channels: int, ch: int, start: int, end: int) -> float | None:
+        """Forward shape r for a loop of (start, end) inclusive frames on ``ch``."""
+        frames = np.frombuffer(pcm, dtype="<i2").astype(np.float64)
+        x = frames[ch::channels] if channels > 1 else frames
+        w = _SD2_SHAPE_WINDOW
+        if start < 0 or start + w > x.size or end + w > x.size:
+            return None
+        return pearson(x[start : start + w], x[end : end + w])
+
+    v2_size = _HFS["sonic-images-v2"][0]
+    path = _pinned_disc("sonic-images-v2", v2_size)
+
+    decoded = confirmed = scorable = 0
+    below_confirm: set[str] = set()
+    with open_image(path) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "hfs"
+        entries = [
+            entry
+            for volume in origin.backend.volumes(image, origin.offset)
+            for entry in volume.files
+            if entry.kind == "sd2"
+        ]
+        assert len(entries) == 24
+        with tempfile.TemporaryDirectory() as tmp:
+            for entry in entries:
+                data_fork = origin.backend.read_file(image, origin.offset, entry)
+                rsrc_fork = origin.backend.read_resource_fork(image, origin.offset, entry)
+                sample = sd2.parse(data_fork, rsrc_fork, fallback_name=entry.name)
+                assert len(sample.loops) == 1, entry.name
+                loop = sample.loops[0]
+                assert 0 <= loop.start < loop.end <= sample.frames + 1
+                assert loop.loop_type == LOOP_FORWARD
+                decoded += 1
+
+                # Write path: the loop reaches the smpl chunk, end made inclusive.
+                out = os.path.join(tmp, "sd2.wav")
+                write_wav(
+                    out,
+                    sample.pcm,
+                    rate=sample.rate,
+                    channels=sample.channels,
+                    sample_width=sample.width,
+                    loops=_wav_loops(sample),
+                )
+                payload = Path(out).read_bytes()
+                assert read_header(payload).has_smpl
+                written = _first_smpl_loop(payload)
+                assert written == (LOOP_FORWARD, loop.start, loop.end - 1), entry.name
+
+                # Content: the forward shape oracle on the loop's own channel.
+                body = sd2._resources(rsrc_fork, sd2.SDLL_TYPE)[sd2.SDLL_ID]
+                channel = struct.unpack_from(sd2._LOOP_REC, body, sd2._SDLL_HEADER_LEN)[4]
+                r = shape(sample.pcm, sample.channels, channel, loop.start, loop.end - 1)
+                if r is None:
+                    continue
+                scorable += r >= _SD2_SHAPE_SCORABLE
+                if r >= _SD2_SHAPE_CONFIRM:
+                    confirmed += 1
+                else:
+                    below_confirm.add(os.path.basename(entry.name).strip())
+
+    assert decoded == 24
+    # Observed on sonic-images-v2: 21 confirm, 23 scorable; floors leave headroom.
+    assert confirmed >= 18, f"forward oracle confirmed only {confirmed} of 24 SDII loops"
+    assert scorable >= 20, f"only {scorable} of 24 SDII loops splice at r >= 0.6"
+    # A currently-confirmed loop dropping below the bar must show up here.
+    assert below_confirm <= _SD2_WEAK_LOOPS, (
+        f"an SDII loop stopped confirming under the forward oracle: {below_confirm}"
+    )
 
 
 def test_hfs_v1_has_no_sd2_files() -> None:
