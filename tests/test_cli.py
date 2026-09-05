@@ -3,7 +3,7 @@ from samplerdisc.cli import build_parser
 
 
 def test_version_matches_package():
-    assert __version__ == "0.4.0"
+    assert __version__ == "0.5.0"
 
 
 def test_parser_exposes_version_flag():
