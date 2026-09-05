@@ -27,6 +27,16 @@ def _human(n: int) -> str:
     return f"{n} B"
 
 
+def _plural(count: int, noun: str) -> str:
+    """``count`` and ``noun``, the noun pluralised for any count but one.
+
+    Every noun this is used with -- volume, file, partition, and the backends'
+    own kind words (sample, program, wav, aiff) -- pluralises with a plain -s,
+    so nothing cleverer is needed.
+    """
+    return f"{count} {noun}" + ("" if count == 1 else "s")
+
+
 def cmd_list(args: argparse.Namespace) -> int:
     with open_image(args.image) as image:
         origin = find_origin(image)
@@ -66,7 +76,7 @@ def cmd_list(args: argparse.Namespace) -> int:
             note = f" -- {volume.note}" if volume.note else ""
             print(
                 f"{indent}{volume.name}  (block {volume.start_block}, "
-                f"{len(volume.files)} files){note}"
+                f"{_plural(len(volume.files), 'file')}){note}"
             )
             for entry in volume.files:
                 kinds[entry.kind] += 1
@@ -74,9 +84,9 @@ def cmd_list(args: argparse.Namespace) -> int:
                     print(f"{indent}    {entry.name:<14} {entry.kind:<8} {entry.size:>9} bytes")
         # Kinds are the backend's vocabulary, not ours: AKAI says sample and
         # program, ISO 9660 says wav and aiff.
-        breakdown = ", ".join(f"{count} {kind}" for kind, count in sorted(kinds.items()))
-        across = f" across {partitions} partitions" if partitions > 1 else ""
-        print(f"\n{volumes} volumes{across}" + (f", {breakdown}" if breakdown else ""))
+        breakdown = ", ".join(_plural(count, kind) for kind, count in sorted(kinds.items()))
+        across = f" across {_plural(partitions, 'partition')}" if partitions > 1 else ""
+        print(f"\n{_plural(volumes, 'volume')}{across}" + (f", {breakdown}" if breakdown else ""))
     return 0
 
 

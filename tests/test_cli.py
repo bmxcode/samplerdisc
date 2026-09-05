@@ -19,6 +19,46 @@ def test_parser_exposes_version_flag():
     assert any(a.dest == "version" for a in parser._actions)
 
 
+def test_list_summary_pluralises_counts(tmp_path, capsys):
+    """'sample' is the backend's own word (ADR-0023), but '5 sample' is still a
+    bug, and so is '1 volumes'. Counts agree with English."""
+    from samplerdisc.cli import main
+    from tests import fixtures
+
+    def sample(name):
+        payload = fixtures.akai_sample(name, words=32)
+        return (name, 0x73, len(payload), payload)
+
+    disc = tmp_path / "many.iso"
+    disc.write_bytes(
+        fixtures.akai_partition(
+            [
+                ("VOL 1", [sample("KICK 1"), sample("SNARE")]),
+                ("VOL 2", [sample("HAT")]),
+            ]
+        )
+    )
+    assert main(["list", str(disc)]) == 0
+    out = capsys.readouterr().out
+    assert "2 volumes, 3 samples" in out
+    assert "2 files)" in out
+    assert "1 file)" in out  # the one-file volume, singular
+
+
+def test_list_summary_uses_singular_for_one(tmp_path, capsys):
+    from samplerdisc.cli import main
+    from tests import fixtures
+
+    payload = fixtures.akai_sample("KICK 1", words=32)
+    disc = tmp_path / "one.iso"
+    entry = ("KICK 1", 0x73, len(payload), payload)
+    disc.write_bytes(fixtures.akai_partition([("VOL 1", [entry])]))
+    assert main(["list", str(disc)]) == 0
+    out = capsys.readouterr().out
+    assert "1 volume, 1 sample" in out
+    assert "volumes" not in out and "samples" not in out
+
+
 def test_assume_audio_cd_refuses_a_stream_that_is_not_audio(tmp_path, capsys):
     """The flag is an assertion by the user, not an instruction to obey blindly.
 
