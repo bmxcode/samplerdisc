@@ -251,6 +251,14 @@ OFF_FORM_SIZE = 4
 OFF_FORM_TYPE = 8
 FORM_HEADER_LEN = 12
 
+#: A preset chunk inside a ``FORM/E4B0`` bank. Its body opens with the same
+#: two-byte prefix and 16-byte name field an ``E3S1`` sample record does, so the
+#: name reads at ``SAMPLE_NAME_OFFSET``. On a bank that carries audio the preset
+#: is the instrument definition and is left to ConvertWithMoss (ADR-0011); the
+#: only ``E4P1`` this project reads is the *name line* of a sample-free text
+#: bank (``Credits``, ``E-mu Systems 96``), as disc provenance (ADR-0043).
+EIV_PRESET_MAGIC = b"E4P1"
+
 #: An IFF chunk header: a four-byte id and a big-endian u32 size. The E-IV
 #: sample record is the body that follows it.
 IFF_CHUNK_HEADER = 8
@@ -678,6 +686,55 @@ def _form_e3s1_chunks(image: SectorImage, at: int) -> Iterator[tuple[int, int]]:
             yield body, size
         # IFF pads an odd chunk to a two-byte boundary.
         position = body + size + (size & 1)
+
+
+def _form_e4p1_credits(image: SectorImage, at: int) -> list[str]:
+    """The credit lines a sample-free ``FORM/E4B0`` text bank carries.
+
+    ``at`` is the image-absolute offset of the ``FORM`` tag. Walks the container
+    the same way ``_form_e3s1_chunks`` does -- declared chunk sizes from the
+    header, the size bounding where a chunk may *begin* -- and reads the 16-byte
+    name field of each ``E4P1`` preset chunk, which sits at ``SAMPLE_NAME_OFFSET``
+    exactly as a sample record's does. On the ``Credits`` and ``E-mu Systems 96``
+    banks that name field holds one line of disc provenance (author, house,
+    contact, thanks); the preset parameters beside it are never read (ADR-0043).
+
+    Only the *name* is read, so this is metadata, not the preset ADR-0011
+    defers. A chunk whose body is not wholly present, or whose name is not
+    plausible, is skipped -- tail damage degrades to the lines that survive
+    rather than raising (ADR-0012).
+    """
+    head = image.read(at, FORM_HEADER_LEN)
+    if (
+        len(head) < FORM_HEADER_LEN
+        or head[:4] != EIV_FORM_MAGIC
+        or head[OFF_FORM_TYPE : OFF_FORM_TYPE + 4] != EIV_FORM_TYPE
+    ):
+        return []
+    (form_size,) = struct.unpack_from(">I", head, OFF_FORM_SIZE)
+    header_end = min(at + IFF_CHUNK_HEADER + form_size, image.size)
+    position = at + FORM_HEADER_LEN
+    lines: list[str] = []
+    while position + IFF_CHUNK_HEADER <= header_end:
+        header = image.read(position, IFF_CHUNK_HEADER)
+        if len(header) < IFF_CHUNK_HEADER:
+            break
+        tag = header[:4]
+        (size,) = struct.unpack_from(">I", header, 4)
+        if size <= 0:
+            break
+        body = position + IFF_CHUNK_HEADER
+        if body + size > image.size:
+            break  # tail damage: the chunk body is not wholly present.
+        if tag == EIV_PRESET_MAGIC:
+            raw = image.read(body + SAMPLE_NAME_OFFSET, ENTRY_NAME_LEN)
+            if len(raw) == ENTRY_NAME_LEN and is_plausible_name(raw):
+                name = decode_name(raw)
+                if name:
+                    lines.append(name)
+        # IFF pads an odd chunk to a two-byte boundary.
+        position = body + size + (size & 1)
+    return lines
 
 
 def _read_fat(image: SectorImage, offset: int) -> list[int]:
@@ -1304,6 +1361,11 @@ class Emu3Backend:
                         # borrowing the "no sample directory" wording, now that
                         # a bank without a flat directory may still carry audio.
                         volume.note = "the bank holds presets or text and no samples; listed only"
+                        # The audio note stays accurate, but these banks carry
+                        # disc provenance in their ``E4P1`` name fields -- read
+                        # it as metadata for a ``Credits.txt`` sidecar, the name
+                        # line alone and never the preset (ADR-0043).
+                        volume.credits = _form_e4p1_credits(image, offset + form_at)
                 elif located:
                     # A bank the directory lists and no header on the disc
                     # claims. On an EIII/ESI disc that is the sampler's own

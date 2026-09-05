@@ -337,3 +337,105 @@ def test_a_stereo_emu_record_is_written_as_one_stereo_wav(tmp_path):
         assert w.getnframes() == results[0].frames
         # Frames, not samples: the duration the CLI prints is the sound's.
         assert w.getnframes() * 4 == len(w.readframes(w.getnframes()))
+
+
+# --- the Credits.txt provenance sidecar (D36, ADR-0043) ------------------
+
+#: A FORM-bank disc that binds the allocation fit (two multi-sample flat banks
+#: corroborate the unit, a single-sample flat bank pins it) with a sample-free
+#: ``Credits`` text bank carrying provenance -- the shape of the real E-IV discs.
+_META_FOLDERS = [
+    (
+        "Studio Kits",
+        [
+            ("Live Room", [("Kick Axis", 44100, 512), ("Snare Top", 44100, 256)]),
+            ("Room Verb", [("Tom Floor", 24000, 300), ("Hat Tight", 44100, 128)]),
+            ("Studio Snare", [("Snare 01", 44100, 400), ("Snare 02", 22000, 220)]),
+            ("Perc Kit", [("Shaker", 32000, 200)]),
+            ("Credits", []),
+        ],
+    ),
+]
+_META_FORM_BANKS = ("Studio Snare", "Credits")
+_META_LINES = ["Q Up Arts 97", "Samples By", "Denny Jaeger", "E-mu Systems 97"]
+
+
+def _meta_disc(tmp_path):
+    from samplerdisc.fs.emu3 import Emu3Backend
+
+    path = tmp_path / "meta.iso"
+    path.write_bytes(
+        fixtures.emu3_disc(
+            _META_FOLDERS, eiv=True, form_banks=_META_FORM_BANKS, credits={"Credits": _META_LINES}
+        )
+    )
+    return FlatImage(path), Emu3Backend()
+
+
+def test_metadata_writes_a_credits_sidecar(tmp_path):
+    """``--metadata`` collects the disc's text-bank provenance into one
+    ``Credits.txt`` at the extract root, headed by the bank name (ADR-0043).
+    """
+    from samplerdisc.extract import Credited
+
+    image, backend = _meta_disc(tmp_path)
+    out = tmp_path / "out"
+    results = list(extract_disc(image, backend, 0, str(out), metadata=True))
+    credited = [r for r in results if isinstance(r, Credited)]
+    assert len(credited) == 1
+    assert credited[0].banks == 1
+    assert credited[0].lines == len(_META_LINES)
+    sidecar = out / "Credits.txt"
+    assert sidecar.exists()
+    assert sidecar.read_text(encoding="utf-8").splitlines() == ["Credits", *_META_LINES]
+    # The audio is written all the same -- the sidecar rides alongside it.
+    assert (out / "Studio Snare" / "Snare 01.wav").exists()
+
+
+def test_no_metadata_flag_writes_no_sidecar(tmp_path):
+    """The sidecar is opt-in: without ``--metadata`` no ``Credits.txt`` is
+    written and no ``Credited`` result is yielded, and the audio is unchanged.
+    """
+    from samplerdisc.extract import Credited
+
+    image, backend = _meta_disc(tmp_path)
+    out = tmp_path / "out"
+    results = list(extract_disc(image, backend, 0, str(out)))
+    assert not any(isinstance(r, Credited) for r in results)
+    assert not (out / "Credits.txt").exists()
+    assert (out / "Studio Snare" / "Snare 01.wav").exists()
+
+
+def test_write_credits_collapses_identical_sections(tmp_path):
+    """``eiv-studio`` carries four byte-identical ``E-mu Systems 96`` banks;
+    the sidecar writes such a section once (ADR-0043).
+    """
+    from samplerdisc.extract import write_credits
+
+    contact = ["E-mu Systems 96", "For More Info", "Or Call"]
+    result = write_credits(
+        str(tmp_path),
+        [
+            ("E-mu Systems 96", contact),
+            ("E-mu Systems 96", contact),
+            ("Credits", ["Denny Jaeger"]),
+            ("E-mu Systems 96", contact),
+        ],
+    )
+    assert result is not None
+    assert result.banks == 2
+    assert result.lines == len(contact) + 1
+    text = (tmp_path / "Credits.txt").read_text(encoding="utf-8")
+    # The contact block appears once, then the distinct Credits block.
+    assert text.count("For More Info") == 1
+    assert text.splitlines() == ["E-mu Systems 96", *contact, "", "Credits", "Denny Jaeger"]
+
+
+def test_write_credits_writes_nothing_without_lines(tmp_path):
+    """A disc with no text bank (or only empty ones) gets no sidecar at all,
+    rather than an empty file -- absence is the honest signal (ADR-0012).
+    """
+    from samplerdisc.extract import write_credits
+
+    assert write_credits(str(tmp_path), [("Credits", [])]) is None
+    assert not (tmp_path / "Credits.txt").exists()

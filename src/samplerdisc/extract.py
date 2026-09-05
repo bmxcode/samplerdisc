@@ -142,6 +142,21 @@ class Joined:
     partition: int = 0
 
 
+@dataclass
+class Credited:
+    """The disc's provenance, written once per disc as a ``Credits.txt`` sidecar.
+
+    Not a per-file result: the credit lines come from the E-IV ``Credits`` and
+    ``E-mu Systems 96`` text banks, which carry no audio, and one sidecar
+    collects every such bank on the disc (ADR-0043). Emitted only under
+    ``--metadata``.
+    """
+
+    path: str
+    banks: int
+    lines: int
+
+
 def extract_volume(
     image: SectorImage,
     backend: Backend,
@@ -653,6 +668,40 @@ def volume_dir(out_root: str, volume: Volume) -> str:
     return os.path.join(out_root, safe_name(volume.name))
 
 
+#: The disc-provenance sidecar, written at the extract root under ``--metadata``.
+CREDITS_FILE = "Credits.txt"
+
+
+def write_credits(out_root: str, sections: list[tuple[str, list[str]]]) -> Credited | None:
+    """Write the disc's ``Credits.txt`` from its text banks, or nothing.
+
+    ``sections`` is ``(bank name, lines)`` per provenance-carrying volume, in
+    disc order. One section per bank, headed by the bank name; byte-identical
+    sections are collapsed, so ``eiv-studio``'s four identical ``E-mu Systems
+    96`` banks write once. Returns ``None`` when no disc text bank had lines, so
+    the sidecar is absent on a disc that has none rather than empty.
+    """
+    kept: list[tuple[str, list[str]]] = []
+    seen: set[tuple[str, ...]] = set()
+    for name, lines in sections:
+        if not lines:
+            continue
+        key = tuple(lines)
+        if key in seen:
+            continue
+        seen.add(key)
+        kept.append((name, lines))
+    if not kept:
+        return None
+    blocks = [name + "\n" + "\n".join(lines) for name, lines in kept]
+    text = "\n\n".join(blocks) + "\n"
+    os.makedirs(out_root, exist_ok=True)
+    path = os.path.join(out_root, CREDITS_FILE)
+    with open(path, "w", encoding="utf-8") as out:
+        out.write(text)
+    return Credited(path=path, banks=len(kept), lines=sum(len(lines) for _, lines in kept))
+
+
 def extract_disc(
     image: SectorImage,
     backend: Backend,
@@ -660,10 +709,23 @@ def extract_disc(
     out_root: str,
     join_stereo: bool = True,
     keep_originals: bool = False,
-) -> Iterator[Extracted | Skipped | Joined | Kept]:
-    """Write every sample on the disc, one directory per volume."""
+    metadata: bool = False,
+) -> Iterator[Extracted | Skipped | Joined | Kept | Credited]:
+    """Write every sample on the disc, one directory per volume.
+
+    With ``metadata`` the disc's provenance -- the ``E4P1`` name lines of its
+    sample-free ``Credits``/``E-mu Systems 96`` text banks -- is collected and
+    written once as a ``Credits.txt`` sidecar at ``out_root`` (ADR-0043).
+    """
+    sections: list[tuple[str, list[str]]] = []
     for volume in backend.volumes(image, origin):
+        if metadata and volume.credits:
+            sections.append((volume.name, volume.credits))
         out_dir = volume_dir(out_root, volume)
         yield from extract_volume(
             image, backend, origin, volume, out_dir, join_stereo, keep_originals
         )
+    if metadata:
+        credited = write_credits(out_root, sections)
+        if credited is not None:
+            yield credited

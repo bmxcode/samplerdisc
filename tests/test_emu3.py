@@ -886,6 +886,67 @@ def test_a_sample_free_form_bank_is_noted_not_silent(tmp_path):
     assert "no sample directory" not in credits.note
 
 
+#: The disc provenance a ``Credits`` text bank carries, one line per ``E4P1``
+#: name field -- the shape of Vol. 4 Denny Jaeger, trimmed.
+CREDIT_LINES = ["Q Up Arts 97", "Samples By", "Denny Jaeger", "E-mu Systems 97"]
+
+
+def test_a_credits_text_bank_surfaces_its_provenance(tmp_path):
+    """The ``Credits``/``E-mu Systems 96`` banks are sample-free, but their
+    ``E4P1`` name fields carry disc provenance -- read as metadata for a
+    ``Credits.txt`` sidecar, the name line alone and never the preset (ADR-0043).
+    """
+    image = image_of(
+        tmp_path,
+        fixtures.emu3_disc(
+            EIV_FORM_FOLDERS, eiv=True, form_banks=FORM_BANKS, credits={"Credits": CREDIT_LINES}
+        ),
+        "form.iso",
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    credits = volumes["Credits"]
+    # The audio note stays accurate: the bank carries no samples.
+    assert credits.files == []
+    assert credits.note == "the bank holds presets or text and no samples; listed only"
+    # And the provenance is surfaced beside it.
+    assert credits.credits == CREDIT_LINES
+
+
+def test_a_sample_bank_holds_its_e4p1_presets_unread(tmp_path):
+    """The line ADR-0043 draws: a bank that carries audio has ``E4P1`` presets
+    too, and none of them is read -- credits come only from a sample-free text
+    bank, so the preset reader stays deferred to ConvertWithMoss (ADR-0011).
+    """
+    image = image_of(
+        tmp_path, fixtures.emu3_disc(EIV_FORM_FOLDERS, eiv=True, form_banks=FORM_BANKS), "form.iso"
+    )
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    snare = volumes["Studio Snare"]
+    assert [f.name for f in snare.files] == ["Snare 01", "Snare 02"]
+    assert snare.credits == []
+    # A flat sample bank likewise carries no credits.
+    assert volumes["Live Room"].credits == []
+
+
+def test_a_truncated_credits_bank_degrades_to_the_lines_that_survive(tmp_path):
+    """Tail damage on a text bank keeps the credit lines wholly present and
+    drops the rest, rather than crashing (ADR-0012).
+    """
+    data = bytearray(
+        fixtures.emu3_disc(
+            EIV_FORM_FOLDERS, eiv=True, form_banks=FORM_BANKS, credits={"Credits": CREDIT_LINES}
+        )
+    )
+    # Cut a few bytes into the last credit line's own name field, so its E4P1
+    # chunk body is no longer wholly present while the earlier chunks are whole.
+    cut = data.find(CREDIT_LINES[-1].encode("ascii")) + 4
+    image = image_of(tmp_path, bytes(data[:cut]), "trunc.iso")
+    volumes = {v.name: v for v in BACKEND.volumes(image, 0)}
+    credits = volumes["Credits"]
+    # The lines before the cut survive; the truncated one is dropped, no crash.
+    assert credits.credits == CREDIT_LINES[:-1]
+
+
 #: The FORM bank last, so truncating it leaves the three flat banks that pin
 #: the allocation fit intact -- the cut is meant to damage the FORM, not the fit.
 EIV_TRUNC_FOLDERS = [

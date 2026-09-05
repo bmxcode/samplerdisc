@@ -17,7 +17,7 @@ from samplerdisc import banks
 from samplerdisc.audiocd import detect as detect_audio_cd
 from samplerdisc.audiocd import extract_tracks
 from samplerdisc.container.detect import open_image, sniff
-from samplerdisc.extract import Extracted, Joined, Kept, Skipped, extract_disc, safe_name
+from samplerdisc.extract import Credited, Extracted, Joined, Kept, Skipped, extract_disc, safe_name
 from samplerdisc.fs.probe import find_origin
 
 if TYPE_CHECKING:
@@ -52,6 +52,10 @@ class DiscReport:
     stereo_samples: int = 0
     stereo_pairs: int = 0
     originals: int = 0
+    #: Disc provenance lines written to a ``Credits.txt`` sidecar, from the
+    #: E-IV ``Credits``/``E-mu Systems 96`` text banks. 0 unless ``--metadata``
+    #: is set or the disc has no such bank (ADR-0043).
+    credit_lines: int = 0
     #: Entries read, understood, and deliberately not written because their
     #: audio was already written from another file on the same disc. Counted
     #: apart from ``skipped`` so a clean disc does not read as a damaged one.
@@ -86,7 +90,11 @@ def find_images(root: str) -> list[str]:
 
 
 def convert_disc(
-    path: str, out_root: str, join_stereo: bool = True, keep_originals: bool = False
+    path: str,
+    out_root: str,
+    join_stereo: bool = True,
+    keep_originals: bool = False,
+    metadata: bool = False,
 ) -> DiscReport:
     """Convert one image. Never raises: a failure becomes a report."""
     report = DiscReport(source=path)
@@ -118,10 +126,18 @@ def convert_disc(
             # volumes' samples as one entry (ADR-0023).
             volumes: dict[tuple[int, str], dict[str, Any]] = {}
             results = extract_disc(
-                image, origin.backend, origin.offset, out_dir, join_stereo, keep_originals
+                image,
+                origin.backend,
+                origin.offset,
+                out_dir,
+                join_stereo,
+                keep_originals,
+                metadata,
             )
             for result in results:
-                if isinstance(result, Extracted):
+                if isinstance(result, Credited):
+                    report.credit_lines += result.lines
+                elif isinstance(result, Extracted):
                     report.samples += 1
                     if result.channels > 1:
                         report.stereo_samples += 1
@@ -194,10 +210,14 @@ def convert_bank(bank_dir: str, out_root: str) -> DiscReport:
 
 
 def convert_tree(
-    root: str, out_root: str, join_stereo: bool = True, keep_originals: bool = False
+    root: str,
+    out_root: str,
+    join_stereo: bool = True,
+    keep_originals: bool = False,
+    metadata: bool = False,
 ) -> Iterator[DiscReport]:
     for path in find_images(root):
-        yield convert_disc(path, out_root, join_stereo, keep_originals)
+        yield convert_disc(path, out_root, join_stereo, keep_originals, metadata)
     # Loose banks are files in the clear, not disc images, so find_images passes
     # them over (.ebl is not an image suffix); they are discovered separately and
     # converted through their own source. A render/oracle tree carries no .ebl
@@ -218,6 +238,7 @@ def write_manifest(path: str, reports: list[DiscReport]) -> None:
             "stereo_pairs": sum(r.stereo_pairs for r in reports),
             "audio_tracks": sum(r.audio_tracks for r in reports),
             "originals": sum(r.originals for r in reports),
+            "credit_lines": sum(r.credit_lines for r in reports),
             "skipped": sum(len(r.skipped) for r in reports),
             "duplicates": sum(r.duplicates for r in reports),
             "mismatches": sum(r.mismatches for r in reports),

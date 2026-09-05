@@ -87,6 +87,14 @@ class Volume:
     #: matched something it should not have (ADR-0012), so the two cases must
     #: be distinguishable by something other than a human reading the names.
     note: str = ""
+    #: Human-readable disc provenance a volume carries beside (or instead of)
+    #: its audio -- one line each. Empty for every volume that holds only
+    #: samples. E-mu E-IV ``Credits`` and ``E-mu Systems 96`` text banks are
+    #: the only producer today: a sample-free ``FORM/E4B0`` bank whose ``E4P1``
+    #: chunks hold author/house/contact lines in their name field, read as
+    #: metadata and written to a ``Credits.txt`` sidecar under ``--metadata``.
+    #: This is a label field, not the preset it sits in (ADR-0043, ADR-0011).
+    credits: list[str] = field(default_factory=list)
 
     def samples(self) -> Iterator[File]:
         return (f for f in self.files if f.kind == "sample")
