@@ -1,0 +1,71 @@
+name: Release
+
+# Publish to PyPI when a v* tag is pushed. The tag is the trigger, so a release
+# is `git tag vX.Y.Z && git push --tags` and nothing else — no token lives here.
+# Uploads go through PyPI Trusted Publishing (OIDC): PyPI is configured to trust
+# this repository's `pypi` environment, and the `publish` job mints a short-lived
+# credential per run. There is no API token to leak from a public repo.
+#
+# One-time setup on PyPI (Trusted Publisher, "pending" until the first release):
+#   https://pypi.org/manage/account/publishing/
+#     PyPI project name: samplerdisc
+#     Owner:             bmxcode
+#     Repository:        samplerdisc
+#     Workflow name:     release.yml
+#     Environment:       pypi
+# and create a repository environment named `pypi` (Settings -> Environments),
+# optionally restricted to tags matching v*.
+
+on:
+  push:
+    tags: ["v*"]
+
+permissions: {}
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v5
+
+      # The tag is the version, and a tag that disagrees with pyproject would
+      # publish the wrong number under the right name. Fail loud instead — the
+      # same "enforced, not remembered" reflex as the no-media check in ci.yml.
+      - name: Tag matches project version
+        run: |
+          tag="${GITHUB_REF_NAME#v}"
+          proj="$(uv version --short)"
+          if [ "$tag" != "$proj" ]; then
+            echo "::error::tag v$tag != pyproject version $proj"
+            exit 1
+          fi
+          echo "v$tag matches pyproject"
+
+      - name: Build sdist and wheel
+        run: uv build
+
+      - name: Check metadata renders
+        run: uvx twine check dist/*
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+  publish:
+    needs: build
+    runs-on: ubuntu-latest
+    environment: pypi
+    permissions:
+      id-token: write # OIDC token for Trusted Publishing; nothing else
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: dist
+          path: dist/
+
+      - name: Publish to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
