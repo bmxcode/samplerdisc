@@ -1040,6 +1040,7 @@ def emu3_disc(
     total_blocks: int = 4096,
     loops: dict[str, tuple[int, int]] | None = None,
     stereo: tuple[str, ...] = (),
+    credits: dict[str, list[str]] | None = None,
 ) -> bytes:
     """Build a synthetic EMU3 image.
 
@@ -1105,6 +1106,12 @@ def emu3_disc(
     record's left-hand loop pointers accordingly. A record not named here gets
     the extent pointers and zeroed loop pointers, which is a record declaring
     no loop -- so every fixture written before this existed still describes one.
+
+    ``credits`` maps a sample-free ``form_banks`` name to its credit lines,
+    written one per ``E4P1`` chunk with the line in the chunk's 16-byte name
+    field -- the ``Credits``/``E-mu Systems 96`` text banks whose provenance the
+    ``--metadata`` sidecar reads (ADR-0043). A form bank not named here keeps a
+    single blank ``E4P1`` and yields no credit lines.
     """
     from samplerdisc.fs.emu3 import (
         BANK_MAGICS,
@@ -1191,9 +1198,19 @@ def emu3_disc(
                     return EIV_MAGIC + struct.pack(">I", len(record)) + record
 
                 # An E4P1 preset chunk stands in for the presets a real bank
-                # carries; the reader steps over it to reach the samples.
+                # carries; the reader steps over it to reach the samples. A
+                # sample-free text bank names in ``credits`` writes one E4P1 per
+                # credit line, the line in the chunk's own name field at +2 --
+                # the disc provenance the metadata sidecar reads (ADR-0043).
                 body = bytearray(EIV_FORM_TYPE)
-                body += b"E4P1" + struct.pack(">I", 8) + b"\x00" * 8
+                lines = (credits or {}).get(bank_name)
+                if lines:
+                    for line in lines:
+                        preset = bytearray(2 + 16)
+                        preset[2:18] = name16(line)
+                        body += b"E4P1" + struct.pack(">I", len(preset)) + bytes(preset)
+                else:
+                    body += b"E4P1" + struct.pack(">I", 8) + b"\x00" * 8
                 for sample_name, rate, frames in samples:
                     body += e3s1_chunk(sample_name, rate, frames)
                 form = EIV_FORM_MAGIC + struct.pack(">I", len(body)) + bytes(body)

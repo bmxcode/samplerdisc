@@ -42,3 +42,45 @@ def test_assume_audio_cd_writes_one_wav_for_a_cueless_audio_disc(tmp_path):
     with wave.open(str(written[0]), "rb") as handle:
         assert handle.getnchannels() == 2
         assert handle.getframerate() == 44100
+
+
+def test_extract_metadata_flag_writes_the_credits_sidecar(tmp_path, capsys):
+    """``extract --metadata`` reads the E-IV text banks' provenance and reports
+    the sidecar it wrote; without the flag no ``Credits.txt`` appears (ADR-0043).
+    """
+    from samplerdisc.cli import main
+    from tests import fixtures
+
+    folders = [
+        (
+            "Studio Kits",
+            [
+                ("Live Room", [("Kick Axis", 44100, 512), ("Snare Top", 44100, 256)]),
+                ("Room Verb", [("Tom Floor", 24000, 300), ("Hat Tight", 44100, 128)]),
+                ("Studio Snare", [("Snare 01", 44100, 400), ("Snare 02", 22000, 220)]),
+                ("Perc Kit", [("Shaker", 32000, 200)]),
+                ("Credits", []),
+            ],
+        ),
+    ]
+    disc = tmp_path / "eiv.iso"
+    disc.write_bytes(
+        fixtures.emu3_disc(
+            folders,
+            eiv=True,
+            form_banks=("Studio Snare", "Credits"),
+            credits={"Credits": ["Q Up Arts 97", "Denny Jaeger"]},
+        )
+    )
+    out = tmp_path / "out"
+    assert main(["extract", "--metadata", str(disc), str(out)]) == 0
+    assert "credit lines" in capsys.readouterr().out
+    assert (out / "Credits.txt").read_text(encoding="utf-8").splitlines() == [
+        "Credits",
+        "Q Up Arts 97",
+        "Denny Jaeger",
+    ]
+
+    plain = tmp_path / "plain"
+    assert main(["extract", str(disc), str(plain)]) == 0
+    assert not (plain / "Credits.txt").exists()

@@ -49,6 +49,45 @@ def test_converts_a_disc_and_reports_what_it_did(tmp_path):
     assert (tmp_path / "out" / "disc" / "partition-1" / "VOL 1" / "KICK 1.wav").exists()
 
 
+def test_metadata_flag_writes_a_credits_sidecar_and_counts_its_lines(tmp_path):
+    """The ``--metadata`` sidecar rides the batch path too: a FORM-bank disc's
+    text-bank provenance is written and its line count lands in the report and
+    the manifest totals (ADR-0043)."""
+    folders = [
+        (
+            "Studio Kits",
+            [
+                ("Live Room", [("Kick Axis", 44100, 512), ("Snare Top", 44100, 256)]),
+                ("Room Verb", [("Tom Floor", 24000, 300), ("Hat Tight", 44100, 128)]),
+                ("Studio Snare", [("Snare 01", 44100, 400), ("Snare 02", 22000, 220)]),
+                ("Perc Kit", [("Shaker", 32000, 200)]),
+                ("Credits", []),
+            ],
+        ),
+    ]
+    source = tmp_path / "eiv.iso"
+    source.write_bytes(
+        fixtures.emu3_disc(
+            folders,
+            eiv=True,
+            form_banks=("Studio Snare", "Credits"),
+            credits={"Credits": ["Q Up Arts 97", "Denny Jaeger"]},
+        )
+    )
+    report = convert_disc(str(source), str(tmp_path / "out"), metadata=True)
+    assert report.credit_lines == 2
+    assert (tmp_path / "out" / "eiv" / "Credits.txt").exists()
+
+    # Without the flag: no sidecar, and the count stays zero.
+    plain = convert_disc(str(source), str(tmp_path / "plain"), metadata=False)
+    assert plain.credit_lines == 0
+    assert not (tmp_path / "plain" / "eiv" / "Credits.txt").exists()
+
+    manifest = tmp_path / "m.json"
+    write_manifest(str(manifest), [report, plain])
+    assert json.loads(manifest.read_text())["totals"]["credit_lines"] == 2
+
+
 def test_an_unreadable_disc_becomes_a_report_not_an_exception(tmp_path):
     source = tmp_path / "junk.iso"
     source.write_bytes(fixtures.incompressible_block(11))
@@ -92,6 +131,7 @@ def test_manifest_records_totals_and_failures(tmp_path):
         "stereo_samples": 0,
         "stereo_pairs": 0,
         "originals": 0,
+        "credit_lines": 0,
         "audio_tracks": 0,
         "skipped": 0,
         "duplicates": 0,

@@ -1171,6 +1171,53 @@ _EMU3 = {
 }
 
 
+#: The E-IV discs that carry disc provenance in a sample-free ``FORM/E4B0``
+#: text bank -- the ``Credits`` and ``E-mu Systems 96`` banks D25 correctly
+#: noted as holding no audio. D36 reads their ``E4P1`` name fields (the credit
+#: line, never the preset) into a ``Credits.txt`` sidecar under ``--metadata``
+#: (ADR-0043). Eight banks, 89 lines across the collection, verified against the
+#: discs -- docs/formats/emu3.md, "A FORM with no E3S1 chunk". Per label:
+#: (size, credit lines summed over the disc's text-bank volumes, distinct
+#: sidecar sections after collapsing byte-identical banks, sidecar lines, one
+#: line the disc is known to carry). ``eiv-studio`` writes ``E-mu Systems 96``
+#: four times byte-identically, so its 24 volume lines collapse to one 6-line
+#: section; the four ``Credits`` discs each carry one bank. Sizes are unique on
+#: the shelf, so no first-megabyte digest is needed (eiv-studio already has one
+#: for its Vol. 2 twin).
+_EMU3_CREDITS = {
+    "eiv-studio": (399_077_376, 24, 1, 6, "E-mu Systems 96"),
+    "eiv-vol5": (524_906_496, 10, 1, 10, "Franz Pusch"),
+    "eiv-hollywood": (660_910_080, 13, 1, 13, "Frank Serafine"),
+    "eiv-denny": (493_754_368, 14, 1, 14, "Denny Jaeger"),
+    "eiv-phatt-cd2": (503_934_976, 28, 1, 28, "Platinum Phatt"),
+}
+
+
+@pytest.mark.parametrize("label", sorted(_EMU3_CREDITS))
+def test_emu3_credits_text_banks_carry_disc_provenance(label: str, tmp_path: Path) -> None:
+    """A sample-free ``Credits``/``E-mu Systems 96`` bank still says why it has
+    no audio (ADR-0032), and now surfaces its ``E4P1`` name lines as provenance,
+    written once per disc as a ``Credits.txt`` sidecar (ADR-0043).
+    """
+    from samplerdisc.extract import write_credits
+
+    size, total, sections, sidecar_lines, spot = _EMU3_CREDITS[label]
+    with open_image(_pinned_disc(label, size)) as image:
+        origin = find_origin(image)
+        assert origin is not None and origin.backend.name == "emu3"
+        volumes = list(origin.backend.volumes(image, origin.offset))
+    carrying = [v for v in volumes if v.credits]
+    assert carrying, f"{label}: no text bank surfaced any credit line"
+    # Every credit-bearing volume is a located, sample-free text bank: the audio
+    # note stays accurate and no bank with audio ever contributes a line.
+    assert all(not v.files and v.note for v in carrying)
+    assert sum(len(v.credits) for v in carrying) == total
+    assert spot in {line for v in carrying for line in v.credits}
+    result = write_credits(str(tmp_path), [(v.name, v.credits) for v in volumes if v.credits])
+    assert result is not None
+    assert (result.banks, result.lines) == (sections, sidecar_lines)
+
+
 #: The seven EMU3 ``.iso`` masters the superblock checksum was cross-checked
 #: against in PR #65 (docs/formats/emu3.md, "Independent corroboration"), and
 #: which issue #66 names as the pin. The checksum -- the sum mod 2**16 of the

@@ -14,7 +14,7 @@ from samplerdisc.audiocd import extract_tracks, looks_like_cd_audio, write_whole
 from samplerdisc.batch import convert_tree, find_images, write_manifest
 from samplerdisc.container.detect import open_image, sniff
 from samplerdisc.export import export_iso
-from samplerdisc.extract import Extracted, Joined, Kept, extract_disc
+from samplerdisc.extract import Credited, Extracted, Joined, Kept, extract_disc
 from samplerdisc.fs import base as _fs_registry  # noqa: F401  (registers backends)
 from samplerdisc.fs.probe import find_origin
 
@@ -118,6 +118,7 @@ def cmd_extract(args: argparse.Namespace) -> int:
         skipped = 0
         duplicates = 0
         mismatches = 0
+        credited: Credited | None = None
         results = extract_disc(
             image,
             origin.backend,
@@ -125,9 +126,14 @@ def cmd_extract(args: argparse.Namespace) -> int:
             args.out,
             join_stereo=not args.no_stereo,
             keep_originals=args.keep_originals,
+            metadata=args.metadata,
         )
         for result in results:
-            if isinstance(result, Extracted):
+            if isinstance(result, Credited):
+                credited = result
+                if args.verbose:
+                    print(f"  {result.path}  {result.lines} credit lines from {result.banks} banks")
+            elif isinstance(result, Extracted):
                 written += 1
                 if result.channels > 1:
                     stereo += 1
@@ -179,6 +185,12 @@ def cmd_extract(args: argparse.Namespace) -> int:
         # A disc that yields most of its samples is a good outcome; say so
         # plainly rather than burying it.
         print(f"skipped {skipped} damaged or unreadable entries")
+    if credited is not None:
+        # The disc's own provenance, read from its text banks (ADR-0043).
+        print(
+            f"wrote {credited.lines} credit lines from {credited.banks} "
+            f"text banks to {credited.path}"
+        )
     return 0
 
 
@@ -234,6 +246,7 @@ def cmd_batch(args: argparse.Namespace) -> int:
         args.out,
         join_stereo=not args.no_stereo,
         keep_originals=args.keep_originals,
+        metadata=args.metadata,
     ):
         reports.append(report)
         # A loose bank's source path ends in the meaningless ``SamplePool``; its
@@ -257,9 +270,12 @@ def cmd_batch(args: argparse.Namespace) -> int:
     converted = sum(1 for r in reports if r.ok)
     samples = sum(r.samples for r in reports)
     tracks = sum(r.audio_tracks for r in reports)
+    credit_lines = sum(r.credit_lines for r in reports)
     summary = f"\nconverted {converted}/{len(reports)} discs, {samples} samples"
     if tracks:
         summary += f", {tracks} audio tracks"
+    if credit_lines:
+        summary += f", {credit_lines} credit lines"
     print(summary)
     if args.manifest:
         write_manifest(args.manifest, reports)
@@ -362,6 +378,11 @@ def build_parser() -> argparse.ArgumentParser:
         help="also write the raw AKAI sample and program files, exactly as stored",
     )
     extract.add_argument(
+        "--metadata",
+        action="store_true",
+        help="also write a Credits.txt of the disc's provenance from its E-IV text banks",
+    )
+    extract.add_argument(
         "--assume-audio-cd",
         action="store_true",
         help="disc has no filesystem and holds CD audio: write the whole stream as one WAV",
@@ -386,6 +407,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--keep-originals",
         action="store_true",
         help="also write the raw AKAI sample and program files, exactly as stored",
+    )
+    batch.add_argument(
+        "--metadata",
+        action="store_true",
+        help="also write a Credits.txt of each disc's provenance from its E-IV text banks",
     )
     batch.set_defaults(func=cmd_batch)
 

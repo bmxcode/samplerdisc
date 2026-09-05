@@ -549,6 +549,22 @@ Eight of the 170 hold a FORM with presets or text and no sample chunk: the four 
 
 `E4P1` presets — the key ranges, envelopes and root key — are **not** read, here or anywhere; the deliverable is the audio ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
 
+### The text bank's `E4P1` name field is disc provenance
+
+A sample-free FORM bank is not empty of *information*. Each of its `E4P1` chunks carries a line of human-readable disc provenance in the **16-byte name field at chunk-body `+2`** — the same offset a sample record's name sits at (`SAMPLE_NAME_OFFSET`), so `decode_name`/`is_plausible_name` read it unchanged. The `Credits` banks list who sampled and programmed the disc and how to reach the publisher; the `E-mu Systems 96` banks are a contact card. Vol. 4 – Denny Jaeger, one line per chunk: `Q Up Arts 97` / `800 454-4563` / `Samples By` / `Denny Jaeger` / `Designed By` / `Douglas Morton` / `Programming By` / `Gunnar Amundson` / `For More Info...` / `Ask Your Dealer` / `Or Call` / `408 438-1921 US` / `44 1316536556 UK` / `E-mu Systems 97`. (`TOC1` holds the multimap name and a concatenation of the same lines — redundant, not read.)
+
+D36 reads these lines as **metadata** — the name field alone, never the preset beside it, and only from a bank with no `E3S1` chunk — and writes them to a per-disc `Credits.txt` sidecar under `--metadata` ([ADR-0043](../adr/0043-eiv-credits-are-metadata-read-from-the-e4p1-name-field.md)). Eight banks across five discs, **89 lines**, verified against the discs:
+
+| Disc | Bank | Lines |
+|---|---|---:|
+| `eiv-studio` | `E-mu Systems 96` ×4 (byte-identical) | 6 each |
+| `eiv-vol5` (Vol. 5 – 3-D Audio) | `Credits` | 10 |
+| Vol. 3 – Hollywood Sound Effects | `Credits` | 13 |
+| Vol. 4 – Denny Jaeger | `Credits` | 14 |
+| Vol. 8 – Platinum Phatt CD 2 | `Credits` | 28 |
+
+`eiv-studio` writes its `E-mu Systems 96` bank four times byte-identically, so the sidecar collapses those to one 6-line section — 71 distinct lines written, 89 summed over the volumes. The read is gated on a bank yielding no samples, so a bank with audio never contributes a line: the `E4P1` presets that sit beside real samples stay unread ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
+
 ### A fragmented FORM bank is read along the FAT chain
 
 A `FORM/E4B0` bank is read straight from the image, contiguously — which is right for every bank on nine discs and every `FORM` bank but one. **`eiv-vitous`'s `CES 1` is the exception, and it is why the block-2 FAT is read rather than only used to corroborate.** Its 39 clusters are three runs — 640–658, 620–634, 579–583 — so a contiguous read stops at the first break, at byte 9 961 472, and lists **12** of the bank's **20** samples. The eight in the tail are real: `CES E_2 2`, `CES F#2 2`, `CES B_2 2`, `CES E_3 2`, `STR:VcsF#3 2`, `STR:VcsC_4 2`, `STR:VcsA_4 2`, `STR:VcsD_5 2` — the upper half of a velocity layer whose lower half is in the first run, all 44 100 Hz, all mono one-shots.
@@ -717,7 +733,7 @@ These are the regression baseline: any change to the shared record parser is a b
 
 `esi32-gm`'s 2 424 and `protozoa`'s 6 788 are what the revision before *that* gave, and both counted another bank's records; [ADR-0021](../adr/0021-a-bank-owns-the-run-its-header-declares.md) has the accounting. `esi32-gm` is the instructive one: it was believed clean, and its last bank ran to the end of the image and was credited with 193 records belonging to the two banks in front of it.
 
-Each of the seven EIII/ESI discs lists one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract; `esi32-gm`, `eiiix-1` and `eiiix-2` also list the sampler's own code banks — `E3 Main Code`, `E3X Main Code` — which carry no bank header and are noted as such. On `eiv-studio`, the 100 banks that had no flat sample directory are the `FORM/E4B0` banks read by D25 above: 96 now extract, adding 987 samples, and the four `E-mu Systems 96` preset banks that carry no sample chunk stay noted. That disc's 901 `E4P1` presets remain unread — the deliverable is the audio ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)).
+Each of the seven EIII/ESI discs lists one index bank with a note and no samples, which is why their volume counts run one ahead of the banks that extract; `esi32-gm`, `eiiix-1` and `eiiix-2` also list the sampler's own code banks — `E3 Main Code`, `E3X Main Code` — which carry no bank header and are noted as such. On `eiv-studio`, the 100 banks that had no flat sample directory are the `FORM/E4B0` banks read by D25 above: 96 now extract, adding 987 samples, and the four `E-mu Systems 96` preset banks that carry no sample chunk stay noted — their `E4P1` name lines are read as provenance under `--metadata` (D36 above). That disc's 901 `E4P1` presets remain unread — the deliverable is the audio ([ADR-0011](../adr/0011-the-deliverable-is-daw-ready-wav.md)); the credits read is the name field alone, never the preset ([ADR-0043](../adr/0043-eiv-credits-are-metadata-read-from-the-e4p1-name-field.md)).
 
 ## Independent corroboration (mpc2emu)
 
@@ -781,7 +797,7 @@ Where mpc2emu reaches past the audio it reaches into what [ADR-0011](../adr/0011
 - An E-IV sample directory can appear twice. Deduplicate by address or every one of its records is listed twice.
 - An E-IV bank with no flat `E3S1` directory at its predicted base is not empty. 170 of 788 across twelve discs are native `FORM/E4B0` IFF banks, samples as `E3S1` chunks inside; the same fit predicts both, and reading the chunks recovers ~2 017 samples ([ADR-0032](../adr/0032-read-the-eiv-form-e4b0-bank-and-its-embedded-samples.md)).
 - A `FORM/E4B0`'s declared size understates it by 4–12 bytes — the last `E3S1` chunk overruns it and garbage follows. Bound where a chunk may *begin* by the size, its body by the image; bounding the body by the size drops 91 of `eiv-studio`'s samples.
-- A `FORM/E4B0` with no `E3S1` chunk (`Credits`, `E-mu Systems 96`) is genuinely sample-free and gets its own note, not the `no sample directory` one — that wording is wrong for a bank that carries audio without a flat directory.
+- A `FORM/E4B0` with no `E3S1` chunk (`Credits`, `E-mu Systems 96`) is genuinely sample-free and gets its own note, not the `no sample directory` one — that wording is wrong for a bank that carries audio without a flat directory. Its `E4P1` name field (16 bytes at chunk-body `+2`) is disc provenance, read as metadata under `--metadata` — the name line alone, never the preset, and only from a sample-free bank ([ADR-0043](../adr/0043-eiv-credits-are-metadata-read-from-the-e4p1-name-field.md)).
 - The paired length fields **are** a channel count, and the measurement that said otherwise tested interleaved stereo when the format splits into blocks. 2 843 samples are stereo.
 - A channel count is not enough on its own. Require `end_L + 2 == start_R`. It rejected 65 records when the extent came from `+34`; it rejects none now, and it is what makes the extent's own two-channel test exact.
 - The two halves of a decaying note correlate at 0.94 by RMS envelope, so that measure cannot tell a stereo pair from a single note. Divide the envelope by its own trend, or correlate the waveform at a lag.
