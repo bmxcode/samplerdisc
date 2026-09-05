@@ -182,12 +182,52 @@ def cmd_extract(args: argparse.Namespace) -> int:
     return 0
 
 
-def cmd_batch(args: argparse.Namespace) -> int:
-    images = find_images(args.directory)
-    if not images:
-        print(f"no disc images found under {args.directory}", file=sys.stderr)
+def cmd_extract_banks(args: argparse.Namespace) -> int:
+    from samplerdisc.banks import extract_banks
+
+    if not os.path.isdir(args.directory):
+        print(f"not a directory: {args.directory}", file=sys.stderr)
         return 1
-    print(f"found {len(images)} images")
+    written = 0
+    stereo = 0
+    skipped = 0
+    for result in extract_banks(args.directory, args.out):
+        if isinstance(result, Extracted):
+            written += 1
+            if result.channels > 1:
+                stereo += 1
+            if args.verbose:
+                seconds = result.frames / result.rate if result.rate else 0
+                channels = "stereo" if result.channels > 1 else "mono"
+                print(
+                    f"  {result.volume}/{result.name}  {seconds:.2f}s @ {result.rate} Hz {channels}"
+                )
+        else:
+            skipped += 1
+            print(f"  skipped {result.volume}/{result.name}: {result.reason}", file=sys.stderr)
+    if not written and not skipped:
+        print(f"no .ebl sample banks found under {args.directory}", file=sys.stderr)
+        return 1
+    print(f"wrote {written} WAV files to {args.out}")
+    if stereo:
+        print(f"{stereo} of them were stereo samples")
+    if skipped:
+        print(f"skipped {skipped} damaged or unreadable entries")
+    return 0
+
+
+def cmd_batch(args: argparse.Namespace) -> int:
+    from samplerdisc.banks import find_bank_dirs
+
+    images = find_images(args.directory)
+    bank_dirs = find_bank_dirs(args.directory)
+    if not images and not bank_dirs:
+        print(f"no disc images or sample banks found under {args.directory}", file=sys.stderr)
+        return 1
+    found = [f"{len(images)} images"] if images else []
+    if bank_dirs:
+        found.append(f"{len(bank_dirs)} loose banks")
+    print("found " + " and ".join(found))
     reports = []
     for report in convert_tree(
         args.directory,
@@ -196,7 +236,12 @@ def cmd_batch(args: argparse.Namespace) -> int:
         keep_originals=args.keep_originals,
     ):
         reports.append(report)
-        label = os.path.basename(report.source)
+        # A loose bank's source path ends in the meaningless ``SamplePool``; its
+        # library name is the volume the report carries.
+        if report.container == "loose-ebl" and report.volumes:
+            label = report.volumes[0]["name"]
+        else:
+            label = os.path.basename(report.source)
         if report.error:
             print(f"  FAILED  {label}: {report.error}")
         else:
@@ -322,6 +367,15 @@ def build_parser() -> argparse.ArgumentParser:
         help="disc has no filesystem and holds CD audio: write the whole stream as one WAV",
     )
     extract.set_defaults(func=cmd_extract)
+
+    banks = sub.add_parser(
+        "extract-banks",
+        help="convert loose E-mu .ebl sample banks in a directory (no disc image)",
+    )
+    banks.add_argument("directory")
+    banks.add_argument("out")
+    banks.add_argument("-v", "--verbose", action="store_true", help="name each file written")
+    banks.set_defaults(func=cmd_extract_banks)
 
     batch = sub.add_parser("batch", help="convert every disc image under a directory")
     batch.add_argument("directory")
