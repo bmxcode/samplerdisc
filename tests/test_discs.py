@@ -11,6 +11,7 @@ in ADR-0012.
 from __future__ import annotations
 
 import hashlib
+import math
 import os
 import struct
 from array import array
@@ -1472,6 +1473,138 @@ def test_emu3_loops_are_decoded_without_disturbing_the_audio(label: str) -> None
         assert digest.hexdigest()[:16] == digest_expected, (
             f"{label}: sample payloads moved -- the read path must be untouched"
         )
+
+
+#: How the period / pre-start window scores each of `eiv-analogia`'s six
+#: residual loops -- the ones kept after D23 refuses the whole-extent "no loop"
+#: (ADR-0030). These six were emitted **entirely on the rule the other E-mu
+#: discs establish**: the forward shape/join oracle of emu3.md had no power on
+#: them, because a near-whole-extent loop has almost no audio after its end for
+#: a forward window to correlate (issue #50, recorded in ADR-0025). The
+#: period window does -- ``x[t] ~= x[t - P]`` survives on a loop running to the
+#: last frame -- and it gives the disc its own per-record confirmation for the
+#: first time (ADR-0044).
+#:
+#: ``confirm`` -- the loop splices at its own period as a clear local maximum
+#: (r >= 0.9 and above every off-period lag by a margin), where a wrong period
+#: does not. ``flat`` -- scorable but no period structure at any lag: ``Conscience
+#: Call`` is a near-whole-extent "no loop" whose start (frame 13 061) sits just
+#: past D23's start-side slack, so the refusal did not catch it. ``quiet`` -- the
+#: loop end is below the loudness gate and cannot be scored: ``Got Scratch?``
+#: ends in near-silence, the same signature ADR-0030's end-energy test reads as
+#: a "no loop". So four of the six gain independent confirmation; the two that
+#: do not are named here rather than hidden, and their emission is left
+#: unchanged -- this is a measurement, not a change to what ships.
+_EIV_ANALOGIA_RESIDUAL_LOOPS = {
+    "Usnotthem Chorus": "confirm",
+    "Trilling Sound": "confirm",
+    "The Lost Chord 1": "confirm",
+    "The Lost Chord 2": "confirm",
+    "Conscience Call": "flat",
+    "Got Scratch?": "quiet",
+}
+
+#: The pre-start window and its guards, mirroring the shipped parser and the
+#: emu3.md "Loop points" oracle: 256 frames before each of the loop start and
+#: the loop end, a 15%-of-peak loudness gate on the end window (a metric that
+#: rewards silence finds plenty of it), off-period lags at fractions of the
+#: period for the local-maximum control, and the margin the period must clear.
+_PERIOD_WINDOW = 256
+_PERIOD_LOUDNESS = 0.15
+_PERIOD_OFF_FRACS = (0.05, 0.25, 0.5, -0.05, -0.25, -0.5)
+_PERIOD_MARGIN = 0.10
+
+
+def test_emu3_eiv_residual_loops_are_confirmed_by_their_period() -> None:
+    """The confirmation issue #50 asked for, on the disc itself (ADR-0044).
+
+    The forward shape/join oracle that confirms EIII/ESI loops has no power on
+    `eiv-analogia`: its loops are overwhelmingly the whole-extent "no loop",
+    which ends within a few frames of the last, so there is no audio after the
+    loop end for a forward window to correlate. ADR-0025 recorded that only 34
+    of its records scored and those showed nothing, and after D23 refused the
+    whole-extent form the disc keeps six loops resting purely on the rule the
+    other discs establish.
+
+    The **period / pre-start window** does have power here. A loop of period
+    ``P`` makes ``x[t] ~= x[t - P]``, so the 256 frames before the loop end match
+    the 256 before the loop start -- a relationship that still exists when the
+    loop runs to the last frame, which is most of these. The control is not a
+    wrong *start* (for a sustained near-whole-extent tone the lead-in
+    self-correlates at any period multiple); it is **lag sensitivity** -- the
+    correlation must peak at ``P`` and fall away at off-period lags, the
+    signature of a chosen period rather than a self-similar texture.
+
+    Two assertions. Every emitted loop on `eiv-analogia` is pinned by name and
+    outcome, so a regression that quietly confirms or refutes one is caught;
+    and the same metric is calibrated on `eiv-studio`'s real, forward-confirmed
+    loops, so the instrument is shown to have power rather than rubber-stamping.
+    No shipped code runs differently -- ``sample.loops`` is what the extractor
+    already emits, so the pinned loop counts and payload digests are untouched.
+    """
+    np = pytest.importorskip("numpy")
+
+    def left_channel(sample):
+        frames = np.frombuffer(sample.pcm, dtype="<i2").astype(np.float64)
+        return frames[::2] if sample.channels == 2 else frames
+
+    def pearson(u, v):
+        u = u - u.mean()
+        v = v - v.mean()
+        d = math.sqrt(float((u * u).sum()) * float((v * v).sum()))
+        return float((u * v).sum() / d) if d > 0 else 0.0
+
+    def score(x, a, b):
+        """``confirm`` / ``flat`` / ``quiet`` for a loop of ``(a, b)`` frames."""
+        peak = float(np.abs(x).max()) if x.size else 0.0
+        if a - _PERIOD_WINDOW < 0 or b - _PERIOD_WINDOW < 0 or peak <= 0:
+            return "quiet"
+        end = x[b - _PERIOD_WINDOW : b]
+        if math.sqrt(float((end * end).mean())) < _PERIOD_LOUDNESS * peak:
+            return "quiet"
+        r = pearson(x[a - _PERIOD_WINDOW : a], end)
+        period = b - a
+        best_off = None
+        for frac in _PERIOD_OFF_FRACS:
+            ap = a + int(frac * period)
+            if ap - _PERIOD_WINDOW < 0 or ap > b or ap == a:
+                continue
+            off = pearson(x[ap - _PERIOD_WINDOW : ap], end)
+            best_off = off if best_off is None else max(best_off, off)
+        confirmed = r >= 0.9 and (best_off is None or r >= best_off + _PERIOD_MARGIN)
+        return "confirm" if confirmed else "flat"
+
+    def emitted_loops(label):
+        size = _EMU3[label][0]
+        with open_image(_pinned_disc(label, size)) as image:
+            origin = find_origin(image)
+            assert origin is not None and origin.backend.name == "emu3"
+            for volume in origin.backend.volumes(image, origin.offset):
+                for entry in volume.samples():
+                    payload = origin.backend.read_file(image, origin.offset, entry)
+                    sample = origin.backend.parse_sample(entry, payload)
+                    if sample.loops:
+                        loop = sample.loops[0]
+                        yield entry.name, score(left_channel(sample), loop.start, loop.end)
+
+    seen = dict(emitted_loops("eiv-analogia"))
+    assert seen == _EIV_ANALOGIA_RESIDUAL_LOOPS, (
+        f"eiv-analogia's residual loops no longer score as measured (ADR-0044): {seen}"
+    )
+
+    scorable = confirmed = 0
+    for _name, outcome in emitted_loops("eiv-studio"):
+        if outcome == "quiet":
+            continue
+        scorable += 1
+        confirmed += outcome == "confirm"
+    assert scorable >= 500, f"eiv-studio calibration scored too few loops: {scorable}"
+    assert confirmed / scorable >= 0.5, (
+        "the period window has no power on eiv-studio's real, forward-confirmed "
+        f"loops: only {confirmed} of {scorable} confirm -- the instrument that "
+        "vindicates analogia's survivors must first work where the forward "
+        "oracle already did"
+    )
 
 
 def test_protozoa_gives_each_bank_its_own_records() -> None:
