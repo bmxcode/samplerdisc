@@ -28,11 +28,19 @@ jobs:
         run: uv run pytest -q
 
       # A passing suite and a working installed entrypoint are not the same
-      # thing, and that gap is where a broken `bin` hides.
-      - name: Installed entrypoint
+      # thing, and that gap is where a broken `bin` hides. It is not enough to
+      # run --version: 0.5.1 shipped an entrypoint that ran and reported the
+      # wrong number, so assert the reported version is the packaged one.
+      - name: Installed entrypoint reports the packaged version
         run: |
           uv tool install --editable .
-          samplerdisc --version
+          got="$(samplerdisc --version)"
+          want="$(uv version --short)"
+          if [ "$got" != "$want" ]; then
+            echo "::error::samplerdisc --version says '$got', packaged version is '$want'"
+            exit 1
+          fi
+          echo "entrypoint reports $got"
 
       # ADR-0008: no disc images or audio, ever. Enforced, not remembered.
       - name: No media in tracked files

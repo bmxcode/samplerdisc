@@ -3,7 +3,15 @@ from samplerdisc.cli import build_parser
 
 
 def test_version_matches_package():
-    assert __version__ == "0.5.0"
+    """The reported version is the installed metadata, not a hardcoded literal.
+
+    A literal here mirroring a literal in the source is what let 0.5.1 ship
+    reporting 0.5.0: both sat still while pyproject moved. Assert the real
+    invariant instead — the runtime string is the packaged version.
+    """
+    from importlib.metadata import version
+
+    assert __version__ == version("samplerdisc")
 
 
 def test_parser_exposes_version_flag():

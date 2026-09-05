@@ -2,6 +2,12 @@
 
 Notable changes to `samplerdisc`. Format-level findings live in [docs/formats/](docs/formats/); decisions and their rejected alternatives live in [docs/adr/](docs/adr/). This file records what changed for someone using the tool.
 
+## 0.5.2 — 2026-09-05
+
+### Fixed
+
+- **`samplerdisc --version` reports the real version again.** The 0.5.1 release shipped an entrypoint that printed `0.5.0`: the version lived in two places — `pyproject.toml` and a hardcoded `__version__` literal — and bumping the package moved only the first. `__version__` is now read once from the installed distribution's metadata, so there is a single source of truth that cannot drift. The install-time CI check now asserts the entrypoint's reported version equals the packaged version rather than only that it runs, and the unit test asserts the same invariant instead of pinning a literal. If you installed 0.5.1, upgrade — the package was otherwise identical, only its self-reported version was wrong. ([src/samplerdisc/__init__.py](src/samplerdisc/__init__.py))
+
 ## 0.5.1 — 2026-09-05
 
 ### Added
