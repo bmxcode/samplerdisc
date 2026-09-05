@@ -65,6 +65,12 @@ class DiscReport:
     #: filesystem and the data have come apart, which on these discs means the
     #: image is short of the disc it was made from (ADR-0027).
     mismatches: int = 0
+    #: Samples written whose bytes were displaced inside a partition by blocks
+    #: the rip lost and recovered a whole number of container blocks earlier,
+    #: each confirmed by its own header (issue #35, ADR-0045). A subset of
+    #: ``samples``: says how many of them the image would have had wrong, or
+    #: refused, before recovery.
+    recovered: int = 0
     audio_tracks: int = 0
     skipped: list[dict[str, object]] = field(default_factory=list)
     error: str | None = None
@@ -141,6 +147,8 @@ def convert_disc(
                     report.samples += 1
                     if result.channels > 1:
                         report.stereo_samples += 1
+                    if result.displaced:
+                        report.recovered += 1
                     entry = volumes.setdefault(
                         (result.partition, result.volume),
                         {"name": result.volume, "partition": result.partition, "samples": 0},
@@ -242,6 +250,7 @@ def write_manifest(path: str, reports: list[DiscReport]) -> None:
             "skipped": sum(len(r.skipped) for r in reports),
             "duplicates": sum(r.duplicates for r in reports),
             "mismatches": sum(r.mismatches for r in reports),
+            "recovered": sum(r.recovered for r in reports),
         },
     }
     directory = os.path.dirname(os.path.abspath(path))

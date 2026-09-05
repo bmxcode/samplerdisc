@@ -171,7 +171,7 @@ A short image also shows up in the table's arithmetic alone: `Kickin' Lunatic Be
 
 The visible consequence inside partition 1 is not only the four empty volumes. **Nine files in `13-TRACK 06` no longer hold their own audio**: everything past the first gap has slid, so their payload is mid-PCM rather than a header. They are refused and named, one line each saying which fields disagree and which entry placed them ([ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md)). [Issue #23](https://github.com/bmxcode/samplerdisc/issues/23) proposed that check believing they were being written out; they were already being refused, with a message that said neither which test failed nor that a directory entry was involved.
 
-The same damage appears **without a partition going missing**, which is worth stating separately because the table's arithmetic cannot see it. `Alpha Dance II` declares six partitions and holds all six, and 21 of `AC.DRUMLOOPS`'s 22 samples are displaced; `AKAI.S3000.Sound.Library.1` and `.3` are the same shape, 25 files across the three. The rip lost a run of blocks inside a partition rather than the blocks a header sat on.
+The same damage appears **without a partition going missing**, which is worth stating separately because the table's arithmetic cannot see it. `Alpha Dance II` declares six partitions and holds all six, and 21 of `AC.DRUMLOOPS`'s 22 samples are displaced; `AKAI.S3000.Sound.Library.1` and `.3` are the same shape. The rip lost a run of blocks inside a partition rather than the blocks a header sat on, so it is the payload check — never the partition table — that catches it, and D38 recovers the file from its own header a whole number of container blocks earlier (*The payload repeats what the directory said* below, [ADR-0045](../adr/0045-a-displaced-sample-is-recovered-by-its-own-name-and-word-count.md)).
 
 Observed volume names, useful as a smoke test that charset and offsets are both right:
 
@@ -273,27 +273,37 @@ Nine of the 44 discs are affected: `AKAI.S3000.Sound.Library.1`–`7` (4 451, 3 
 
 Every sample payload restates the file's id, its valid flag and its name, and the directory entry states the name and the size independently. Where they disagree, the payload is not the file the entry placed and it is refused rather than written under that entry's name — a WAV that opens, plays, and is somebody else's audio is the worst failure this format offers ([ADR-0027](../adr/0027-a-payload-must-be-the-file-its-entry-placed.md), [issue #23](https://github.com/bmxcode/samplerdisc/issues/23)).
 
-**104 of the 72 298 samples disagree**, on nine discs; the other 35 have none. The name test's unique catch is still **zero** — every payload whose name disagrees also has a wrong id and a cleared valid flag, because a displacement lands mid-audio and mid-audio does not look like a header. It is kept anyway: the other three ask whether the payload is *a* sample, and only this one asks whether it is *this* sample.
+**104 of the 72 298 samples disagree at their declared position**, on nine discs; the other 35 have none. Almost all are a *displacement*, not damage: the run has slid forward inside its partition and the real bytes sit a whole number of container blocks earlier, carrying the file's own header — so the payload that disagrees at the declared offset is somebody else's audio, and the file itself is intact a little way back. D38 reads it from there ([ADR-0045](../adr/0045-a-displaced-sample-is-recovered-by-its-own-name-and-word-count.md); see *Recovering a sample the rip displaced* below), so **102 of the 104 recover** and only **2 stay refused**. The name test that was "zero unique catch" through D20 is now the anchor those 102 recoveries turn on: it is what says a candidate position holds *this* file, where the id and valid flag only say it holds *a* sample.
 
-Where they are:
+Where the 104 are, and what becomes of them:
 
-| Disc | Mismatches | Where | Partitions declared / read |
+| Disc | Displaced | Where | Recovered |
 |---|---:|---|---|
-| `AKAI.S3000.Sound.Library.5` | 30 | `HIT NOISE` last 17 of 20, `SURDO` last 7 of 13, `BELL TREE` last 6 of 13 | 9 / 6 |
-| `Kickin' Lunatic Beats 2 CD1` | 24 | `09-TRACK 37` last 15 of 26, `13-TRACK 06` last 9 of 20 | 11 / 8 |
-| `Best Service - Alpha Dance II` | 21 | `AC.DRUMLOOPS`, last 21 of 22 | **6 / 6** |
-| `Best Service - Alpha Dance I` | 15 | `ATTACK BANK2`, last 15 of 18 | 5 / 4 |
-| `AMG - Global Trance Mission 2` | 8 | `SYNTH     10` last 5 of 6, `AMBIENT PAD2` last 3 of 6 | 9 / 7 |
-| `AKAI.S3000.Sound.Library.1` | 3 | `3084 B.BEAT6`, last 3 of 8 | 13 / 13 |
-| `AKAI.S3000.Sound.Library.3` | 1 | `VOLUME 001`, its only file | 13 / 13 |
-| `Audio Factory - Classical Wild Takes` | 1 | `VOLUME 002`, last of 2 | 11 / 10 |
-| `AMG - Loop Soup` | 1 | `SOUP 101-103`, entry 27 of 39 | 9 / 9 |
+| `AKAI.S3000.Sound.Library.5` | 30 | `HIT NOISE` last 17 of 20, `SURDO` last 7 of 13, `BELL TREE` last 6 of 13 | 30 |
+| `Kickin' Lunatic Beats 2 CD1` | 24 | `09-TRACK 37` last 15 of 26, `13-TRACK 06` last 9 of 20 | 24 |
+| `Best Service - Alpha Dance II` | 21 | `AC.DRUMLOOPS`, last 21 of 22 | 21 |
+| `Best Service - Alpha Dance I` | 15 | `ATTACK BANK2`, last 15 of 18 | 15 |
+| `AMG - Global Trance Mission 2` | 8 | `SYNTH     10` last 5 of 6, `AMBIENT PAD2` last 3 of 6 | 8 |
+| `AKAI.S3000.Sound.Library.1` | 3 | `3084 B.BEAT6`, last 3 of 8 | 3 |
+| `Audio Factory - Classical Wild Takes` | 1 | `VOLUME 002`, last of 2 | 1 |
+| `AKAI.S3000.Sound.Library.3` | 1 | `VOLUME 001`, its only file | **0** |
+| `AMG - Loop Soup` | 1 | `SOUP 101-103`, entry 27 of 39 | **0** |
 
-Four more samples are refused for a corrupt rate byte with an otherwise perfect header — `EG 2MUTE` at 0 Hz, `M.VOICE A1` and `SYN 1` at 519, `HOUSE BASS` at 1280. Those *are* the files their entries placed, with one field unusable, and are counted apart.
+Four more samples are refused for a corrupt rate byte with an otherwise perfect header — `EG 2MUTE` at 0 Hz, `M.VOICE A1` and `SYN 1` at 519, `HOUSE BASS` at 1280. Those *are* the files their entries placed, with one field unusable, and are counted apart; the recovery does not touch them.
 
-**103 of the 104 are a run to the end of one volume**, which is what a lost run of blocks looks like from inside a directory; the exception is `Loop Soup`'s one directory record whose start block lands mid-sample. And the run is a *displacement*, now measured rather than inferred: **103 of the 104 refused payloads are sitting intact, carrying their entry's own name, a whole number of container blocks earlier** — one block back for `Alpha Dance II`'s 21, 134 for `Library.3`'s one, one to four for the rest. Recovering them is [issue #35](https://github.com/bmxcode/samplerdisc/issues/35) and is not done: a partition has a declared position to search back from and a file has only the chain its allocation map states ([ADR-0028](../adr/0028-a-displaced-partition-is-anchored-quantised-and-floored.md)).
+**The two that do not recover are the interesting ones.** `Loop Soup`'s record's start block lands mid-sample, so there is no earlier header to find. `Library.3`'s `VOLUME 001`/`20  CHINA2-R` has one — but it is a *different* volume's `20  CHINA2-R` in the previous partition, same name and same size, intact where it sits. Its bytes belong to that file, and the recovery refuses to leave the partition rather than write them here. Both stay refused and named ([ADR-0045](../adr/0045-a-displaced-sample-is-recovered-by-its-own-name-and-word-count.md)).
 
-**A tail run does not require a missing partition.** `Alpha Dance II` declares six partitions and holds all six; `Library.1` and `Library.3` likewise. Their damage is a run of blocks lost *inside* a partition, so no header goes missing and the table's declared-against-present arithmetic sees nothing. Declared equalling present is not a clean bill of health.
+**A tail run does not require a missing partition.** `Alpha Dance II` declares six partitions and holds all six; `Library.1` and `Library.3` likewise. Their damage is a run of blocks lost *inside* a partition, so no header goes missing and the table's declared-against-present arithmetic sees nothing. Declared equalling present is not a clean bill of health — which is why the payload check, and now the recovery, are the only structures that see this.
+
+### Recovering a sample the rip displaced
+
+A gap inside a partition removes whole container blocks, so a file after it sits that much nearer the front while its directory entry — in the intact header ahead of the gap — still points where the file was on the disk. Its real bytes are therefore a whole number of container blocks before the declared position, carrying the file's own header. The recovery searches **backward from the declared position, in the container's storage unit, for a header restating this entry's name and word count** (`size == words*2 + header_len`), and **stops at the start of the file's own partition** ([ADR-0045](../adr/0045-a-displaced-sample-is-recovered-by-its-own-name-and-word-count.md), [issue #35](https://github.com/bmxcode/samplerdisc/issues/35)).
+
+Three measurements make this a recovery and not a scan:
+
+- **The displacement is always a whole number of container blocks** — one block for `Alpha Dance II`'s first refused file and two for the rest, 134 for `Library.3`'s namesake, one to a few elsewhere.
+- **The allocation map does not notice, so there is no cheaper detector.** The map is in the intact header and describes the disk the rip was made from: every displaced file's chain is still exactly as long as its declared size demands. A short chain on these volumes would have been a cheaper check than reading a payload header per sample; there is none. The payload check is the only structure that sees the gap.
+- **Exactly one position per recovered file passes the anchor**, and none coincides with any other intact entry's bytes — which is why the partition floor, not a match count, is the safety. `Library.3` is the standing proof: its only match is the cross-partition namesake, below the floor, refused.
 
 ## Where a directory ends
 

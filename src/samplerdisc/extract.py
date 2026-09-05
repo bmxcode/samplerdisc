@@ -97,6 +97,14 @@ class Extracted:
     #: (ADR-0026) or a stereo AIFF -- which is a different thing from the
     #: ``Joined`` file an -L/-R pair produces, and counted apart from it.
     channels: int = 1
+    #: Bytes this sample's payload was displaced by inside its partition, 0 for
+    #: one sitting where its entry placed it. Non-zero says the image is short
+    #: of the disc it was made from: a run of container blocks was lost *inside*
+    #: a partition the table calls complete, so this file's bytes slid forward
+    #: and were recovered a whole number of blocks earlier, carrying its own
+    #: header (issue #35, ADR-0045). Per file, because the displacement grows
+    #: down a volume as gaps accumulate rather than being one constant.
+    displaced: int = 0
 
 
 @dataclass
@@ -247,8 +255,17 @@ def extract_volume(
             continue
         if entry.kind != "sample":
             continue
+        # A backend whose container can be short of its disc reports where the
+        # file's bytes really are and how far they were displaced; the rest
+        # place every file where its entry declares (ADR-0045).
+        placement = getattr(backend, "placement", None)
+        displaced = 0
         try:
-            payload = backend.read_file(image, origin, entry)
+            if placement is not None:
+                read_offset, displaced = placement(image, origin, entry)
+                payload = image.read(read_offset, entry.size)
+            else:
+                payload = backend.read_file(image, origin, entry)
         except OSError as exc:  # pragma: no cover - filesystem-level failure
             yield Skipped(volume.name, entry.name, f"unreadable: {exc}", volume.partition)
             continue
@@ -308,6 +325,7 @@ def extract_volume(
             pitch=pitch if pitch is not None else 0,
             partition=volume.partition,
             channels=channels,
+            displaced=displaced,
         )
 
     for entry in deferred:

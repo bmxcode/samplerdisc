@@ -124,6 +124,20 @@ class Backend(Protocol):
         """Return the raw bytes of one file."""
         ...
 
+    def placement(self, image: SectorImage, offset: int, entry: File) -> tuple[int, int]:
+        """``(byte offset to read this file from, bytes it is displaced by)``.
+
+        Optional. The declared position and 0 for a file that is where its
+        directory entry puts it, which is every file on a complete image. A
+        backend whose container can be *short of the disc it was made from* --
+        whole units lost inside it, so a file's bytes sit nearer the front than
+        its entry declares -- may relocate the read here and report the
+        distance, which ``list`` and the manifest surface. AKAI is the only one
+        today (issue #35, ADR-0045). A backend that does not implement it has
+        every file at its declared position, which ``read_file`` reads.
+        """
+        ...
+
     def original_suffix(self, entry: File) -> str:
         """Filename suffix for this file's bytes as stored on disc.
 
